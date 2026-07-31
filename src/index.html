@@ -1,0 +1,1676 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RTSP over WebSocket (TypeScript/ESM) — Vanilla Demo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --text: #1a1a1a;
+        --text-h: #555555;
+        --border: #d8d8d8;
+        --accent-bg: #eef2ff;
+        --accent: #3b4bd8;
+        --error: #c0392b;
+        --ok: #1a7f37;
+        --ok-bg: #e9f8ee;
+        --error-bg: #fdeeec;
+        --panel: #f7f7f9;
+        --sidebar: #f0f1f4;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14161a;
+          --text: #e8e8ec;
+          --text-h: #a3a7b0;
+          --border: #33363d;
+          --accent-bg: #232748;
+          --accent: #8b97ff;
+          --error: #ff6b5e;
+          --ok: #4fd07a;
+          --ok-bg: #123420;
+          --error-bg: #3a1917;
+          --panel: #1b1e24;
+          --sidebar: #191b20;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .shell {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 32px 20px 64px;
+      }
+      h1 {
+        font-size: 20px;
+        margin-bottom: 4px;
+      }
+      p.subtitle {
+        color: var(--text-h);
+        font-size: 13px;
+        margin-top: 0;
+        margin-bottom: 24px;
+      }
+      .layout {
+        display: flex;
+        gap: 24px;
+        align-items: flex-start;
+      }
+      /* ---- left tab strip ---- */
+      .tabs {
+        flex: 0 0 160px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        background: var(--sidebar);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px;
+        position: sticky;
+        top: 20px;
+      }
+      .tabs button {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        text-align: left;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: none;
+        background: transparent;
+        color: var(--text-h);
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .tabs button:hover {
+        background: var(--panel);
+      }
+      .tabs button.active {
+        background: var(--accent-bg);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .tabs .icon {
+        font-size: 16px;
+      }
+      /* ---- main content ---- */
+      .content {
+        flex: 1;
+        min-width: 0;
+      }
+      .panel {
+        display: none;
+      }
+      .panel.active {
+        display: block;
+      }
+      section.card {
+        margin-bottom: 20px;
+        padding: 16px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      .grid-form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px 16px;
+      }
+      .grid-form label {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 4px;
+        font-size: 13px;
+        color: var(--text-h);
+      }
+      .field-group {
+        margin-bottom: 16px;
+      }
+      .field-group:last-of-type {
+        margin-bottom: 0;
+      }
+      .field-group-title {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        color: var(--text-h);
+        margin-bottom: 8px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      .grid-form input,
+      .grid-form select {
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+      }
+      .grid-form select:disabled option:disabled,
+      select option:disabled {
+        color: var(--text-h);
+      }
+      .checkbox-field {
+        flex-direction: row !important;
+        align-items: center;
+        gap: 6px !important;
+      }
+      .actions {
+        grid-column: 1 / -1;
+        display: flex;
+        gap: 10px;
+        margin-top: 4px;
+        flex-wrap: wrap;
+      }
+      .actions button {
+        padding: 6px 16px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--accent-bg);
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .actions button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .player-status {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 16px;
+        font-size: 13px;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+      }
+      .player-status .error {
+        color: var(--error);
+      }
+      #player-host {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        background: #000;
+        min-height: 60px;
+      }
+      #player-host:empty::before {
+        content: 'Click Connect to create the <rtsp-over-websocket> element here.';
+        display: block;
+        padding: 20px;
+        color: var(--text-h);
+        font-size: 13px;
+        background: var(--panel);
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--text-h);
+        margin: 0 0 12px;
+        line-height: 1.5;
+      }
+      .field-note {
+        font-size: 11px;
+        color: var(--text-h);
+        font-weight: normal;
+      }
+      .password-field {
+        display: flex;
+        gap: 6px;
+      }
+      .password-field input {
+        flex: 1;
+        min-width: 0;
+      }
+      .password-field button {
+        padding: 6px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--accent-bg);
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .session-status {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 18px;
+        font-size: 13px;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+      }
+      .session-status .badge {
+        padding: 1px 8px;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 12px;
+      }
+      .badge.starting {
+        background: var(--accent-bg);
+        color: var(--accent);
+      }
+      .badge.live {
+        background: #e9f8ee;
+        color: var(--ok);
+      }
+      @media (prefers-color-scheme: dark) {
+        .badge.live {
+          background: #123420;
+        }
+      }
+      .badge.failed,
+      .badge.stopped {
+        background: #fdeeec;
+        color: var(--error);
+      }
+      @media (prefers-color-scheme: dark) {
+        .badge.failed,
+        .badge.stopped {
+          background: #3a1917;
+        }
+      }
+      h2.card-title {
+        font-size: 14px;
+        margin: 0 0 12px;
+      }
+      footer {
+        margin-top: 24px;
+        font-size: 12px;
+        color: var(--text-h);
+      }
+      footer a {
+        color: var(--accent);
+      }
+      /* ---- Test panel (ported from the former dist/test.html) ---- */
+      .note {
+        font-size: 12px;
+        color: var(--text-h);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 20px;
+      }
+      #test-summary {
+        display: flex;
+        gap: 16px;
+        align-items: baseline;
+        margin-bottom: 20px;
+        padding: 14px 16px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        font-size: 14px;
+      }
+      #test-summary .big {
+        font-size: 22px;
+        font-weight: 700;
+      }
+      #test-summary.all-pass {
+        border-color: var(--ok);
+      }
+      #test-summary.has-fail {
+        border-color: var(--error);
+      }
+      .group {
+        margin-bottom: 18px;
+      }
+      .group h3 {
+        font-size: 14px;
+        margin: 0 0 6px;
+        color: var(--text-h);
+        font-weight: 600;
+      }
+      .case {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        margin-bottom: 2px;
+      }
+      .case.pass {
+        background: var(--ok-bg);
+        color: var(--ok);
+      }
+      .case.fail {
+        background: var(--error-bg);
+        color: var(--error);
+      }
+      .case .icon {
+        flex-shrink: 0;
+      }
+      .case .msg {
+        color: var(--text);
+        opacity: 0.85;
+        margin-top: 2px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <h1>RTSP over WebSocket — Vanilla JS Demo (TypeScript/ESM build)</h1>
+      <p class="subtitle">
+        An example that verifies the build output (<code>dist/player/rtsp-over-websocket.esm.js</code>) of
+        <code>src/player/custom/RTSPOverWebSocket.ts</code> — the successor to the legacy player — using nothing but a single
+        <code>&lt;script type="module"&gt;</code> tag, no bundler or framework. It reproduces the same connection form and event
+        wiring as the React version (<code>app-react/dist/index.html</code>).
+      </p>
+
+      <div class="layout">
+        <nav class="tabs">
+          <button type="button" id="tab-btn-player" class="active" data-panel="player"><span class="icon">▶</span> Player</button>
+          <button type="button" id="tab-btn-server" data-panel="server"><span class="icon">⚙</span> Server</button>
+          <button type="button" id="tab-btn-test" data-panel="test"><span class="icon">✓</span> Test</button>
+        </nav>
+
+        <div class="content">
+          <!-- ================= PLAYER PANEL (unchanged behavior) ================= -->
+          <div class="panel active" id="panel-player">
+            <section class="card grid-form">
+              <label
+                >Hostname
+                <input id="f-hostname" placeholder="192.168.0.2" />
+              </label>
+              <label
+                >Port
+                <input id="f-port" />
+              </label>
+              <label
+                >Username
+                <input id="f-username" value="admin" />
+              </label>
+              <label
+                >Password
+                <input id="f-password" type="password" />
+              </label>
+              <label
+                >Channel
+                <input id="f-channel" value="1" />
+              </label>
+              <label
+                >Profile
+                <input id="f-profile" value="H.264" />
+              </label>
+              <label
+                >Device
+                <select id="f-device">
+                  <option value="camera">camera</option>
+                  <option value="nvr" selected>nvr</option>
+                </select>
+              </label>
+              <label class="checkbox-field">
+                <input id="f-statistics" type="checkbox" checked />
+                Show statistics panel
+              </label>
+
+              <div class="actions">
+                <button id="btn-connect" type="button">Connect</button>
+                <button id="btn-play" type="button" disabled>Play</button>
+                <button id="btn-pause" type="button" disabled>Pause</button>
+                <button id="btn-stop" type="button" disabled>Stop</button>
+              </div>
+            </section>
+
+            <section class="player-status">
+              <span>State: <strong id="status-state">STOPPED</strong></span>
+              <span id="status-error" class="error" hidden></span>
+              <span id="status-requested" hidden></span>
+              <span id="status-actual" hidden></span>
+            </section>
+
+            <div id="player-host"></div>
+          </div>
+
+          <!-- ================= SERVER PANEL (YouTube transcode -> RTSP -> WS) ================= -->
+          <div class="panel" id="panel-server">
+            <section class="card">
+              <h2 class="card-title">src/server API connection</h2>
+              <p class="hint">
+                <code>src/server</code> (<code>npm run start:server</code>) opens the REST API and the RTSP-over-WebSocket bridge
+                (<code>/StreamingServer</code>) on the same port — <code>http</code> 4000 (REST + <code>ws://</code>) /
+                <code>https</code> 4001 (REST + <code>wss://</code>). This page is also served by that same server, so entering the
+                port matching whichever protocol (<code>http</code>/<code>https</code>) you opened this page with avoids
+                mixed-content issues.
+              </p>
+              <div class="grid-form">
+                <label
+                  >Server Host
+                  <input id="srv-host" />
+                </label>
+                <label
+                  >Server Port (shared by http/https, ws/wss)
+                  <input id="srv-port" value="4000" />
+                </label>
+                <div class="actions">
+                  <button id="btn-load-capabilities" type="button">Refresh codec support</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2 class="card-title">YouTube source</h2>
+              <div class="grid-form">
+                <label style="grid-column: 1 / -1"
+                  >YouTube URL
+                  <input id="yt-url" placeholder="https://www.youtube.com/watch?v=..." />
+                </label>
+                <div class="actions">
+                  <button id="btn-probe" type="button">Check max resolution (Probe)</button>
+                </div>
+              </div>
+              <p class="hint" id="probe-result" style="margin-top: 12px"></p>
+            </section>
+
+            <section class="card">
+              <h2 class="card-title">Transcoding settings</h2>
+
+              <div class="field-group">
+                <div class="field-group-title">Video</div>
+                <div class="grid-form">
+                  <label
+                    >Resolution
+                    <select id="yt-resolution"></select>
+                  </label>
+                  <label
+                    >Video codec
+                    <select id="yt-video-codec">
+                      <option value="MJPEG">MJPEG</option>
+                      <option value="H264" selected>H.264</option>
+                      <option value="H265">H.265</option>
+                      <option value="AV1">AV1</option>
+                      <option value="VP8">VP8</option>
+                      <option value="VP9">VP9</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <div class="field-group-title">Audio</div>
+                <div class="grid-form">
+                  <label
+                    >Audio codec
+                    <select id="yt-audio-codec">
+                      <option value="OPUS">Opus</option>
+                      <option value="AAC" selected>AAC</option>
+                      <option value="G711">G.711</option>
+                      <option value="G726">G.726</option>
+                    </select>
+                  </label>
+                  <label
+                    >Audio bitrate (kbps)
+                    <select id="yt-audio-bitrate"></select>
+                  </label>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <div class="field-group-title">Connection info</div>
+                <div class="grid-form">
+                  <label
+                    >Channel <span class="field-note">(leave blank to auto-assign, 1-based same as the Player tab)</span>
+                    <input id="yt-channel" type="number" min="1" step="1" placeholder="auto" />
+                  </label>
+                  <label
+                    >Session Username <span class="field-note">(for RTSP-over-WS digest auth)</span>
+                    <input id="yt-username" value="tester" />
+                  </label>
+                  <label
+                    >Session Password
+                    <span class="password-field">
+                      <input id="yt-password" type="password" value="testpass123" />
+                      <button id="btn-toggle-yt-password" type="button">Show</button>
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="actions">
+                <button id="btn-start-session" type="button">Start</button>
+                <button id="btn-stop-session" type="button" disabled>Stop</button>
+                <button id="btn-restart-session" type="button" disabled>Restart</button>
+                <button id="btn-use-in-player" type="button" disabled>Fill Player tab connection info</button>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2 class="card-title">Session status</h2>
+              <div class="session-status" id="session-status">No session</div>
+            </section>
+          </div>
+
+          <!-- ================= TEST PANEL (formerly dist/test.html) ================= -->
+          <div class="panel" id="panel-test">
+            <section class="card">
+              <h2 class="card-title">RTSP over WebSocket — Browser Unit Test Runner</h2>
+              <p class="subtitle" style="margin-bottom: 8px">
+                Reproduces the Contract-tier tests (37 cases) from
+                <code>src/player/custom/RTSPOverWebSocket.test.ts</code> against <code>dist/player/rtsp-over-websocket.esm.js</code>
+                (the ESM build this page already loaded), in pure browser JavaScript with no external dependencies.
+              </p>
+              <div class="note">
+                <strong>Scope note:</strong> this panel only reproduces <code>RTSPOverWebSocket.test.ts</code>. The other 88 test
+                files load the legacy source directly through Node's <code>vm</code> module and diff it against the new
+                implementation — a <strong>parity test</strong> approach that can't run in a browser (it needs Node-only
+                <code>vm</code>/filesystem access). Run those 88 files with
+                <code>cd src/player &amp;&amp; npx vitest run</code>.
+              </div>
+
+              <div id="test-summary"></div>
+              <div id="test-results"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <footer>
+        Build: <code>npm run build:player</code> · YouTube transcoding server: see <code>src/server</code>
+        (<code>npm run start:server</code>)
+      </footer>
+    </div>
+
+    <!-- rtsp-over-websocket.esm.js is a fully self-contained ES module bundle (Vite
+         library build of src/player/index.ts): moment-timezone and every
+         other former CDN dependency the legacy demo page
+         needed (log4javascript, vis.js, sylvester.js, glUtils.js, ...) are
+         now real bundled npm dependencies, not globals loaded via separate
+         <script> tags. It also does NOT need the custom-elements polyfill
+         the legacy demo loaded — evergreen browsers support Custom Elements
+         v1 natively. Importing this file runs
+         `customElements.define('rtsp-over-websocket', RTSPOverWebSocket)` as
+         a side effect,
+         so this single <script type="module"> tag is the entire runtime
+         dependency list.
+
+         Deliberately ESM here, NOT the rtsp-over-websocket.global.js IIFE bundle:
+         every Worker this player creates (decoderWorker, audiotranscoderWorker,
+         zipWorker, ...) is instantiated lazily — only once real RTP data
+         starts arriving, well after this script has finished its initial
+         synchronous execution. Vite's IIFE build resolves each worker's
+         `new Worker(new URL('...', import.meta.url))` via a `document.
+         currentScript`-based polyfill (classic scripts have no real
+         `import.meta.url`), but `document.currentScript` is only valid
+         during a script's *own* synchronous top-level execution — by the
+         time a lazily-created worker factory actually runs, it's back to
+         `null`, and Vite's fallback resolves relative to `document.baseURI`
+         (the *page* URL) instead of this script's own URL, producing a
+         wrong path one directory level too shallow (e.g. `/assets/foo.js`
+         instead of `/player/assets/foo.js`) and a hard-to-diagnose
+         `Unexpected token '<'` SyntaxError when the server's 404 fallback
+         serves back HTML. Real ESM's `import.meta.url` has no such timing
+         requirement — it's a language-level per-module binding, correct
+         however long after script load a worker is actually created — so
+         the ESM build is immune to this class of bug entirely. -->
+    <script type="module" src="./player/rtsp-over-websocket.esm.js"></script>
+
+    <!-- Ported from the former dist/test.html (see git history) — same 37
+         Contract-tier cases from src/player/custom/RTSPOverWebSocket.test.ts,
+         now run against the same ESM build the Player tab above already
+         loads. Importing the same module specifier a second time does NOT
+         re-run its side effects (customElements.define(...) included) —
+         ES modules are evaluated once and cached per URL, so this is safe
+         alongside the script tag above. -->
+    <script type="module">
+      import { RTSPOverWebSocketError, RTSPOverWebSocketPlayType, RTSPOverWebSocketPlayState } from './player/rtsp-over-websocket.esm.js';
+
+      (function () {
+        'use strict';
+
+        // ---- minimal, dependency-free describe/it/expect harness ----
+        // (mirrors just enough of Vitest's API surface to run the assertions
+        // ported from RTSPOverWebSocket.test.ts verbatim in a real browser —
+        // this is NOT a general-purpose test framework, only what those 37
+        // cases need)
+
+        var groups = [];
+        var currentGroup = null;
+
+        function describe(name, fn) {
+          currentGroup = { name: name, cases: [] };
+          groups.push(currentGroup);
+          fn();
+        }
+
+        function it(name, fn) {
+          var entry = { name: name, pass: true, message: '' };
+          try {
+            fn();
+          } catch (error) {
+            entry.pass = false;
+            entry.message = error && error.message ? error.message : String(error);
+          }
+          currentGroup.cases.push(entry);
+        }
+
+        function stringify(value) {
+          try {
+            return JSON.stringify(value);
+          } catch (e) {
+            return String(value);
+          }
+        }
+
+        function deepEqual(a, b) {
+          if (Object.is(a, b)) return true;
+          if (typeof a !== typeof b || a === null || b === null || typeof a !== 'object') return false;
+          var aKeys = Object.keys(a);
+          var bKeys = Object.keys(b);
+          if (aKeys.length !== bKeys.length) return false;
+          for (var i = 0; i < aKeys.length; i++) {
+            var k = aKeys[i];
+            if (!deepEqual(a[k], b[k])) return false;
+          }
+          return true;
+        }
+
+        function expectation(actual, negate) {
+          function fail(message) {
+            throw new Error(message);
+          }
+          var self = {
+            toBe: function (expected) {
+              var pass = Object.is(actual, expected);
+              if (pass === negate) fail('expected ' + stringify(actual) + (negate ? ' not' : '') + ' to be ' + stringify(expected));
+            },
+            toEqual: function (expected) {
+              var pass = deepEqual(actual, expected);
+              if (pass === negate) fail('expected ' + stringify(actual) + (negate ? ' not' : '') + ' to equal ' + stringify(expected));
+            },
+            toBeNull: function () {
+              self.toBe(null);
+            },
+            toBeUndefined: function () {
+              self.toBe(undefined);
+            },
+            toBeDefined: function () {
+              var pass = actual !== undefined;
+              if (pass === negate) fail('expected value to ' + (negate ? 'not ' : '') + 'be defined');
+            },
+            toBeInstanceOf: function (ctor) {
+              var pass = actual instanceof ctor;
+              if (pass === negate) fail('expected ' + stringify(actual) + ' to ' + (negate ? 'not ' : '') + 'be instanceof ' + (ctor && ctor.name));
+            },
+            toContainValues: function (expectedValues) {
+              // stand-in for expect.arrayContaining(...) — checks every
+              // expected value is present in `actual` (an array).
+              var pass = expectedValues.every(function (v) {
+                return actual.indexOf(v) !== -1;
+              });
+              if (pass === negate) fail('expected array to ' + (negate ? 'not ' : '') + 'contain ' + stringify(expectedValues));
+            },
+            toThrow: function (errType) {
+              var threw = false;
+              var err;
+              try {
+                actual();
+              } catch (e) {
+                threw = true;
+                err = e;
+              }
+              var matches = threw && (!errType || err instanceof errType);
+              if (matches === negate) {
+                fail('expected function ' + (negate ? 'not ' : '') + 'to throw' + (errType ? ' ' + errType.name : '') + (threw ? ' (got: ' + err.message + ')' : ' (nothing thrown)'));
+              }
+            },
+            toHaveBeenCalledTimes: function (n) {
+              var pass = actual.calls.length === n;
+              if (pass === negate) fail('expected mock to ' + (negate ? 'not ' : '') + 'have been called ' + n + ' time(s), got ' + actual.calls.length);
+            },
+            toHaveBeenCalled: function () {
+              var pass = actual.calls.length > 0;
+              if (pass === negate) fail('expected mock to ' + (negate ? 'not ' : '') + 'have been called');
+            },
+            get not() {
+              return expectation(actual, !negate);
+            }
+          };
+          return self;
+        }
+
+        function expect(actual) {
+          return expectation(actual, false);
+        }
+
+        function fn() {
+          var mock = function () {
+            mock.calls.push(Array.prototype.slice.call(arguments));
+          };
+          mock.calls = [];
+          return mock;
+        }
+
+        // ---- test fixtures ----
+
+        function createPlayer(id) {
+          var el = document.createElement('rtsp-over-websocket');
+          el.setAttribute('id', id || 'test-p1');
+          return el;
+        }
+
+        // ================= ported from custom/RTSPOverWebSocket.test.ts =================
+
+        describe('RTSPOverWebSocket custom element registration', function () {
+          it('registers "rtsp-over-websocket" as a real custom element extending HTMLElement', function () {
+            var ctor = customElements.get('rtsp-over-websocket');
+            expect(ctor).toBeDefined();
+            var el = createPlayer();
+            expect(el).toBeInstanceOf(HTMLElement);
+          });
+
+          it('exposes the documented observedAttributes list', function () {
+            var ctor = customElements.get('rtsp-over-websocket');
+            expect(ctor.observedAttributes).toContainValues(['hostname', 'channel', 'profile', 'profile_number', 'device', 'username', 'password', 'gmt', 'grunt', 'bestshotfilter', 'android']);
+          });
+        });
+
+        describe('RTSPOverWebSocket constructor defaults', function () {
+          it('initializes info.device/media with legacy default values', function () {
+            var el = createPlayer();
+            expect(el.info.device.ClientIPAddress).toBe('127.0.0.1');
+            expect(el.info.device.serverType).toBe('camera');
+            expect(el.info.media.type).toBe('live');
+            expect(el.info.media.boxsize).toBe(4);
+            expect(el.info.media.requestInfo).toEqual({ cmd: 'open', scale: 1, url: null });
+            expect(el.readyState).toBe(RTSPOverWebSocketPlayState.STOPPED);
+            expect(el.isplay).toBe(false);
+          });
+        });
+
+        describe('attributeChangedCallback', function () {
+          // Per the Custom Elements spec, exceptions thrown inside a
+          // CEReactions callback (attributeChangedCallback included) are
+          // reported asynchronously (like an uncaught error), not
+          // synchronously propagated to the setAttribute() call site — real
+          // browser behavior, not a bug in this port. These two cases call
+          // attributeChangedCallback directly to exercise its own throwing
+          // logic synchronously instead.
+          it('rejects a channel number below 1 with a RTSPOverWebSocketError', function () {
+            var el = createPlayer();
+            document.body.appendChild(el);
+            expect(function () {
+              el.attributeChangedCallback('channel', null, '0');
+            }).toThrow(RTSPOverWebSocketError);
+            document.body.removeChild(el);
+          });
+
+          it('accepts a valid channel and stores it 0-based on info.device.channelId', function () {
+            var el = createPlayer();
+            el.setAttribute('channel', '3');
+            expect(el.info.device.channelId).toBe(2);
+          });
+
+          it('parses gmt "null" string to a real null (not the literal string)', function () {
+            var el = createPlayer();
+            el.setAttribute('gmt', 'null');
+            expect(el.GMT).toBeNull();
+          });
+
+          it('throws for an invalid bestshotfilter-independent profile_number', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.attributeChangedCallback('profile_number', null, 'not-a-number');
+            }).toThrow(RTSPOverWebSocketError);
+          });
+        });
+
+        describe('bug preservation: background/useClockRange triple-accessor collision', function () {
+          it('assigning background actually mutates useClockRange (the last-declared accessor wins)', function () {
+            var el = createPlayer();
+            el.background = true;
+            expect(el.useClockRange).toBe(true);
+          });
+
+          it('useClockRange has no working setter (getter-only) and throws when assigned', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.useClockRange = true;
+            }).toThrow(TypeError);
+          });
+        });
+
+        describe('bug preservation: grunt getter/setter mismatch', function () {
+          it('grunt getter always returns undefined regardless of the setter', function () {
+            var el = createPlayer();
+            el.grunt = true;
+            expect(el.info.device.serverType).toBe('grunt');
+            expect(el.grunt).toBeUndefined();
+          });
+        });
+
+        describe('bug preservation: audioshift copy-paste', function () {
+          it('audioshift getter returns info.media.mode, not a tracked shift value', function () {
+            var el = createPlayer();
+            el.info.media.mode = 'canvas';
+            expect(el.audioshift).toBe('canvas');
+          });
+        });
+
+        describe('bug preservation: GMT loose validation', function () {
+          it('throws only when the value is strictly undefined, not for other invalid types', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.GMT = undefined;
+            }).toThrow(RTSPOverWebSocketError);
+            // a non-numeric string silently passes the loose guard and the
+            // range check below (NaN comparisons are always false), reaching
+            // setAttribute('gmt', ...) without throwing.
+            expect(function () {
+              el.GMT = 'not-a-number';
+            }).not.toThrow();
+          });
+
+          it('rejects an in-range-type but out-of-range numeric GMT', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.GMT = 99;
+            }).toThrow(RTSPOverWebSocketError);
+          });
+
+          it('accepts null and clears the timezone', function () {
+            var el = createPlayer();
+            el.GMT = null;
+            expect(el.GMT).toBeNull();
+          });
+        });
+
+        describe('bug preservation: seekingTime operator-precedence (dead ISO validation)', function () {
+          it('accepts a non-ISO string without throwing because of `!playType === INSTANTPLAYBACK`', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.seekingTime = 'not-an-iso-date';
+            }).not.toThrow();
+            expect(el.seekingTime).toBe('not-an-iso-date');
+          });
+
+          it('still throws for a genuinely non-string value (the type check above the precedence bug)', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.seekingTime = 12345;
+            }).toThrow(RTSPOverWebSocketError);
+          });
+        });
+
+        describe('bug preservation: playSpeed truncation', function () {
+          it('0.125x truncates to 0.12 instead of 0.125', function () {
+            var el = createPlayer();
+            el.playSpeed = 0.125;
+            expect(el.playSpeed).toBe(0.12);
+          });
+
+          it('-0.125x truncates to -0.12 instead of -0.125', function () {
+            var el = createPlayer();
+            el.playSpeed = -0.125;
+            expect(el.playSpeed).toBe(-0.12);
+          });
+
+          it('other presets (e.g. 2x) are not affected by the truncation bug', function () {
+            var el = createPlayer();
+            el.playSpeed = 2;
+            expect(el.playSpeed).toBe(2);
+          });
+        });
+
+        describe('playType / mode accessors', function () {
+          it('defaults to live mode when playType has never been set', function () {
+            var el = createPlayer();
+            expect(el.mode).toBe('live');
+            expect(el.playType).toBe(RTSPOverWebSocketPlayType.LIVE);
+          });
+
+          it('mode="playback" sets playType to PLAYBACK', function () {
+            var el = createPlayer();
+            el.mode = 'playback';
+            expect(el.playType).toBe(RTSPOverWebSocketPlayType.PLAYBACK);
+            expect(el.mode).toBe('playback');
+          });
+
+          it('rejects a non-string mode value', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.mode = 42;
+            }).toThrow(RTSPOverWebSocketError);
+          });
+        });
+
+        describe('methods that require an active player', function () {
+          it('stop() throws when play() was never called', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.stop();
+            }).toThrow(RTSPOverWebSocketError);
+          });
+
+          it('pause() throws when play() was never called', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.pause();
+            }).toThrow(RTSPOverWebSocketError);
+          });
+
+          it('resume() throws when play() was never called', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.resume();
+            }).toThrow(RTSPOverWebSocketError);
+          });
+
+          it('capture() throws when play() was never called', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.capture();
+            }).toThrow(RTSPOverWebSocketError);
+          });
+
+          it('isPlay() (deprecated method) always throws regardless of player state', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.isPlay();
+            }).toThrow(RTSPOverWebSocketError);
+          });
+        });
+
+        describe('play() input validation', function () {
+          it('throws AuthError when username is not set', function () {
+            var el = createPlayer();
+            el.device = 'camera';
+            el.hostname = '192.168.0.10';
+            expect(function () {
+              el.play();
+            }).toThrow();
+          });
+
+          it('throws RTSPOverWebSocketError for playback mode with no startTime set', function () {
+            var el = createPlayer();
+            el.device = 'camera';
+            el.hostname = '192.168.0.10';
+            el.username = 'admin';
+            el.password = 'pass';
+            el.mode = 'playback';
+            expect(function () {
+              el.play();
+            }).toThrow(RTSPOverWebSocketError);
+          });
+        });
+
+        describe('custom addEventListener/removeEventListener/dispatchEvent registry', function () {
+          it('addEventListener + a dispatched "changehostname" event delivers detail with channelId/elementId merged in', function () {
+            var el = createPlayer('test-cam1');
+            document.body.appendChild(el);
+            var handler = fn();
+            el.addEventListener('changehostname', handler);
+
+            el.setAttribute('hostname', '10.0.0.5');
+
+            expect(handler).toHaveBeenCalledTimes(1);
+            var event = handler.calls[0][0];
+            expect(event.detail.hostname).toBe('10.0.0.5');
+            expect(event.detail.elementId).toBe('test-cam1');
+            document.body.removeChild(el);
+          });
+
+          it('addEventListener ignores a second registration for the same event type', function () {
+            var el = createPlayer();
+            var handler1 = fn();
+            var handler2 = fn();
+            el.addEventListener('changehostname', handler1);
+            el.addEventListener('changehostname', handler2);
+
+            el.setAttribute('hostname', 'x');
+
+            expect(handler1).toHaveBeenCalledTimes(1);
+            expect(handler2).not.toHaveBeenCalled();
+          });
+
+          it('removeEventListener stops further delivery', function () {
+            var el = createPlayer();
+            var handler = fn();
+            el.addEventListener('changehostname', handler);
+            el.removeEventListener('changehostname', handler);
+
+            el.setAttribute('hostname', 'y');
+
+            expect(handler).not.toHaveBeenCalled();
+          });
+
+          it('addEventListener throws a RTSPOverWebSocketError for a null listener', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.addEventListener('foo', null);
+            }).toThrow(RTSPOverWebSocketError);
+          });
+        });
+
+        describe('connectedCallback', function () {
+          it('defaults deviceType to camera and resolves cameraIp from document.location.hostname when no hostname attribute is set', function () {
+            var el = createPlayer();
+            document.body.appendChild(el);
+            expect(el.info.device.deviceType).toBe('camera');
+            expect(el.info.device.cameraIp).toBe(document.location.hostname);
+            document.body.removeChild(el);
+          });
+
+          it('throws (caught internally, logged) rather than propagating when mode attribute is invalid', function () {
+            var originalConsoleError = console.error;
+            var spy = fn();
+            console.error = spy;
+            var el = createPlayer();
+            el.setAttribute('mode', 'not-a-real-mode');
+            expect(function () {
+              document.body.appendChild(el);
+            }).not.toThrow();
+            expect(spy).toHaveBeenCalled();
+            document.body.removeChild(el);
+            console.error = originalConsoleError;
+          });
+        });
+
+        describe('bestshotfilter accessor', function () {
+          it('setBestshotFilter accepts case-insensitive string names', function () {
+            var el = createPlayer();
+            el.bestshotfilter = 1;
+            expect(el.bestshotfilter).toBe(1);
+          });
+
+          it('rejects a negative filter value', function () {
+            var el = createPlayer();
+            expect(function () {
+              el.bestshotfilter = -1;
+            }).toThrow(RTSPOverWebSocketError);
+          });
+        });
+
+        // ================= render results into #panel-test =================
+
+        var total = 0;
+        var failed = 0;
+        var resultsEl = document.getElementById('test-results');
+
+        groups.forEach(function (group) {
+          var groupEl = document.createElement('div');
+          groupEl.className = 'group';
+          var heading = document.createElement('h3');
+          heading.textContent = group.name;
+          groupEl.appendChild(heading);
+
+          group.cases.forEach(function (c) {
+            total++;
+            if (!c.pass) failed++;
+            var row = document.createElement('div');
+            row.className = 'case ' + (c.pass ? 'pass' : 'fail');
+            var icon = document.createElement('span');
+            icon.className = 'icon';
+            icon.textContent = c.pass ? '✓' : '✗';
+            var body = document.createElement('div');
+            var title = document.createElement('div');
+            title.textContent = c.name;
+            body.appendChild(title);
+            if (!c.pass) {
+              var msg = document.createElement('div');
+              msg.className = 'msg';
+              msg.textContent = c.message;
+              body.appendChild(msg);
+            }
+            row.appendChild(icon);
+            row.appendChild(body);
+            groupEl.appendChild(row);
+          });
+
+          resultsEl.appendChild(groupEl);
+        });
+
+        var summaryEl = document.getElementById('test-summary');
+        summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+        var bigSpan = document.createElement('span');
+        bigSpan.className = 'big';
+        bigSpan.textContent = failed === 0 ? 'PASS' : 'FAIL';
+        var countSpan = document.createElement('span');
+        countSpan.textContent = total - failed + ' / ' + total + ' passed';
+        summaryEl.appendChild(bigSpan);
+        summaryEl.appendChild(countSpan);
+
+        console.log('[Test tab] ' + (total - failed) + '/' + total + ' passed');
+      })();
+    </script>
+
+    <script>
+      (function () {
+        // ================= tab switching =================
+        var tabButtons = [document.getElementById('tab-btn-player'), document.getElementById('tab-btn-server'), document.getElementById('tab-btn-test')];
+        var panels = {
+          player: document.getElementById('panel-player'),
+          server: document.getElementById('panel-server'),
+          test: document.getElementById('panel-test')
+        };
+        tabButtons.forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            tabButtons.forEach(function (b) {
+              b.classList.remove('active');
+            });
+            btn.classList.add('active');
+            Object.keys(panels).forEach(function (key) {
+              panels[key].classList.toggle('active', key === btn.dataset.panel);
+            });
+          });
+        });
+        function activateTab(name) {
+          tabButtons.forEach(function (b) {
+            b.classList.toggle('active', b.dataset.panel === name);
+          });
+          Object.keys(panels).forEach(function (key) {
+            panels[key].classList.toggle('active', key === name);
+          });
+        }
+
+        // ================= PLAYER panel (unchanged from the original demo) =================
+        var form = {
+          hostname: document.getElementById('f-hostname'),
+          port: document.getElementById('f-port'),
+          username: document.getElementById('f-username'),
+          password: document.getElementById('f-password'),
+          channel: document.getElementById('f-channel'),
+          profile: document.getElementById('f-profile'),
+          device: document.getElementById('f-device'),
+          statistics: document.getElementById('f-statistics')
+        };
+
+        // hostname/port default to the shared dev NVR (dev.hanwhavision.com:3443)
+        // for convenient manual testing — same default app-react/.env.local
+        // sets via VITE_DEFAULT_CAMERA_HOSTNAME/_PORT. This file has no
+        // build step / env support, so it's hardcoded here instead; override
+        // the form fields directly to point at a different device (or use
+        // the Server tab's "Fill Player tab connection info" button to point at
+        // a src/server YouTube transcode session instead).
+        form.hostname.value = 'dev.hanwhavision.com';
+        form.port.value = '3443';
+
+        var playerHost = document.getElementById('player-host');
+        var btnConnect = document.getElementById('btn-connect');
+        var btnPlay = document.getElementById('btn-play');
+        var btnPause = document.getElementById('btn-pause');
+        var btnStop = document.getElementById('btn-stop');
+        var statusState = document.getElementById('status-state');
+        var statusError = document.getElementById('status-error');
+        var statusRequested = document.getElementById('status-requested');
+        var statusActual = document.getElementById('status-actual');
+
+        var playerEl = null;
+
+        function handleStateChange(event) {
+          var detail = event.detail || {};
+          if (typeof detail.readyState === 'number') {
+            statusState.textContent = ['STOPPED', 'PLAYING', 'PAUSED', 'STEP'][detail.readyState] || String(detail.readyState);
+          }
+        }
+
+        function handleError(event) {
+          var detail = event.detail || {};
+          statusError.hidden = false;
+          statusError.textContent = 'Error: ' + (detail.message || detail.error || 'Unknown player error');
+        }
+
+        function disconnect() {
+          if (playerEl) {
+            playerEl.removeEventListener('statechange', handleStateChange);
+            playerEl.removeEventListener('error', handleError);
+            playerHost.removeChild(playerEl);
+            playerEl = null;
+          }
+        }
+
+        btnConnect.addEventListener('click', function () {
+          statusError.hidden = true;
+          disconnect();
+
+          playerEl = document.createElement('rtsp-over-websocket');
+          playerEl.setAttribute('id', 'rtsp-over-websocket-demo');
+          playerEl.setAttribute('width', '800');
+          playerEl.setAttribute('height', '480');
+          if (form.statistics.checked) {
+            playerEl.setAttribute('statistics', '');
+          }
+          // Selects info.device.serverType -> 'grunt' (external web server,
+          // connects to a remote camera by hostname/port) vs 'camera' (page
+          // served from the camera's own embedded web server). Read once in
+          // connectedCallback, so it must be set before mount.
+          playerEl.setAttribute('grunt', '');
+
+          playerHost.appendChild(playerEl);
+
+          // Property assignment (not setAttribute) matches the React
+          // version's useEffect — both paths are equivalent since every
+          // setter below delegates to setAttribute internally, but
+          // assigning properties lets non-string values (channel as
+          // number, secure as boolean) pass through without
+          // stringification quirks.
+          playerEl.hostname = form.hostname.value;
+          playerEl.port = form.port.value;
+          playerEl.username = form.username.value;
+          playerEl.password = form.password.value;
+          playerEl.channel = form.channel.value;
+          playerEl.profile = form.profile.value;
+          playerEl.device = form.device.value;
+          playerEl.mode = 'live';
+          // Must be (re-)assigned AFTER `port`: attributeChangedCallback's
+          // 'port' case force-resets the internal secure flag to
+          // `port === 443` on every port change (see
+          // RTSPOverWebSocket.ts's 'port' case), so setting `secure` before
+          // `port` loses the race whenever the port isn't 443. Must also
+          // match this page's own protocol — the element picks ws:// vs
+          // wss:// for /StreamingServer from this flag alone, not from
+          // window.location, so a mismatched ws:// from an https: page is
+          // blocked as mixed content and Play silently does nothing.
+          playerEl.secure = window.location.protocol === 'https:';
+
+          playerEl.addEventListener('statechange', handleStateChange);
+          playerEl.addEventListener('error', handleError);
+
+          statusRequested.hidden = false;
+          statusRequested.textContent =
+            'Requested: ' + (window.location.protocol === 'https:' ? 'wss' : 'ws') + '://' + (form.hostname.value || '(empty)') + (form.port.value ? ':' + form.port.value : ' (no port)') + '/StreamingServer';
+
+          btnPlay.disabled = false;
+          btnPause.disabled = false;
+          btnStop.disabled = false;
+        });
+
+        btnPlay.addEventListener('click', function () {
+          if (!playerEl) return;
+          // play() synchronously assigns info.device.protocol/port before it
+          // does anything async, so snapshot AFTER calling it to see the
+          // values streamPlayer.js actually builds the WebSocket URL from.
+          try {
+            playerEl.play();
+          } catch (error) {
+            handleError({ detail: { message: error && error.message } });
+          }
+          var device = playerEl.info && playerEl.info.device;
+          if (device) {
+            statusActual.hidden = false;
+            statusActual.textContent = 'Actual (info.device after Play): protocol=' + device.protocol + ', hostname=' + device.hostname + ', port=' + device.port + ', deviceType=' + device.deviceType;
+          }
+        });
+
+        btnPause.addEventListener('click', function () {
+          if (!playerEl) return;
+          try {
+            playerEl.pause();
+          } catch (error) {
+            handleError({ detail: { message: error && error.message } });
+          }
+        });
+
+        btnStop.addEventListener('click', function () {
+          if (!playerEl) return;
+          try {
+            playerEl.stop();
+          } catch (error) {
+            handleError({ detail: { message: error && error.message } });
+          }
+        });
+
+        // ================= SERVER panel (src/server REST API client) =================
+        var srvHost = document.getElementById('srv-host');
+        var srvPort = document.getElementById('srv-port');
+        srvHost.value = window.location.hostname || '127.0.0.1';
+        // Default to this page's own scheme's port (src/server opens REST +
+        // ws on HTTP_PORT and REST + wss on HTTPS_PORT, same port, see
+        // config.ts) — avoids mixed-content blocks when this page itself was
+        // opened over https.
+        if (window.location.protocol === 'https:') {
+          srvPort.value = '4001';
+        }
+
+        function apiBase() {
+          var scheme = window.location.protocol === 'https:' ? 'https://' : 'http://';
+          return scheme + srvHost.value + ':' + srvPort.value;
+        }
+
+        // The RTSP-over-WebSocket endpoint the session is actually reachable
+        // on — ws/wss shares the same port as REST (see src/server/index.ts).
+        function wsUrlForCurrentServer() {
+          var scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+          return scheme + srvHost.value + ':' + srvPort.value + '/StreamingServer';
+        }
+
+        function apiFetch(path, options) {
+          return fetch(apiBase() + path, options).then(function (res) {
+            return res.text().then(function (text) {
+              var body = null;
+              try {
+                body = text ? JSON.parse(text) : null;
+              } catch (e) {
+                /* non-JSON (e.g. 204 No Content) */
+              }
+              if (!res.ok) {
+                var message = (body && body.error) || res.statusText || 'request failed';
+                throw new Error(message);
+              }
+              return body;
+            });
+          });
+        }
+
+        // ---- codec capabilities ----
+        var videoCodecSelect = document.getElementById('yt-video-codec');
+        var audioCodecSelect = document.getElementById('yt-audio-codec');
+        var audioBitrateSelect = document.getElementById('yt-audio-bitrate');
+
+        // Representative bitrate list per codec, matching what
+        // src/server/services/transcodeSession.ts's audioEncoderArgs()/
+        // nearestG726Bitrate() actually accept (or ignore) — G711 is fixed
+        // at 64kbps (PCMU) and ignores the requested value outright, and
+        // G726 is rounded to the nearest of 16/24/32/40.
+        var AUDIO_BITRATE_OPTIONS = {
+          OPUS: { values: [64, 96, 128, 160, 192, 256], default: 128 },
+          AAC: { values: [96, 128, 160, 192, 256, 320], default: 128 },
+          G711: { values: [64], default: 64, fixed: true, note: 'fixed 64kbps (PCMU) — no selection needed' },
+          G726: { values: [16, 24, 32, 40], default: 32 }
+        };
+
+        function updateAudioBitrateOptions() {
+          var ladder = AUDIO_BITRATE_OPTIONS[audioCodecSelect.value];
+          if (!ladder) return;
+          var previous = parseInt(audioBitrateSelect.value, 10);
+          audioBitrateSelect.innerHTML = '';
+          ladder.values.forEach(function (kbps) {
+            var opt = document.createElement('option');
+            opt.value = String(kbps);
+            opt.textContent = kbps + ' kbps' + (ladder.note ? ' — ' + ladder.note : '');
+            audioBitrateSelect.appendChild(opt);
+          });
+          audioBitrateSelect.value = String(ladder.values.indexOf(previous) !== -1 ? previous : ladder.default);
+          audioBitrateSelect.disabled = !!ladder.fixed;
+        }
+        audioCodecSelect.addEventListener('change', updateAudioBitrateOptions);
+        updateAudioBitrateOptions();
+
+        function applyAvailability(selectEl, availabilityList) {
+          Array.prototype.forEach.call(selectEl.options, function (opt) {
+            var entry = availabilityList.filter(function (a) {
+              return a.codec === opt.value;
+            })[0];
+            if (!entry) return;
+            opt.disabled = !entry.available;
+            opt.textContent = opt.value.replace('H264', 'H.264').replace('H265', 'H.265') + (entry.available ? '' : ' (unsupported: no ffmpeg encoder)');
+          });
+          // if the currently-selected option became disabled, jump to the first enabled one
+          if (selectEl.selectedOptions[0] && selectEl.selectedOptions[0].disabled) {
+            var firstEnabled = Array.prototype.filter
+              .call(selectEl.options, function (o) {
+                return !o.disabled;
+              })
+              .shift();
+            if (firstEnabled) selectEl.value = firstEnabled.value;
+          }
+        }
+
+        function loadCapabilities() {
+          return apiFetch('/api/capabilities')
+            .then(function (caps) {
+              applyAvailability(videoCodecSelect, caps.video);
+              applyAvailability(audioCodecSelect, caps.audio);
+              updateAudioBitrateOptions();
+            })
+            .catch(function (err) {
+              console.warn('[server-panel] capabilities load failed:', err.message);
+            });
+        }
+        document.getElementById('btn-load-capabilities').addEventListener('click', loadCapabilities);
+
+        // ---- Session Password show/hide ----
+        var ytPasswordInput = document.getElementById('yt-password');
+        var btnToggleYtPassword = document.getElementById('btn-toggle-yt-password');
+        btnToggleYtPassword.addEventListener('click', function () {
+          var showing = ytPasswordInput.type === 'text';
+          ytPasswordInput.type = showing ? 'password' : 'text';
+          btnToggleYtPassword.textContent = showing ? 'Show' : 'Hide';
+        });
+
+        // Editing Server Host / Port / Session Username / Session Password
+        // also updates the Player tab's connection info live (one-way —
+        // editing the Player tab's fields does not change these Server
+        // fields). ws/wss shares the same port as REST, so srv-port alone
+        // is synced straight into the Player tab's connection port.
+        var ytUsernameInput = document.getElementById('yt-username');
+        srvHost.addEventListener('input', function () {
+          form.hostname.value = srvHost.value;
+          if (currentSession) renderSessionStatus();
+        });
+        srvPort.addEventListener('input', function () {
+          form.port.value = srvPort.value;
+          if (currentSession) renderSessionStatus();
+        });
+        ytUsernameInput.addEventListener('input', function () {
+          form.username.value = ytUsernameInput.value;
+        });
+        ytPasswordInput.addEventListener('input', function () {
+          form.password.value = ytPasswordInput.value;
+        });
+
+        // ---- youtube probe ----
+        var ytUrlInput = document.getElementById('yt-url');
+        var probeResultEl = document.getElementById('probe-result');
+        var resolutionSelect = document.getElementById('yt-resolution');
+        var lastProbe = null;
+
+        function formatDuration(sec) {
+          if (sec === null || sec === undefined) return 'unknown';
+          var m = Math.floor(sec / 60);
+          var s = Math.floor(sec % 60);
+          return m + ':' + (s < 10 ? '0' : '') + s;
+        }
+
+        document.getElementById('btn-probe').addEventListener('click', function () {
+          var url = ytUrlInput.value.trim();
+          if (!url) {
+            probeResultEl.textContent = 'Enter a YouTube URL.';
+            return;
+          }
+          probeResultEl.textContent = 'Looking up... (yt-dlp may take a few seconds to fetch the real format list)';
+          apiFetch('/api/youtube/probe?url=' + encodeURIComponent(url))
+            .then(function (probe) {
+              lastProbe = probe;
+              probeResultEl.textContent = '"' + probe.title + '" · duration ' + formatDuration(probe.durationSec) + ' · max resolution ' + probe.maxHeight + 'p';
+
+              resolutionSelect.innerHTML = '';
+              probe.availableResolutions.forEach(function (r) {
+                var opt = document.createElement('option');
+                opt.value = String(r.height);
+                opt.textContent = r.label + ' (' + r.width + 'x' + r.height + ')';
+                resolutionSelect.appendChild(opt);
+              });
+            })
+            .catch(function (err) {
+              lastProbe = null;
+              probeResultEl.textContent = 'Probe failed: ' + err.message;
+            });
+        });
+
+        // ---- session lifecycle ----
+        var btnStartSession = document.getElementById('btn-start-session');
+        var btnStopSession = document.getElementById('btn-stop-session');
+        var btnRestartSession = document.getElementById('btn-restart-session');
+        var btnUseInPlayer = document.getElementById('btn-use-in-player');
+        var sessionStatusEl = document.getElementById('session-status');
+
+        var currentSession = null; // { id, channel, status, ... }
+        var pollHandle = null;
+
+        function stopPolling() {
+          if (pollHandle) {
+            clearTimeout(pollHandle);
+            pollHandle = null;
+          }
+        }
+
+        function renderSessionStatus() {
+          if (!currentSession) {
+            sessionStatusEl.innerHTML = 'No session';
+            btnStopSession.disabled = true;
+            btnRestartSession.disabled = true;
+            btnUseInPlayer.disabled = true;
+            return;
+          }
+          var s = currentSession;
+          var parts =
+            '<span class="badge ' +
+            s.status +
+            '">' +
+            s.status +
+            '</span>' +
+            '<span>channel=' + s.channel + '</span>' +
+            '<span>id=' + s.id.slice(0, 8) + '</span>' +
+            '<span>' + s.request.videoCodec + ' @ ' + s.request.resolutionHeight + 'p / ' + s.request.audioCodec + ' ' + s.request.audioBitrateKbps + 'kbps</span>' +
+            '<span style="width: 100%">WebSocket: ' + wsUrlForCurrentServer() + '</span>';
+          if (s.error) {
+            parts += '<span style="color: var(--error)">' + s.error + '</span>';
+          }
+          sessionStatusEl.innerHTML = parts;
+
+          btnStopSession.disabled = s.status === 'stopped';
+          btnRestartSession.disabled = false;
+          btnUseInPlayer.disabled = s.status !== 'live';
+        }
+
+        function pollSession() {
+          if (!currentSession) return;
+          apiFetch('/api/sessions/' + currentSession.id)
+            .then(function (session) {
+              currentSession = session;
+              renderSessionStatus();
+              // Keep polling through 'live' too (slower interval) — a live
+              // session's ffmpeg can still finish naturally or crash later,
+              // and without this the UI would keep showing a stale "live"
+              // badge (and an enabled Stop button) forever after that.
+              if (session.status === 'starting') {
+                pollHandle = setTimeout(pollSession, 1000);
+              } else if (session.status === 'live') {
+                pollHandle = setTimeout(pollSession, 3000);
+              }
+            })
+            .catch(function (err) {
+              console.warn('[server-panel] poll failed:', err.message);
+              pollHandle = setTimeout(pollSession, 2000);
+            });
+        }
+
+        function currentFormRequest() {
+          if (!resolutionSelect.value) {
+            throw new Error('Probe a YouTube URL first and select a resolution.');
+          }
+          var body = {
+            youtubeUrl: ytUrlInput.value.trim(),
+            resolutionHeight: parseInt(resolutionSelect.value, 10),
+            videoCodec: videoCodecSelect.value,
+            audioCodec: audioCodecSelect.value,
+            audioBitrateKbps: parseInt(document.getElementById('yt-audio-bitrate').value, 10),
+            username: document.getElementById('yt-username').value,
+            password: document.getElementById('yt-password').value
+          };
+          // Entered as 1-based, same as the Player tab's Channel field, and
+          // converted to 0-based (the wire value — see Session.channel in
+          // src/server/types.ts) before sending. Left blank, it's omitted
+          // entirely so the server auto-assigns one.
+          var channelRaw = document.getElementById('yt-channel').value.trim();
+          if (channelRaw !== '') {
+            var channel1Based = parseInt(channelRaw, 10);
+            if (!Number.isInteger(channel1Based) || channel1Based < 1) {
+              throw new Error('Channel must be an integer of 1 or greater.');
+            }
+            body.channel = channel1Based - 1;
+          }
+          return body;
+        }
+
+        function startSession() {
+          var body;
+          try {
+            body = currentFormRequest();
+          } catch (err) {
+            sessionStatusEl.textContent = err.message;
+            return;
+          }
+          btnStartSession.disabled = true;
+          sessionStatusEl.textContent = 'Creating session...';
+          apiFetch('/api/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          })
+            .then(function (session) {
+              currentSession = session;
+              renderSessionStatus();
+              stopPolling();
+              pollSession();
+            })
+            .catch(function (err) {
+              sessionStatusEl.textContent = 'Session creation failed: ' + err.message;
+            })
+            .finally(function () {
+              btnStartSession.disabled = false;
+            });
+        }
+
+        function stopSession() {
+          if (!currentSession) return Promise.resolve();
+          stopPolling();
+          return apiFetch('/api/sessions/' + currentSession.id, { method: 'DELETE' })
+            .catch(function (err) {
+              console.warn('[server-panel] stop failed:', err.message);
+            })
+            .then(function () {
+              currentSession = null;
+              renderSessionStatus();
+            });
+        }
+
+        btnStartSession.addEventListener('click', startSession);
+        btnStopSession.addEventListener('click', stopSession);
+        btnRestartSession.addEventListener('click', function () {
+          stopSession().then(startSession);
+        });
+
+        btnUseInPlayer.addEventListener('click', function () {
+          if (!currentSession || currentSession.status !== 'live') return;
+          form.hostname.value = srvHost.value;
+          form.port.value = srvPort.value;
+          // currentSession.channel is the 0-based wire value (see
+          // src/server/services/sessionStore.ts) — the Player panel's
+          // Channel field / <rtsp-over-websocket> `channel` attribute is
+          // 1-based (RtspClient.ts subtracts 1 before building the RTSP
+          // request URI), so convert back here.
+          form.channel.value = String(currentSession.channel + 1);
+          form.username.value = currentSession.request.username;
+          form.password.value = document.getElementById('yt-password').value;
+          form.device.value = 'nvr';
+          form.profile.value = currentSession.request.videoCodec;
+          activateTab('player');
+        });
+
+        // best-effort initial capability load so the codec dropdowns show
+        // availability without requiring an extra click; failures are silent
+        // (e.g. src/server not running yet) — the manual refresh button and
+        // the 422 error at session-start time cover that case either way.
+        loadCapabilities();
+      })();
+    </script>
+  </body>
+</html>

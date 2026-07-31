@@ -1,0 +1,147 @@
+{
+    "name": "@melchi45/rtsp-over-websocket",
+    "version": "3.2.15",
+    "author": {
+        "name": "Youngho Kim",
+        "email": "melchi45@gmail.com",
+        "url": "https://github.com/melchi45"
+    },
+    "description": "RTSP-over-WebSocket player and bridge server components",
+    "//": "https://docs.npmjs.com/files/package.json#git-urls-as-dependencies",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/melchi45/rtsp-over-websocket.git"
+    },
+    "bugs": {
+        "url": "http://ctf.ep.hanwha.com/ctf/tracker/getKanbanBoard/projects.web_mobile_technical_part/tracker"
+    },
+    "license": "Hanwha Vision Co., Ltd. Software License.",
+    "homepage": "http://ctf.ep.hanwha.com/sf/projects/web_mobile_technical_part/",
+    "main": "dist/player/rtsp-over-websocket.esm.js",
+    "files": [
+        "dist"
+    ],
+    "publishConfig": {
+        "registry": "https://npm.pkg.github.com/melchi45"
+    },
+    "dependencies": {
+        "crypto-js": "^4.1.1",
+        "express": "^4.22.2",
+        "file-saver": "^2.0.5",
+        "log4javascript": "^1.4.16",
+        "moment-timezone": "^0.5.43",
+        "sylvester": "^0.0.21",
+        "three": "0.84.0"
+    },
+    "devDependencies": {
+        "@babel/core": "^7.21.8",
+        "@babel/node": "^7.20.7",
+        "@babel/plugin-proposal-class-properties": "^7.18.6",
+        "@babel/plugin-proposal-export-default-from": "^7.18.10",
+        "@babel/plugin-proposal-export-namespace-from": "^7.18.9",
+        "@babel/plugin-syntax-dynamic-import": "^7.8.3",
+        "@babel/plugin-transform-arrow-functions": "^7.21.5",
+        "@babel/plugin-transform-classes": "^7.21.0",
+        "@babel/plugin-transform-for-of": "^7.21.5",
+        "@babel/plugin-transform-modules-commonjs": "^7.21.5",
+        "@babel/preset-env": "^7.21.5",
+        "@babel/preset-react": "^7.18.6",
+        "@types/crypto-js": "^4.2.2",
+        "@types/express": "^4.17.25",
+        "@types/file-saver": "^2.0.7",
+        "@types/moment-timezone": "^0.5.30",
+        "@types/node": "^22.0.0",
+        "@types/three": "0.84.31",
+        "@types/ws": "^8.18.1",
+        "@webcomponents/custom-elements": "^1.6.0",
+        "@webcomponents/webcomponentsjs": "^2.8.0",
+        "babel-core": "^6.26.3",
+        "babel-loader": "^9.1.2",
+        "babel-minify": "^0.5.2",
+        "babel-plugin-dynamic-import-node-babel-7": "^2.0.7",
+        "babel-plugin-static-fs": "latest",
+        "babelify": "latest",
+        "browserify": "^17.0.0",
+        "custom-event-polyfill": "^1.0.7",
+        "grunt": "^1.6.1",
+        "grunt-babel": "^8.0.0",
+        "grunt-browserify": "^6.0.0",
+        "grunt-cli": "^1.4.3",
+        "grunt-connect-proxy3": "^4.0.0",
+        "grunt-contrib-clean": "^2.0.1",
+        "grunt-contrib-compress": "^2.0.0",
+        "grunt-contrib-concat": "^2.1.0",
+        "grunt-contrib-connect": "^3.0.0",
+        "grunt-contrib-copy": "^1.0.0",
+        "grunt-contrib-cssmin": "^5.0.0",
+        "grunt-contrib-htmlmin": "^3.1.0",
+        "grunt-contrib-jshint": "^3.2.0",
+        "grunt-contrib-obfuscator": "^8.0.0",
+        "grunt-contrib-uglify-es": "^3.3.0",
+        "grunt-contrib-watch": "^1.1.0",
+        "grunt-jsdoc": "^2.4.1",
+        "grunt-version": "^3.0.0",
+        "grunt-webpack": "^5.0.0",
+        "jsdom": "^25.0.0",
+        "jshint": "^2.13.6",
+        "load-grunt-tasks": "^5.1.0",
+        "node-gyp": "^9.3.1",
+        "reactify": "latest",
+        "scriptjs": "^2.5.9",
+        "typescript": "^5.7.0",
+        "uglify-js": "^3.17.4",
+        "vite": "^6.0.0",
+        "vitest": "^3.0.0",
+        "webpack": "^5.82.0",
+        "ws": "^8.13.0"
+    },
+    "engines": {
+        "node": ">=0.8.0"
+    },
+    "overrides": {
+        "rollup": "npm:@rollup/wasm-node@4.62.3"
+    },
+    "scripts": {
+        "build:player": "cd src/player && tsc -b && vite build && cd ../.. && npm run build:demo",
+        "build:demo": "mkdir -p dist && cp src/index.html dist/index.html",
+        "build:server": "cd src/server && tsc -b",
+        "test:player": "cd src/player && vitest run",
+        "test:player:watch": "cd src/player && vitest",
+        "start:player": "node scripts/serve-dist.js",
+        "start:server": "npm run build:server && node dist/server/index.js",
+        "start:server:http": "npm run build:server && node dist/server/index.js --http",
+        "start:server:https": "npm run build:server && node dist/server/index.js --https",
+        "stop": "node scripts/stop-server.js"
+    },
+    "browserify": {
+        "transform": [
+            [
+                "babelify",
+                {
+                    "presets": [
+                        "@babel/preset-env"
+                    ],
+                    "plugins": [
+                        "static-fs"
+                    ]
+                }
+            ]
+        ]
+    },
+    "settings": {
+        "prefix": "rtsp-over-websocket",
+        "elements": [
+            "player"
+        ],
+        "browsers": "last 1 version"
+    },
+    "release_version": "0.2.0a.0a",
+    "proj_type": "mob-client",
+    "module_location": "/app/kind/common_modules/",
+    "template_location": "/app/kind/templates/",
+    "modules": {},
+    "templates": {},
+    "proj_root": "",
+    "cert": "y",
+    "proj_name": "kind_client_poc_ua"
+}

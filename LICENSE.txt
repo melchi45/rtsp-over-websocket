@@ -1,0 +1,21 @@
+							Hanwha Vision License
+                           Version 1.0, January 1977
+                        https://www.hanwhavision.com/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+Copyright (c) 2018 Hanwha Vision Co., Ltd.
+Licensed to the Hanwha Vision Software Foundation under one or more
+contributor license agreements.  See the NOTICE file distributed with
+this work for additional information regarding copyright ownership.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Total Plugin-Free Web Browser Viewer Framework
+https://www.hanwhavision.com
+
+Security Solution Development Division / Web Software Development Team

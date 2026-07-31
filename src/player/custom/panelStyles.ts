@@ -1,0 +1,453 @@
+/**
+ * CSS text blocks injected into `document.head` by RTSPOverWebSocket's
+ * DOM-builder methods (statistics/network-state/context-menu/gesture-overlay
+ * panels). Extracted verbatim from the legacy player's custom-element source's
+ * inline `[appendStyle](...)` string literals purely to keep
+ * RTSPOverWebSocket.ts's line count manageable — no text was altered, only
+ * lifted into named constants.
+ */
+
+export const CHANNEL_DIV_STYLE =
+  '.channel_div {\r\n' +
+  'display: none;\r\n' +
+  'background: rgba(28,28,28,0.5);\r\n' +
+  'border: 5px;\r\n' +
+  'border-radius: 4px;\r\n' +
+  'color: #fff;\r\n' +
+  'left: 10px;\r\n' +
+  'top: 10px;\r\n' +
+  'position: absolute;\r\n' +
+  'z-index: 1000;\r\n' +
+  'float: right;\r\n' +
+  'border: 2px solid #003B62;\r\n' +
+  '}';
+
+export const STATISTICS_STYLE =
+  '.statistics {\r\n' +
+  'background: rgba(28,28,28,0.5);\r\n' +
+  'border: 5px;\r\n' +
+  'border-radius: 4px;\r\n' +
+  'color: #fff;\r\n' +
+  'right: 10px;\r\n' +
+  'bottom: 30px;\r\n' +
+  'position: absolute;\r\n' +
+  'z-index: 1000;\r\n' +
+  'min-width: 25em;\r\n' +
+  'min-height: 14em;\r\n' +
+  '}';
+
+export const STATISTICS_DIV_STYLE =
+  '.statistics div{\r\n' +
+  'border: 0px;\r\n' +
+  'margin: 0px;\r\n' +
+  'padding: 0px;\r\n' +
+  'background: transparent;\r\n' +
+  'font-size: 10px;\r\n' +
+  'font-family: arial;\r\n' +
+  'text-align: right;\r\n' +
+  'border-radius: 4px;\r\n' +
+  'color: #FFF;\r\n' +
+  'left: 1px;\r\n' +
+  'position: absolute;\r\n' +
+  'z-index: 65;\r\n' +
+  'min-width: 8em;\r\n' +
+  'min-height: 1em;\r\n' +
+  '}';
+
+export const STATISTICS_SPAN_STYLE =
+  '.statistics span{\r\n' +
+  'border: 0px;\r\n' +
+  'margin: 0px;\r\n' +
+  'padding: 0px;\r\n' +
+  'background: transparent;\r\n' +
+  'font-size: 10px;\r\n' +
+  'font-family: arial;\r\n' +
+  'text-align: left;\r\n' +
+  'border-radius: 4px;\r\n' +
+  'color: #FFF;\r\n' +
+  'left: 110px;\r\n' +
+  'position: absolute;\r\n' +
+  'z-index: 65;\r\n' +
+  'min-width: 25em;\r\n' +
+  'min-height: 1em;\r\n' +
+  '}';
+
+export const NETWORK_STATE_WRAPPER_STYLE =
+  // reference from: https://codepen.io/anon/pen/RzJNqM
+  '.network_state_wrapper {\r\n' +
+  'bottom: 10px;\r\n' +
+  'right: 1px;\r\n' +
+  'display: flex;\r\n' +
+  'justify-content: center;\r\n' +
+  'align-items: center;\r\n' +
+  'position: absolute;\r\n' +
+  'transition: transform .5s;\r\n' +
+  '}';
+
+export const BALL_STYLE = '.ball {\r\n' + 'width: 10px;\r\n' + 'height: 10px;\r\n' + 'border-radius: 3px;\r\n' + 'margin: 0 4px;\r\n' + '}';
+
+export const BALL_HOVER_STYLE = '.ball:hover {\r\n' + 'transform: scale(1.5);\r\n' + 'z-index: 1000;\r\n' + '}';
+
+function networkDotKeyframe(prefix: '-webkit-' | '-moz-', name: string, startRgb: string, endShadowRgb: string, startShadowRgb: string): string {
+  return (
+    `@${prefix}keyframes ${name} {\r\n` +
+    '  0% {\r\n' +
+    `    background: rgba(${startRgb},1);\r\n` +
+    `    box-shadow: inset 0px 0px 10px 2px rgba(${startShadowRgb},0.5),\r\n` +
+    `                      0px 0px 40px 2px rgba(${endShadowRgb},1);\r\n` +
+    '  }\r\n' +
+    '  100% {\r\n' +
+    `    background: rgba(${startRgb},0);\r\n` +
+    `    box-shadow: inset 0px 0px 10px 2px rgba(${startShadowRgb},0.5),\r\n` +
+    `                      0px 0px 30px 2px rgba(${endShadowRgb},0.3);\r\n` +
+    '  }\r\n' +
+    '}'
+  );
+}
+
+// Each pair below is ported verbatim (including each color's own inline typos,
+// e.g. darkred's "128,2,2" shadow / "128,20,2" glow, green's asymmetric
+// "69,128,69"/"60,128,60" pairing, and moz-red's stray "61289,90,69" digit
+// group) — these keyframes are cosmetic-only and never asserted on by any
+// caller, so the exact RGB text is preserved rather than "corrected".
+export const NETWORK_DOT_KEYFRAMES: Record<string, { webkit: string; moz: string }> = {
+  darkred: {
+    webkit: networkDotKeyframe('-webkit-', 'darkred', '150,0,0', '128,20,2', '128,2,2'),
+    moz: networkDotKeyframe('-moz-', 'darkred', '150,0,0', '128,20,2', '128,2,2')
+  },
+  red: {
+    webkit: networkDotKeyframe('-webkit-', 'red', '255,0,0', '255,84,60', '255,90,69'),
+    moz:
+      '@-moz-keyframes red {\r\n' +
+      '  0% {\r\n' +
+      '    background: rgba(255,0,0,1);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(128,90,69,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(128,84,60,1);\r\n' +
+      '  }\r\n' +
+      '  100% {\r\n' +
+      '    background: rgba(255,0,0,0);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(61289,90,69,0.5),\r\n' +
+      '                      0px 0px 30px 2px rgba(128,84,60,0.3);\r\n' +
+      '  }\r\n' +
+      '}'
+  },
+  lightgreen: {
+    webkit:
+      '@-webkit-keyframes lightgreen {\r\n' +
+      '  0% {\r\n' +
+      '    background: rgba(197,245,66,1);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(132,245,66,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(132,181,66,1);\r\n' +
+      '  }\r\n' +
+      '  100% {\r\n' +
+      '    background: rgba(197,245,66,0);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(132,155,108,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(132,181,66,1);\r\n' +
+      '  }\r\n' +
+      '}',
+    moz:
+      '@-moz-keyframes lightgreen {\r\n' +
+      '  0% {\r\n' +
+      '    background: rgba(197,245,66,1);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(132,245,66,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(132,181,66,1);\r\n' +
+      '  }\r\n' +
+      '  100% {\r\n' +
+      '    background: rgba(197,245,66,0);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(132,155,108,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(132,181,66,1);\r\n' +
+      '  }\r\n' +
+      '}'
+  },
+  yellowgreen: {
+    webkit:
+      '@-webkit-keyframes yellowgreen {\r\n' +
+      '  0% {\r\n' +
+      '    background: rgba(227,252,114,1);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(241,250,200,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(241,250,190,1);\r\n' +
+      '  }\r\n' +
+      '  100% {\r\n' +
+      '    background: rgba(227,252,114,0);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(241,250,200,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(241,250,190,1);\r\n' +
+      '  }\r\n' +
+      '}',
+    moz:
+      '@-moz-keyframes yellowgreen {\r\n' +
+      '  0% {\r\n' +
+      '    background: rgba(227,252,114,1);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(241,250,200,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(241,250,190,1);\r\n' +
+      '  }\r\n' +
+      '  100% {\r\n' +
+      '    background: rgba(227,252,114,0);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(132,250,200,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(241,250,190,1);\r\n' +
+      '  }\r\n' +
+      '}'
+  },
+  green: {
+    webkit: networkDotKeyframe('-webkit-', 'green', '0,255,0', '60,128,60', '69,128,69'),
+    moz: networkDotKeyframe('-moz-', 'green', '0,255,0', '60,128,60', '69,128,69')
+  },
+  yellow: {
+    webkit: networkDotKeyframe('-webkit-', 'yellow', '255,255,0', '128,128,60', '128,128,69'),
+    moz:
+      '@-moz-keyframes yellow {\r\n' +
+      '  0% {\r\n' +
+      '    background: rgba(255,255,0,1);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(128,128,69,0.5),\r\n' +
+      '                      0px 0px 40px 2px rgba(128,128,60,1);\r\n' +
+      '  }\r\n' +
+      '  100% {\r\n' +
+      // NOTE: real legacy bug preserved — the "100%" background here is
+      // "rgba(0,255,0,0)" (green), copy-pasted from the green keyframe,
+      // not "rgba(255,255,0,0)" like every other color's own 100% stop.
+      '    background: rgba(0,255,0,0);\r\n' +
+      '    box-shadow: inset 0px 0px 10px 2px rgba(128,128,69,0.5),\r\n' +
+      '                      0px 0px 30px 2px rgba(128,128,60,0.3);\r\n' +
+      '  }\r\n' +
+      '}'
+  },
+  orange: {
+    webkit: networkDotKeyframe('-webkit-', 'orange', '243,115,33', '251,181,132', '248,155,108'),
+    moz: networkDotKeyframe('-moz-', 'orange', '243,115,33', '251,181,132', '248,155,108')
+  }
+};
+
+function darkBallAnimationStyle(name: string): string {
+  return `.${name} {\r\n` + 'background-color: #666666;\r\n' + `-webkit-animation: ${name} 0.5s alternate infinite;` + `-moz-animation: ${name} 0.5s alternate infinite;` + '}';
+}
+
+export const DARK_BALL_ANIMATION_STYLES: Record<'darkred' | 'red' | 'yellow' | 'lightgreen' | 'yellowgreen', string> = {
+  darkred: darkBallAnimationStyle('darkred'),
+  red: darkBallAnimationStyle('red'),
+  yellow: darkBallAnimationStyle('yellow'),
+  lightgreen: darkBallAnimationStyle('lightgreen'),
+  yellowgreen: darkBallAnimationStyle('yellowgreen')
+};
+
+export const CONTEXT_MENU_STYLE =
+  '.menu {\r\n' +
+  'width: 150px;\r\n' +
+  'margin:0px;\r\n' +
+  'margin-top:1px;\r\n' +
+  'padding-left:1px;\r\n' +
+  'padding-right:1px;\r\n' +
+  'padding-bottom:1px;\r\n' +
+  'z-index: 1000;\r\n' +
+  'box-shadow: 0 4px 5px 3px rgba(0, 0, 0, 0.2);\r\n' +
+  'position: absolute;\r\n' +
+  'display: none;\r\n' +
+  'transition: 0.2s display ease-in;\r\n' +
+  '}';
+
+export const CONTEXT_MENU_OPTIONS_STYLE = '.menu .menu-options {\r\n' + '  list-style: none;\r\n' + '  padding: 10px 1px 1px 1px;\r\n' + '  z-index: 1000;\r\n' + '}';
+
+export const CONTEXT_MENU_OPTION_STYLE =
+  '.menu .menu-options .menu-option {\r\n' +
+  '    color: #F0F0F0;\r\n' +
+  '    z-index: 10000;\r\n' +
+  '    font-size: 12px;\r\n' +
+  '    padding: 5px 20px 5px 10px;\r\n' +
+  '    cursor: pointer;\r\n' +
+  '    font-style: normal;\r\n' +
+  '    font-family: verdana;\r\n' +
+  '    font-color: white;\r\n' +
+  '}';
+
+export const CONTEXT_MENU_OPTION_HOVER_STYLE = '.menu .menu-options .menu-option:hover{\r\n' + '    color: #303030;\r\n' + 'background: rgba(0, 0, 0, 0.2);\r\n' + '}';
+
+export const CONTEXT_MENU_BUTTON_STYLE =
+  '.menu .menu-options .button {\r\n' +
+  'background: grey;\r\n' +
+  'border: none;\r\n' +
+  '.next{\r\n' +
+  '  color:green;\r\n' +
+  '}\r\n' +
+  '&[disabled="false"]:hover{\r\n' +
+  '  .next{\r\n' +
+  '    color: red;\r\n' +
+  '    animation: move 0.5s;\r\n' +
+  '    animation-iteration-count: 2;\r\n' +
+  '  }\r\n' +
+  '}\r\n' +
+  '}';
+
+export const CONTEXT_MENU_MOVE_KEYFRAMES =
+  '@keyframes move {\r\n' +
+  'from{\r\n' +
+  '  transform: translate(0%);\r\n' +
+  '}\r\n' +
+  '50%{\r\n' +
+  '  transform: translate(-40%);\r\n' +
+  '}\r\n' +
+  'to{\r\n' +
+  '  transform: transform(0%);\r\n' +
+  '}\r\n' +
+  '}';
+
+export const VIDEO_CONTAINER_STYLE = '.video-container {\r\n' + 'position: absolute;\r\n' + 'overflow: hidden;\r\n' + 'width: 100%;\r\n' + 'height: 100%;\r\n' + '}';
+
+export const VIDEO_FORWARD_NOTIFY_STYLE =
+  '.video-container .video-forward-notify{\r\n' +
+  'text-align: center;\r\n' +
+  'width:100%;\r\n' +
+  'height:200%;\r\n' +
+  'border-radius:100% 0 0 100%;\r\n' +
+  'position: absolute;\r\n' +
+  'display:flex;\r\n' +
+  'flex-direction: row;\r\n' +
+  'right: -50%;\r\n' +
+  'top:-50%;\r\n' +
+  '}';
+
+export const VIDEO_FORWARD_NOTIFY_ICON_STYLE =
+  '.video-container .video-forward-notify .icon{\r\n' + 'justify-content:flex-start;\r\n' + 'align-items:center;\r\n' + 'margin: auto 0 auto 15%;\r\n' + 'color: rgba(255,255,255, 1);\r\n' + '}';
+
+export const VIDEO_REWIND_NOTIFY_STYLE =
+  '.video-container .video-rewind-notify{\r\n' +
+  'text-align: center;\r\n' +
+  'width:100%;\r\n' +
+  'height:200%;\r\n' +
+  'border-radius:0 100% 100% 0;\r\n' +
+  'position: absolute;\r\n' +
+  'display:flex;\r\n' +
+  'flex-direction: row;\r\n' +
+  'left: -50%;\r\n' +
+  'top:-50%;\r\n' +
+  '}';
+
+export const VIDEO_REWIND_NOTIFY_ICON_STYLE =
+  '.video-container .video-rewind-notify .icon{\r\n' + 'justify-content:flex-start;\r\n' + 'align-items:center;\r\n' + 'margin: auto 0 auto 75%;\r\n' + 'color: rgba(255,255,255, 1);\r\n' + '}';
+
+export const VIDEO_CONTAINER_ICON_I_STYLE = '.video-container .icon i{\r\n' + 'display:block;\r\n' + '}';
+
+export const VIDEO_CONTAINER_SPAN_STYLE = '.video-container span{\r\n' + 'font-size:12px;\r\n' + '}';
+
+export const VIDEO_CONTAINER_NOTIFICATION_STYLE =
+  '.video-container .notification{\r\n' +
+  'transition: background 0.8s;\r\n' +
+  'background: rgba(200,200,200,.4) radial-gradient(circle, transparent 1%, rgba(200,200,200,.4) 1%) center/15000%;\r\n' +
+  'pointer-events:none;\r\n' +
+  'display: none;\r\n' +
+  '}';
+
+export const VIDEO_CONTAINER_I_STYLE = '.video-container i{\r\n' + 'font-style:normal;\r\n' + '}';
+
+export const VIDEO_CONTAINER_SPAN_FONT_STYLE = '.video-container span{\r\n' + 'font-size:12px;\r\n' + '}';
+
+export const VIDEO_CONTAINER_ANIMATE_IN_STYLE = '.video-container .animate-in{\r\n' + 'display:flex;\r\n' + 'animation: ripple 1s forwards;\r\n' + '}';
+
+export const VIDEO_CONTAINER_ANIMATE_IN_I_STYLE = '.video-container .animate-in i{\r\n' + 'display:block;\r\n' + '}';
+
+export const VIDEO_CONTAINER_ANIMATE_IN_FORWARD_I_PADDING_STYLE = '.video-container .animate-in .forward i{\r\n' + 'padding-bottom:2px;\r\n' + '}';
+
+export const VIDEO_CONTAINER_ANIMATE_IN_FORWARD_I_ANIM_STYLE = '.video-container .animate-in .forward i{\r\n' + 'animation: fadeInLeft 0.7s;\r\n' + '}';
+
+export const VIDEO_CONTAINER_ANIMATE_IN_REWIND_I_ANIM_STYLE = '.video-container .animate-in .rewind i{\r\n' + 'animation: fadeInRight 0.7s;\r\n' + '}';
+
+export const RIPPLE_KEYFRAMES =
+  '@keyframes ripple {\r\n' +
+  '0%   {\r\n' +
+  '  background-color: rgba(200,200,200,.4);\r\n' +
+  '  background-size: 100%;\r\n' +
+  '  transition: background 0s;\r\n' +
+  '  opacity:1;\r\n' +
+  '}\r\n' +
+  '100% { \r\n' +
+  'transition: background 0.8s;\r\n' +
+  'background: rgba(200,200,200,.4) radial-gradient(circle, transparent 1%, rgba(200,200,200,.4) 1%) center/15000%;\r\n' +
+  'display: flex;\r\n' +
+  '  opacity:0;\r\n' +
+  '}\r\n' +
+  '}';
+
+export const FADE_IN_LEFT_KEYFRAMES =
+  '@keyframes fadeInLeft {\r\n' +
+  '0% {\r\n' +
+  '  opacity: 0;\r\n' +
+  '  transform: translateX(-20px);\r\n' +
+  '}\r\n' +
+  '100% {\r\n' +
+  '  opacity: 1;\r\n' +
+  '  transform: translateX(0);\r\n' +
+  '}\r\n' +
+  '}';
+
+export const FADE_IN_RIGHT_KEYFRAMES =
+  '@keyframes fadeInRight {\r\n' +
+  '0% {\r\n' +
+  '  opacity: 0;\r\n' +
+  '  transform: translateX(0px);\r\n' +
+  '}\r\n' +
+  '100% {\r\n' +
+  '  opacity: 1;\r\n' +
+  '  transform: translateX(-20px);\r\n' +
+  '}\r\n' +
+  '}';
+
+export function minimapStyle(styleHeight: number): string {
+  return (
+    '.minimap {\r\n' +
+    'position: absolute;\r\n' +
+    'background: rgba(28,28,28,0.5);\r\n' +
+    'border: 2px dotted #ff6633;\r\n' +
+    'border-radius: 4px;\r\n' +
+    'color: #fff;\r\n' +
+    'right: 10px;\r\n' +
+    'top: 10px;\r\n' +
+    'width: 150px;\r\n' +
+    `height: ${styleHeight}px;\r\n` +
+    '}'
+  );
+}
+
+// Legacy bug preserved: both the "@-webkit-keyframes fadeOut" check branch AND
+// the "@keyframes fadeOut" check branch append the SAME webkit-prefixed rule
+// text (copy-paste of the first block) — the unprefixed `@keyframes fadeOut`
+// is never actually defined. See updateMetaImage()'s doc comment.
+export const FADE_OUT_KEYFRAMES_WEBKIT = '@-webkit-keyframes fadeOut {\r\n' + '0% {opacity: 1;}\r\n' + '100% {opacity: 0;}\r\n' + '}';
+
+export const FADE_OUT_STYLE = '.fadeOut {\r\n' + '-webkit-animation-name: fadeOut;\r\n' + 'animation-name: fadeOut;\r\n' + '}';
+
+export function metaImageStyle(styleWidth: number, styleHeight: number): string {
+  return (
+    '.metaImage {\r\n' +
+    'position: absolute;\r\n' +
+    'background: rgba(28,28,28,0.5);\r\n' +
+    'border: 2px dotted #ff6633;\r\n' +
+    'border-radius: 4px;\r\n' +
+    'color: #fff;\r\n' +
+    'right: 10px;\r\n' +
+    'top: 10px;\r\n' +
+    '-webkit-animation-duration: 5s;animation-duration: 5s;\r\n' +
+    '-webkit-animation-fill-mode: both;animation-fill-mode: both;\r\n' +
+    `width: ${styleWidth}px;\r\n` +
+    `height: ${styleHeight}px;\r\n` +
+    '}'
+  );
+}
+
+export const LOADER_STYLE =
+  '.loader {\r\n' +
+  'position: absolute;\r\n' +
+  'top: calc(50% - 25px);\r\n' +
+  'left: calc(50% - 25px);\r\n' +
+  'border: 5px solid #000000;\r\n' +
+  'border-radius: 50%;\r\n' +
+  'border-top: 5px solid #F37321;\r\n' +
+  'width: 50px;\r\n' +
+  'height: 50px;\r\n' +
+  '-webkit-animation: spin 2s linear infinite;\r\n' +
+  'animation: spin 2s linear infinite;\r\n' +
+  '}\r\n' +
+  '@-webkit-keyframes spin {\r\n' +
+  '0% { -webkit-transform: rotate(0deg); }\r\n' +
+  '100% { -webkit-transform: rotate(360deg); }\r\n' +
+  '}\r\n' +
+  '@keyframes spin {\r\n' +
+  '0% { transform: rotate(0deg); }\r\n' +
+  '100% { transform: rotate(360deg); }\r\n' +
+  '}';

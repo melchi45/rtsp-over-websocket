@@ -1,0 +1,16 @@
+.claude/settings.local.json
+package-lock.json
+node_modules
+# Self-signed dev-only TLS cert/key material — auto-regenerated on demand
+# (scripts/serve-dist.js's ensureSelfSignedCert(), MediaMTX's own MoQ
+# module), not meant to be checked in. Private keys don't belong in git
+# even when they're just local dev certs.
+/certs/
+/auto.crt
+/auto.key
+# Everything in dist/ is build output — dist/player/*.js from
+# `npm run build:player`'s vite build, dist/index.html copied from
+# src/index.html by that same script's build:demo step, dist/server/**
+# from `npm run build:server`'s tsc. Nothing under dist/ is hand-maintained
+# there directly (see src/index.html for the demo page source).
+/dist/
