@@ -1,0 +1,35 @@
+name: Publish player package
+
+# package.json's publishConfig.registry already points at GitHub Packages
+# (npm.pkg.github.com/melchi45), so this publishes there using the
+# workflow's own GITHUB_TOKEN — no extra secret needs to be configured.
+# Bump the "version" field in package.json before tagging/releasing;
+# npm publish fails outright if that version is already published.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@melchi45'
+
+      - run: npm install
+
+      - run: npm run build:player
+
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
