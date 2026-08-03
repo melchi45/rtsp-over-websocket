@@ -105,7 +105,7 @@ export class Talk {
             new RTSPOverWebSocketError({
               channelId: this.channelId,
               errorCode: fromHex('0x0211'),
-              place: 'Talk.js:initAudioOut',
+              place: 'Talk.ts:initAudioOut',
               message: 'Talk service unavailable, Microphone device not found.'
             })
           );

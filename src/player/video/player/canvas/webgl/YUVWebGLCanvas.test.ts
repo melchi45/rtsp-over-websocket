@@ -3,7 +3,7 @@ import { YUVWebGLCanvas } from './YUVWebGLCanvas';
 import { Size } from '../../../../util/Size';
 import { createFakeWebGLContext, createFakeCanvas } from './testSupport/fakeWebGLContext';
 
-describe('YUVWebGLCanvas contract tests (the legacy player’s Video/Player/Canvas/webglCanvas.js — YUVWebGLCanvas)', () => {
+describe('YUVWebGLCanvas contract tests (the legacy player’s Video/Player/Canvas/webglCanvas — YUVWebGLCanvas)', () => {
   it('constructor creates 3 textures (Y at full size, U/V at half size via getHalfSize())', () => {
     const canvas = createFakeCanvas();
     const gl = createFakeWebGLContext(canvas);

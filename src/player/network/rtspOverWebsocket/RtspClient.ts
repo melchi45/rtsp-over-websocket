@@ -321,7 +321,7 @@ export class RtspClient {
         errorCode: fromHex('0x0006'),
         type: 'rtsp',
         description: 'tranport is not exist',
-        place: 'RtspClient.js:534',
+        place: 'RtspClient.ts:534',
         channelId: this.channelId
       });
       return null;
@@ -490,7 +490,7 @@ export class RtspClient {
               this.errorCallbackFunc({
                 channelId: this.channelId,
                 errorCode: fromHex('0x0210'),
-                place: 'RtspClient.js:_send',
+                place: 'RtspClient.ts:_send',
                 message: 'RTSP command control error'
               });
             }
@@ -523,7 +523,7 @@ export class RtspClient {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0210'),
-        place: 'rtspClient.js:_send()',
+        place: 'RtspClient.ts:_send()',
         message: 'RTSP command control error'
       });
     }
@@ -924,7 +924,7 @@ export class RtspClient {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0403'),
-        place: 'rtspClient.js:404',
+        place: 'RtspClient.ts:404',
         message:
           'The sunapi client & password is not exist. If you want to connect deivce, you have to put the user password or sunapi client for device connect'
       });
@@ -951,7 +951,7 @@ export class RtspClient {
       errorCode: fromHex(errorHexCode),
       oldErrorCode,
       currentState: this.currentState,
-      place: 'RtspClient.js:formDigestAuthHeader',
+      place: 'RtspClient.ts:formDigestAuthHeader',
       channelId: this.channelId
     });
 
@@ -1007,7 +1007,7 @@ export class RtspClient {
                 errorCode: fromHex('0x0609'),
                 oldErrorCode: '990',
                 description: 'end of backup',
-                place: 'RtspClient.js:checkIsAvaliablePlayback',
+                place: 'RtspClient.ts:checkIsAvaliablePlayback',
                 channelId: this.channelId
               });
               return;
@@ -1058,7 +1058,7 @@ export class RtspClient {
                     errorCode: fromHex('0x0209'),
                     oldErrorCode: '999',
                     description: 'no rtsp response',
-                    place: 'RtspClient.js:515',
+                    place: 'RtspClient.ts:515',
                     channelId: this.channelId
                   });
                   const videoSession = this.rtpClient!.getRtpSessionWithType('video');
@@ -1082,7 +1082,7 @@ export class RtspClient {
                 errorCode: fromHex('0x0209'),
                 oldErrorCode: '999',
                 description: 'no rtsp response',
-                place: 'RtspClient.js:525',
+                place: 'RtspClient.ts:525',
                 channelId: this.channelId
               });
             }
@@ -1091,7 +1091,7 @@ export class RtspClient {
               errorCode: fromHex('0x0006'),
               type: 'rtsp',
               description: 'tranport is not exist',
-              place: 'RtspClient.js:534',
+              place: 'RtspClient.ts:534',
               channelId: this.channelId
             });
           }
@@ -1148,7 +1148,7 @@ export class RtspClient {
         errorCode: fromHex('0x020F'),
         oldErrorCode: '999',
         description: 'rtsp response is not string type, it has error.',
-        place: 'RtspClient.js:RtspResponseHandler',
+        place: 'RtspClient.ts:RtspResponseHandler',
         channelId: this.channelId
       });
       return;
@@ -1166,7 +1166,7 @@ export class RtspClient {
         errorCode: fromHex('0x020F'),
         oldErrorCode: '999',
         description: 'rtsp sequence number is not matched. it has error',
-        place: 'RtspClient.js:RtspResponseHandler',
+        place: 'RtspClient.ts:RtspResponseHandler',
         channelId: this.channelId
       });
     } else {
@@ -1188,7 +1188,7 @@ export class RtspClient {
           errorCode: fromHex('0x0209'),
           oldErrorCode: '999',
           description: 'no rtsp response',
-          place: 'RtspClient.js:RtspResponseHandler',
+          place: 'RtspClient.ts:RtspResponseHandler',
           channelId: this.channelId
         });
       }
@@ -1210,7 +1210,7 @@ export class RtspClient {
           rtspCode: status.getStatusCode(),
           description: 'RTSP Play Streaming: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
           name: status.getName(),
-          place: 'RtspClient.js:RtspResponseHandler',
+          place: 'RtspClient.ts:RtspResponseHandler',
           channelId: this.channelId
         });
         if (this.transport) {
@@ -1240,7 +1240,7 @@ export class RtspClient {
         rtspCode: status.getStatusCode(),
         description: 'RTSP error code: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
         name: status.getName(),
-        place: 'RtspClient.js:RtspResponseHandler',
+        place: 'RtspClient.ts:RtspResponseHandler',
         channelId: this.channelId
       });
     } else if (rtspResponseMsg.ResponseCode === 560) {
@@ -1250,7 +1250,7 @@ export class RtspClient {
         rtspCode: status.getStatusCode(),
         description: 'RTSP error code: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
         name: status.getName(),
-        place: 'RtspClient.js:RtspResponseHandler',
+        place: 'RtspClient.ts:RtspResponseHandler',
         channelId: this.channelId
       });
     } else if (rtspResponseMsg.ResponseCode === 404) {
@@ -1261,7 +1261,7 @@ export class RtspClient {
         rtspCode: status.getStatusCode(),
         description: 'RTSP error code: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
         name: status.getName(),
-        place: 'RtspClient.js:RtspResponseHandler',
+        place: 'RtspClient.ts:RtspResponseHandler',
         channelId: this.channelId
       });
     } else if (rtspResponseMsg.ResponseCode === 490) {
@@ -1272,7 +1272,7 @@ export class RtspClient {
         rtspCode: status.getStatusCode(),
         description: 'RTSP error code: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
         name: status.getName(),
-        place: 'RtspClient.js:RtspResponseHandler',
+        place: 'RtspClient.ts:RtspResponseHandler',
         channelId: this.channelId
       });
     } else {
@@ -1282,7 +1282,7 @@ export class RtspClient {
         rtspCode: status.getStatusCode(),
         description: 'RTSP error code: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
         name: status.getName(),
-        place: 'RtspClient.js:RtspResponseHandler',
+        place: 'RtspClient.ts:RtspResponseHandler',
         channelId: this.channelId
       });
     }
@@ -1303,7 +1303,7 @@ export class RtspClient {
       errorCode: fromHex('0x020A'),
       oldErrorCode: '504',
       description: 'Talk Service Unavilable',
-      place: 'RtspClient.js:RtspResponseHandler',
+      place: 'RtspClient.ts:RtspResponseHandler',
       channelId: this.channelId
     });
 
@@ -1358,7 +1358,7 @@ export class RtspClient {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x0210'),
-          place: 'rtspClient.js:RtspResponseHandler',
+          place: 'RtspClient.ts:RtspResponseHandler',
           message: 'RTSP command control error'
         });
       }
@@ -1437,7 +1437,7 @@ export class RtspClient {
           this.errorCallbackFunc({
             errorCode: fromHex('0x0300'),
             description: 'Unknown codec type:' + codecMime + ', Control URL:' + rtspSDPData.Sessions[idx].ControlURL,
-            place: 'RtspClient.js:RtspResponseHandler',
+            place: 'RtspClient.ts:RtspResponseHandler',
             channelId: this.channelId
           });
         }
@@ -1551,7 +1551,7 @@ export class RtspClient {
         rtspCode: status.getStatusCode(),
         description: 'RTSP Play Streaming: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
         name: status.getName(),
-        place: 'RtspClient.js:RtspResponseHandler',
+        place: 'RtspClient.ts:RtspResponseHandler',
         channelId: this.channelId
       });
     } else if (this.currentState === 'Playing' && this.nextState !== 'Teardown') {
@@ -1582,7 +1582,7 @@ export class RtspClient {
           rtspCode: status.getStatusCode(),
           description: 'RTSP Pause Streaming: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
           name: status.getName(),
-          place: 'RtspClient.js:RtspResponseHandler',
+          place: 'RtspClient.ts:RtspResponseHandler',
           channelId: this.channelId
         });
       } else if (this.mode === 'playback') {
@@ -1598,7 +1598,7 @@ export class RtspClient {
             controlType: this._controlType,
             description: 'RTSP Seek Streaming: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
             name: status.getName(),
-            place: 'RtspClient.js:RtspResponseHandler',
+            place: 'RtspClient.ts:RtspResponseHandler',
             channelId: this.channelId
           });
         }
@@ -1632,7 +1632,7 @@ export class RtspClient {
           rtspCode: status.getStatusCode(),
           description: 'RTSP Resume Streaming: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
           name: status.getName(),
-          place: 'RtspClient.js:RtspResponseHandler',
+          place: 'RtspClient.ts:RtspResponseHandler',
           channelId: this.channelId
         });
       } else if (this.nextState === 'Teardown') {
@@ -1685,7 +1685,7 @@ export class RtspClient {
           this.errorCallbackFunc({
             errorCode: fromHex('0x0006'),
             description: 'transport was closed',
-            place: 'RtspClient.js:connectionCbFunc',
+            place: 'RtspClient.ts:connectionCbFunc',
             channelId: this.channelId
           });
         }
@@ -1700,7 +1700,7 @@ export class RtspClient {
                 errorCode: fromHex('0x0601'),
                 oldErrorCode: '990',
                 description: 'end of backup',
-                place: 'RtspClient.js:connectionCbFunc',
+                place: 'RtspClient.ts:connectionCbFunc',
                 channelId: this.channelId
               });
             } else {
@@ -1708,7 +1708,7 @@ export class RtspClient {
                 errorCode: fromHex('0x0602'),
                 oldErrorCode: -5,
                 description: 'backup has error',
-                place: 'RtspClient.js:connectionCbFunc',
+                place: 'RtspClient.ts:connectionCbFunc',
                 channelId: this.channelId
               });
             }
@@ -1717,7 +1717,7 @@ export class RtspClient {
               errorCode: fromHex('0x0005'),
               oldErrorCode: '990',
               description: 'retry connect to device from playing state.',
-              place: 'RtspClient.js:connectionCbFunc',
+              place: 'RtspClient.ts:connectionCbFunc',
               channelId: this.channelId
             });
           }
@@ -1730,7 +1730,7 @@ export class RtspClient {
             errorCode: fromHex('0x0005'),
             oldErrorCode: '990',
             description: 'retry connect to device from reconnection request.',
-            place: 'RtspClient.js:connectionCbFunc',
+            place: 'RtspClient.ts:connectionCbFunc',
             channelId: this.channelId
           });
         } else {
@@ -1739,7 +1739,7 @@ export class RtspClient {
             oldErrorCode: '990',
             description:
               'The device refuse the connection from client with 50x/40x error or you check again your device ip or port.',
-            place: 'RtspClient.js:connectionCbFunc',
+            place: 'RtspClient.ts:connectionCbFunc',
             channelId: this.channelId
           });
         }
@@ -1751,7 +1751,7 @@ export class RtspClient {
               errorCode: fromHex('0x0609'),
               oldErrorCode: 990,
               description: 'backup socket closed',
-              place: 'RtspClient.js:1072',
+              place: 'RtspClient.ts:1072',
               channelId: this.channelId
             });
           } else if (status.getStatusCode() === 1001 && this.deviceType === 'nvr') {
@@ -1760,7 +1760,7 @@ export class RtspClient {
               channelId: this.channelId,
               errorCode: fromHex('0x0008'),
               oldErrorCode: '990',
-              place: 'transport.js:connectionCbFunc',
+              place: 'RtspClient.ts:connectionCbFunc',
               description: 'Error Code: ' + status.getStatusCode() + ', Name: ' + status.getName() + ', Desc: ' + status.getDescription()
             });
           } else {
@@ -1770,7 +1770,7 @@ export class RtspClient {
                 errorCode: fromHex('0x0005'),
                 oldErrorCode: '990',
                 description: 'retry connect to device from playing state.',
-                place: 'RtspClient.js:connectionCbFunc',
+                place: 'RtspClient.ts:connectionCbFunc',
                 channelId: this.channelId
               });
             } else if (status.getStatusCode() !== 1000) {
@@ -1778,14 +1778,14 @@ export class RtspClient {
                 channelId: this.channelId,
                 errorCode: fromHex('0x0005'),
                 oldErrorCode: '990',
-                place: 'transport.js:connectionCbFunc',
+                place: 'RtspClient.ts:connectionCbFunc',
                 description: 'Error Code: ' + status.getStatusCode() + ', Name: ' + status.getName() + ', Desc: ' + status.getDescription()
               });
             } else {
               this.errorCallbackFunc({
                 errorCode: fromHex('0x0001'),
                 description: 'websocket closed: status code (' + status.getStatusCode() + '), Message: ' + status.getDescription(),
-                place: 'RtspClient.js:connectionCbFunc',
+                place: 'RtspClient.ts:connectionCbFunc',
                 channelId: this.channelId
               });
             }
@@ -2064,7 +2064,7 @@ export class RtspClient {
         errorCode: fromHex('0x0006'),
         type: 'rtsp',
         description: 'tranport is not exist',
-        place: 'RtspClient.js:ControlStream()',
+        place: 'RtspClient.ts:ControlStream()',
         channelId: this.channelId
       });
     }

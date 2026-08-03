@@ -215,7 +215,7 @@ export class AudioPlayerGxx extends AudioPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x030F'),
-        place: 'audioPlayerGxx.js:201',
+        place: 'AudioPlayerGxx.ts:201',
         message: `Audio error  [${err.code}], name [${err.name}, message [${err.message}]`
       });
     }

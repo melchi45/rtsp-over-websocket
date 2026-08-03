@@ -249,9 +249,9 @@ export class StreamPlayer {
       }
 
       if (this.profileInfo.device.type === 'nvr' && (info.device.hostname === undefined || (info.device.hostname === '' && (info.device.hostname as unknown) === null))) {
-        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0401'), place: 'streamPlayer.js:102', message: 'hostname is empty from input parameter.' });
+        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0401'), place: 'StreamPlayer.ts:102', message: 'hostname is empty from input parameter.' });
       } else if (this.profileInfo.device.type === 'camera' && (info.device.cameraIp === undefined || info.device.cameraIp === '')) {
-        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0400'), place: 'streamPlayer.js:111', message: 'cameraIP is empty from input parameter.' });
+        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0400'), place: 'StreamPlayer.ts:111', message: 'cameraIP is empty from input parameter.' });
       }
 
       this.connectionInfo.protocol = info.device.protocol as string;
@@ -271,7 +271,7 @@ export class StreamPlayer {
       } else if (typeof info.device.user !== 'undefined') {
         this.profileInfo.device.username = info.device.user;
       } else {
-        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0402'), place: 'streamPlayer.js:96', message: 'username is empty from input parameter.' });
+        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0402'), place: 'StreamPlayer.ts:96', message: 'username is empty from input parameter.' });
       }
       if (info.device.password !== undefined) {
         this.profileInfo.device.password = info.device.password;
@@ -521,7 +521,7 @@ export class StreamPlayer {
   }
 
   private terminate(): never {
-    throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x090A'), place: 'streamPlayer.js:347', message: 'this method was deplicated.' });
+    throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x090A'), place: 'StreamPlayer.ts:347', message: 'this method was deplicated.' });
   }
 
   private resume(info: StreamPlayerInfo): void {
@@ -673,7 +673,7 @@ export class StreamPlayer {
     if (this.rtspClient.getCurrentState() === 'Playing') {
       const audioFlag = (this.rtpClient as RtpClient).checkRtpSession('audio');
       if (!audioFlag) {
-        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0303'), place: 'streamPlayer.js:controlAudioIn', message: 'The current profile is not support audio in.' });
+        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0303'), place: 'StreamPlayer.ts:controlAudioIn', message: 'The current profile is not support audio in.' });
       }
     }
     this.mediaRouter.sendCommandData('audioIn', info.media.requestInfo.data);
@@ -897,7 +897,7 @@ export class StreamPlayer {
     if (this.rtspClient.getCurrentState() === 'Playing') {
       const audioFlag = (this.rtpClient as RtpClient).checkRtpSession('audio');
       if (!audioFlag) {
-        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0303'), place: 'streamPlayer.js:isMute', message: 'The current profile is not support audio in.' });
+        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0303'), place: 'StreamPlayer.ts:isMute', message: 'The current profile is not support audio in.' });
       }
     }
     return this.mediaRouter.mute;

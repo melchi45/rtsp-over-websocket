@@ -119,7 +119,7 @@ function baseInfo(overrides: Partial<StreamPlayerInfo> = {}): StreamPlayerInfo {
   };
 }
 
-describe('StreamPlayer contract tests (the legacy player’s Interface/streamPlayer.js)', () => {
+describe('StreamPlayer contract tests (the legacy player’s Interface/streamPlayer)', () => {
   let navigatorStub: { userAgent: string };
   let windowStub: { location: { pathname: string } };
 

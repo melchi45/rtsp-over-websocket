@@ -50,14 +50,14 @@ export class H264Session extends RtpSession {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0102,
-        place: 'h264Session.js:87',
+        place: 'H264Session.ts:87',
         message: `it is not valid interleave header (RTSP over TCP). Interleaved[0] = ${rtspInterleaved[0].toString(16)}`
       });
     } else if (flags.csrcCount !== 0) {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0103,
-        place: 'h264Session.js:94',
+        place: 'H264Session.ts:94',
         message: `There is additional CSRC which is not handled in this version. CSRC count = ${flags.csrcCount}`
       });
     } else if (flags.padding) {
@@ -78,7 +78,7 @@ export class H264Session extends RtpSession {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0101,
-        place: 'h264Session.js:155',
+        place: 'H264Session.ts:155',
         message: `This NAL type does not support on this application. nal_type = ${nalType}`
       });
     }
@@ -124,21 +124,21 @@ export class H264Session extends RtpSession {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: 0x0101,
-          place: 'h264Session.js:STAP-B/MTAP',
+          place: 'H264Session.ts:STAP-B/MTAP',
           message: `STAP-B/MTAP16/MTAP24 aggregation is additional which is not handled in this version. NALType = ${nalType}`
         });
       case H264_NAL.SPS_EXT:
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: 0x0101,
-          place: 'h264Session.js:195',
+          place: 'H264Session.ts:195',
           message: `SPS (Sequence Parameter Set) extension is additional which is not handled in this version. NALType  = ${nalType}`
         });
       case H264_NAL.SUB_SPS:
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: 0x0101,
-          place: 'h264Session.js:204',
+          place: 'H264Session.ts:204',
           message: `SSPS (Subset Sequence parameter Set) is additional which is not handled in this version. NALType  = ${nalType}`
         });
       case H264_NAL.UNSPECIFIED28: {
@@ -180,7 +180,7 @@ export class H264Session extends RtpSession {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: 0x0101,
-          place: 'h264Session.js:264',
+          place: 'H264Session.ts:264',
           message: `3 byte start code is additional which is not handled in this version. inputBufferSub[3].toString(16): ${inputBufferSub[3].toString(16)}`
         });
       }

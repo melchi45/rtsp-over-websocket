@@ -254,7 +254,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x090D'),
-          place: 'videoTagPlayer.js:Constructor',
+          place: 'VideoTagPlayer.ts:Constructor',
           message: 'This osx version do not support for video tag.'
         });
       } else {
@@ -303,9 +303,15 @@ export class VideoTagPlayer extends VideoPlayer {
         this.setSourceBuffer();
         break;
       case 'error':
-      case 'abort':
+        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
+        console.error('[VideoTagPlayer debug] MediaSource error event', { readyState: (event.target as MediaSource)?.readyState });
+        break;
       case 'sourceended':
       case 'sourceclose':
+        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
+        console.warn(`[VideoTagPlayer debug] MediaSource ${event.type}`, { readyState: (event.target as MediaSource)?.readyState });
+        break;
+      case 'abort':
       default:
         break;
     }
@@ -314,6 +320,9 @@ export class VideoTagPlayer extends VideoPlayer {
   private readonly sourceBufferEventListener = (event: Event): void => {
     switch (event.type) {
       case 'error':
+        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
+        console.error('[VideoTagPlayer debug] SourceBuffer error event', { mediaSourceReadyState: this.mediaSource?.readyState });
+        break;
       case 'abort':
       case 'updatestart':
       case 'update':
@@ -336,6 +345,12 @@ export class VideoTagPlayer extends VideoPlayer {
 
   private readonly videoElementEventListener = (event: Event): void => {
     switch (event.type) {
+      case 'error': {
+        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
+        const mediaError = (event.target as HTMLVideoElement)?.error;
+        console.error('[VideoTagPlayer debug] video element error event', { code: mediaError?.code, message: mediaError?.message });
+        break;
+      }
       case 'resize': {
         const jQueryWindow = (globalThis as unknown as { window?: { jQuery?: unknown; $?: (target: unknown) => { trigger: (name: string) => void } } }).window;
         if (jQueryWindow?.jQuery) {
@@ -403,7 +418,7 @@ export class VideoTagPlayer extends VideoPlayer {
             throw new RTSPOverWebSocketError({
               channelId: player.channelId,
               errorCode: (error as { code?: number }).code,
-              place: 'videoTagPlayer.js:onCueChange',
+              place: 'VideoTagPlayer.ts:onCueChange',
               message: (error as Error).message
             });
           }
@@ -429,7 +444,7 @@ export class VideoTagPlayer extends VideoPlayer {
           throw new RTSPOverWebSocketError({
             channelId: player.channelId,
             errorCode: (error as { code?: number }).code,
-            place: 'videoTagPlayer.js:onCueEnter',
+            place: 'VideoTagPlayer.ts:onCueEnter',
             message: (error as Error).message
           });
         }
@@ -449,7 +464,7 @@ export class VideoTagPlayer extends VideoPlayer {
             throw new RTSPOverWebSocketError({
               channelId: player.channelId,
               errorCode: (error as { code?: number }).code,
-              place: 'videoTagPlayer.js:onCueExit',
+              place: 'VideoTagPlayer.ts:onCueExit',
               message: (error as Error).message
             });
           }
@@ -458,7 +473,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: player.channelId,
           errorCode: fromHex('0x0900'),
-          place: 'videoTagPlayer.js:onCueExit',
+          place: 'VideoTagPlayer.ts:onCueExit',
           message: 'video tag element was not initialized.'
         });
       }
@@ -533,7 +548,7 @@ export class VideoTagPlayer extends VideoPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0900'),
-        place: 'videoTagPlayer.js:elementSetting',
+        place: 'VideoTagPlayer.ts:elementSetting',
         message: 'video tag element was not initialized.'
       });
     }
@@ -985,7 +1000,7 @@ export class VideoTagPlayer extends VideoPlayer {
           `channel: ${this.channelId}, You should be check the rtp timestamp of your device. ` +
           `The rtp timestamp could not be same value between current frame and previous frame. ` +
           `previous rtp timestamp: ${preVideoFrameTimeStamp}current rtp timestamp: ${curVideoFrameTimeStamp}interval: ${curVideoFrameTimeStamp - preVideoFrameTimeStamp}`,
-        place: 'VideoTagPlayerjs:getVideoFrameDuration',
+        place: 'VideoTagPlayer.ts:getVideoFrameDuration',
         channelId: this.channelId
       });
       this.bVideoUnstableTimestamp = true;
@@ -1311,12 +1326,28 @@ export class VideoTagPlayer extends VideoPlayer {
 
     if (segment) {
       try {
+        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
+        console.warn('[VideoTagPlayer debug] appendBuffer', {
+          seq: this.sequenseNum,
+          byteLength: segment.byteLength,
+          mediaSourceReadyState: this.mediaSource?.readyState,
+          sourceBufferUpdating: this.sourceBuffer.updating,
+          videoSamplesQueued: this.videoSamples.length,
+          audioSamplesQueued: this.audioSamples.length,
+          remainingSegments: this.segmentArray.length
+        });
         this.sourceBuffer.appendBuffer(segment as Uint8Array<ArrayBuffer>);
       } catch (error) {
+        console.error('[VideoTagPlayer debug] appendBuffer threw', {
+          name: (error as Error).name,
+          code: (error as { code?: number }).code,
+          message: (error as Error).message,
+          mediaSourceReadyState: this.mediaSource?.readyState
+        });
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x030A'),
-          place: 'videoTagPlayer.js:appendSegmentToSourceBuffer',
+          place: 'VideoTagPlayer.ts:appendSegmentToSourceBuffer',
           message: `Fail to append frame buffer to source buffer from videoTagPlayer. [${(error as { code?: number }).code}, message${(error as Error).message}]`
         });
       }
@@ -1339,7 +1370,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: (error as { code?: number }).code,
-          place: 'videoTagPlayer.js:setSourceBuffer',
+          place: 'VideoTagPlayer.ts:setSourceBuffer',
           message: (error as Error).message
         });
       }
@@ -1374,7 +1405,7 @@ export class VideoTagPlayer extends VideoPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: (error as { code?: number }).code,
-        place: 'videoTagPlayer.js:addSourceBuffer',
+        place: 'VideoTagPlayer.ts:addSourceBuffer',
         message: (error as Error).message
       });
     }
@@ -1533,7 +1564,7 @@ export class VideoTagPlayer extends VideoPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0900'),
-        place: 'videoTagPlayer.js:videoUpdating',
+        place: 'VideoTagPlayer.ts:videoUpdating',
         message: 'fail to detect the video tag element.'
       });
     }
@@ -1596,7 +1627,7 @@ export class VideoTagPlayer extends VideoPlayer {
           throw new RTSPOverWebSocketError({
             channelId: this.channelId,
             errorCode: fromHex('0x0909'),
-            place: 'videoTagPlayer.js:1887',
+            place: 'VideoTagPlayer.ts:1887',
             message: 'can not return capture blob'
           });
         }
@@ -1622,7 +1653,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x0905'),
-          place: 'avPlayer.js:audiotranscoderWorkerMessage',
+          place: 'VideoTagPlayer.ts:audiotranscoderWorkerMessage',
           message: 'The audiotranscoderWorker returned unknown data'
         });
     }
@@ -1693,7 +1724,8 @@ export class VideoTagPlayer extends VideoPlayer {
           codecMime: streamData.codecMime,
           codecType: streamData.codecType,
           bitrate: audioInfo.bitrate as number,
-          interleavedId: streamData.interleaved as number
+          interleavedId: streamData.interleaved as number,
+          channelCount: audioInfo.channelCount
         });
       }
       this.createAudioSample(streamData, audioInfo, streamData.codecType);
@@ -1952,7 +1984,7 @@ export class VideoTagPlayer extends VideoPlayer {
           throw new RTSPOverWebSocketError({
             channelId: this.channelId,
             errorCode: fromHex('0x1104'),
-            place: 'videoTagPlayer.js:instantplaybackCmd:terminated',
+            place: 'VideoTagPlayer.ts:instantplaybackCmd:terminated',
             message: 'fail to terminate instant playback mode.'
           });
         }
@@ -1980,7 +2012,7 @@ export class VideoTagPlayer extends VideoPlayer {
     return this.audioInfo;
   }
 
-  setAudioInfo(audioinfo: { codecMime?: string; codecType: string; bitrate: number; interleavedId: number }): void {
+  setAudioInfo(audioinfo: { codecMime?: string; codecType: string; bitrate: number; interleavedId: number; channelCount?: number }): void {
     this.audioCodecInfo.codecType = audioinfo.codecType;
     this.audioCodecInfo.bitrate = audioinfo.bitrate;
     this.audioInfo.interleavedId = audioinfo.interleavedId;
@@ -1993,7 +2025,13 @@ export class VideoTagPlayer extends VideoPlayer {
 
       this.audioInfo = {
         id: 2,
-        channelcount: 1,
+        // For real AAC source audio, use the actual channel_configuration
+        // (this repo's own demo server encodes stereo AAC) — declaring mono
+        // for a stereo bitstream makes the browser's AAC decoder reject the
+        // audio track partway into playback (see AACSession.ts's init()).
+        // G711/G726 is transcoded to AAC in-browser as mono, so that path
+        // keeps the hardcoded value.
+        channelcount: audioinfo.codecType === 'AAC' ? (audioinfo.channelCount ?? 1) : 1,
         samplesize: 8,
         type: 'audio',
         codecType: 'AAC',

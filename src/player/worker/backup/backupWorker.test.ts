@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { BackupWorkerMessage } from './backupWorker';
 
 /** Contract-tier test: backupWorker.js is onmessage/postMessage glue around BackupSession (parity-tested separately). */
-describe('backupWorker contract tests (the legacy player’s Worker/Backup/backupWorker.js)', () => {
+describe('backupWorker contract tests (the legacy player’s Worker/Backup/backupWorker)', () => {
   let onmessage: ((event: { data: BackupWorkerMessage }) => void) | null;
   let postMessage: ReturnType<typeof vi.fn>;
   let close: ReturnType<typeof vi.fn>;

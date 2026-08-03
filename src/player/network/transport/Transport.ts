@@ -206,7 +206,7 @@ export class Transport {
         this.errorCallback?.({
           channelId: this.channelId,
           errorCode: 0x0200,
-          place: 'transport.js:OnReceive',
+          place: 'Transport.ts:OnReceive',
           description: 'Invalid RTSP/RTP data in the channel'
         });
         this.fragmentedData = null;
@@ -356,7 +356,7 @@ export class Transport {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0002,
-        place: 'transport.js:Connect',
+        place: 'Transport.ts:Connect',
         message: `Fail to connect websock with error: ${(error as Error).message}`
       });
     }
@@ -371,7 +371,7 @@ export class Transport {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0003,
-        place: 'transport.js:330',
+        place: 'Transport.ts:330',
         message: `error of weboskcet disconnect: ${(error as Error).message}`
       });
     }
@@ -394,7 +394,7 @@ export class Transport {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0004,
-        place: 'transport.js:SendRtspCommand',
+        place: 'Transport.ts:SendRtspCommand',
         message: `error of rtsp packet transmission: ${(error as Error).message}`
       });
     }

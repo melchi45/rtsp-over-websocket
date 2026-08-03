@@ -28,14 +28,14 @@ export class G711Session extends RtpSession {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0102,
-        place: 'g711Session.js:66',
+        place: 'G711Session.ts:66',
         message: `it is not valid interleave header (RTSP over TCP). Interleaved[0] = ${rtspInterleaved[0].toString(16)}`
       });
     } else if (flags.csrcCount !== 0) {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0103,
-        place: 'g711Session.js:73',
+        place: 'G711Session.ts:73',
         message: `There is additional CSRC which is not handled in this version. CSRC count = ${flags.csrcCount}`
       });
     } else if (flags.padding) {
