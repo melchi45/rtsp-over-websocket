@@ -620,6 +620,20 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   connectedCallback(): void {
     try {
+      // channel_div/.statistics/.video-container (and the network-state dot,
+      // minimap, contextmenu) are all `position: absolute` overlays meant to
+      // sit within this element's own box. Without a positioned ancestor
+      // here, the browser falls back to the viewport as their containing
+      // block, so they render pinned to the page corner instead of over the
+      // video. Only set when unset so an explicit inline style from the host
+      // page (if any) is not clobbered.
+      if (this.style.position === '') {
+        this.style.position = 'relative';
+      }
+      if (this.style.display === '') {
+        this.style.display = 'block';
+      }
+
       if (this.getAttribute('autoplay') !== null) {
         this._autoplay = true;
       }
@@ -633,8 +647,8 @@ export class RTSPOverWebSocket extends HTMLElement {
       if (this.info.device.deviceType === 'camera') {
         this.info.device.cameraIp = this.getAttribute('hostname') !== null ? (this.getAttribute('hostname') as string) : document.location.hostname;
       } else {
-        this.info.device.hostname = this.getAttribute('hostname') !== null ? (this.getAttribute('hostname') as string) : document.location.hostname;
       }
+      this.info.device.hostname = this.getAttribute('hostname') !== null ? (this.getAttribute('hostname') as string) : document.location.hostname;
 
       if (this.getAttribute('client') !== null) {
         this.info.device.ClientIPAddress = this.getAttribute('client') as string;
@@ -2259,137 +2273,155 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.statisticsElement = document.createElement('div');
 
       const resolutionElement = document.createElement('div');
-      const resolutionLabelElement = document.createElement('div');
-      resolutionLabelElement.innerText = 'resolution:';
-      resolutionLabelElement.style.cssText = 'top: 10px;';
+      const resolutionLabelElement = document.createElement('span');
+      resolutionLabelElement.innerText = 'Res';
+      resolutionLabelElement.className = 'stat-label accent-cyan';
       const resolutionSpanElement = document.createElement('span');
-      resolutionSpanElement.style.cssText = 'top: 10px;';
+      resolutionSpanElement.className = 'stat-value';
       resolutionElement.appendChild(resolutionLabelElement);
       resolutionElement.appendChild(resolutionSpanElement);
 
       const positionElement = document.createElement('div');
-      const positionLabelElement = document.createElement('div');
-      positionLabelElement.innerText = 'position:';
-      positionLabelElement.style.cssText = 'left: 150px; top: 10px;';
+      const positionLabelElement = document.createElement('span');
+      positionLabelElement.innerText = 'Pos';
+      positionLabelElement.className = 'stat-label accent-cyan';
       const positionSpanElement = document.createElement('span');
-      positionSpanElement.style.cssText = 'left: 235px; top: 10px;';
+      positionSpanElement.className = 'stat-value';
       positionElement.appendChild(positionLabelElement);
       positionElement.appendChild(positionSpanElement);
 
       const ratioElement = document.createElement('div');
-      const ratioLabelElement = document.createElement('div');
-      ratioLabelElement.innerText = 'ratio:';
-      ratioLabelElement.style.cssText = 'left: 255px; top: 10px;';
+      const ratioLabelElement = document.createElement('span');
+      ratioLabelElement.innerText = 'Ratio';
+      ratioLabelElement.className = 'stat-label accent-cyan';
       const ratioSpanElement = document.createElement('span');
-      ratioSpanElement.style.cssText = 'left: 335px; top: 10px;';
+      ratioSpanElement.className = 'stat-value';
       ratioElement.appendChild(ratioLabelElement);
       ratioElement.appendChild(ratioSpanElement);
 
       const codecElement = document.createElement('div');
-      const codecLabelElement = document.createElement('div');
-      codecLabelElement.innerText = 'codec:';
-      codecLabelElement.style.cssText = 'top: 26px';
+      const codecLabelElement = document.createElement('span');
+      codecLabelElement.innerText = 'Codec';
+      codecLabelElement.className = 'stat-label accent-mint';
+      const codecValuesElement = document.createElement('span');
+      codecValuesElement.className = 'stat-values';
       const videoCodecSpanElement = document.createElement('span');
-      videoCodecSpanElement.style.cssText = 'top: 26px;min-width: 10em;';
+      videoCodecSpanElement.className = 'stat-value';
       const audioCodecSpanElement = document.createElement('span');
-      audioCodecSpanElement.style.cssText = 'left: 200px;top: 26px;min-width: 10em;';
+      audioCodecSpanElement.className = 'stat-value';
+      codecValuesElement.appendChild(videoCodecSpanElement);
+      codecValuesElement.appendChild(audioCodecSpanElement);
       codecElement.appendChild(codecLabelElement);
-      codecElement.appendChild(videoCodecSpanElement);
-      codecElement.appendChild(audioCodecSpanElement);
+      codecElement.appendChild(codecValuesElement);
 
       const frameElement = document.createElement('div');
-      const frameLabelElement = document.createElement('div');
-      frameLabelElement.innerText = 'framerate:';
-      frameLabelElement.style.cssText = 'top: 42px';
+      const frameLabelElement = document.createElement('span');
+      frameLabelElement.innerText = 'FPS';
+      frameLabelElement.className = 'stat-label accent-mint';
       const frameSpanElement = document.createElement('span');
-      frameSpanElement.style.cssText = 'top: 42px;';
+      frameSpanElement.className = 'stat-value';
       frameElement.appendChild(frameLabelElement);
       frameElement.appendChild(frameSpanElement);
 
       const decodedElement = document.createElement('div');
-      const decodedLabelElement = document.createElement('div');
-      decodedLabelElement.innerText = 'decoded byte:';
-      decodedLabelElement.style.cssText = 'top: 58px';
+      const decodedLabelElement = document.createElement('span');
+      decodedLabelElement.innerText = 'Decoded';
+      decodedLabelElement.className = 'stat-label accent-amber';
       const decodedSpanElement = document.createElement('span');
-      decodedSpanElement.style.cssText = 'top: 58px;';
+      decodedSpanElement.className = 'stat-value';
       decodedElement.appendChild(decodedLabelElement);
       decodedElement.appendChild(decodedSpanElement);
 
       const droppedPacketElement = document.createElement('div');
-      const droppedPacketLabelElement = document.createElement('div');
-      droppedPacketLabelElement.innerText = 'dropped frame:';
-      droppedPacketLabelElement.style.cssText = 'top: 74px';
+      const droppedPacketLabelElement = document.createElement('span');
+      droppedPacketLabelElement.innerText = 'Dropped';
+      droppedPacketLabelElement.className = 'stat-label accent-amber';
       const droppedPacketSpanElement = document.createElement('span');
-      droppedPacketSpanElement.style.cssText = 'top: 74px';
+      droppedPacketSpanElement.className = 'stat-value';
       droppedPacketElement.appendChild(droppedPacketLabelElement);
       droppedPacketElement.appendChild(droppedPacketSpanElement);
 
       const videoRtpElement = document.createElement('div');
-      const videoRtpLabelElement = document.createElement('div');
-      videoRtpLabelElement.innerText = 'video rtp:';
-      videoRtpLabelElement.style.cssText = 'top: 90px';
+      const videoRtpLabelElement = document.createElement('span');
+      videoRtpLabelElement.innerText = 'Video RTP';
+      videoRtpLabelElement.className = 'stat-label accent-blue';
+      const videoRtpValuesElement = document.createElement('span');
+      videoRtpValuesElement.className = 'stat-values';
       const videoRtpRecvSpanElement = document.createElement('span');
-      videoRtpRecvSpanElement.style.cssText = 'top: 90px;min-width: 12em;';
+      videoRtpRecvSpanElement.className = 'stat-value';
       const videoRtpTotalRecvSpanElement = document.createElement('span');
-      videoRtpTotalRecvSpanElement.style.cssText = 'left: 180px;top: 90px;min-width: 14em;';
+      videoRtpTotalRecvSpanElement.className = 'stat-value';
+      videoRtpValuesElement.appendChild(videoRtpRecvSpanElement);
+      videoRtpValuesElement.appendChild(videoRtpTotalRecvSpanElement);
       videoRtpElement.appendChild(videoRtpLabelElement);
-      videoRtpElement.appendChild(videoRtpRecvSpanElement);
-      videoRtpElement.appendChild(videoRtpTotalRecvSpanElement);
+      videoRtpElement.appendChild(videoRtpValuesElement);
 
       const audioRtpElement = document.createElement('div');
-      const audioRtpLabelElement = document.createElement('div');
-      audioRtpLabelElement.innerText = 'audio rtp:';
-      audioRtpLabelElement.style.cssText = 'top: 106px';
+      const audioRtpLabelElement = document.createElement('span');
+      audioRtpLabelElement.innerText = 'Audio RTP';
+      audioRtpLabelElement.className = 'stat-label accent-blue';
+      const audioRtpValuesElement = document.createElement('span');
+      audioRtpValuesElement.className = 'stat-values';
       const audioRtpRecvSpanElement = document.createElement('span');
-      audioRtpRecvSpanElement.style.cssText = 'top: 106px;min-width: 12em;';
+      audioRtpRecvSpanElement.className = 'stat-value';
       const audioRtpTotalRecvSpanElement = document.createElement('span');
-      audioRtpTotalRecvSpanElement.style.cssText = 'left: 180px;top: 106px;min-width: 14em;';
+      audioRtpTotalRecvSpanElement.className = 'stat-value';
+      audioRtpValuesElement.appendChild(audioRtpRecvSpanElement);
+      audioRtpValuesElement.appendChild(audioRtpTotalRecvSpanElement);
       audioRtpElement.appendChild(audioRtpLabelElement);
-      audioRtpElement.appendChild(audioRtpRecvSpanElement);
-      audioRtpElement.appendChild(audioRtpTotalRecvSpanElement);
+      audioRtpElement.appendChild(audioRtpValuesElement);
 
       const latencyElement = document.createElement('div');
-      const latencyLabelElement = document.createElement('div');
-      latencyLabelElement.innerText = 'buffer:';
-      latencyLabelElement.style.cssText = 'top: 122px';
+      const latencyLabelElement = document.createElement('span');
+      latencyLabelElement.innerText = 'Buffer';
+      latencyLabelElement.className = 'stat-label accent-pink';
+      const latencyValuesElement = document.createElement('span');
+      latencyValuesElement.className = 'stat-values';
       const latencySpanElement = document.createElement('span');
-      latencySpanElement.style.cssText = 'top: 122px;min-width: 17em;';
+      latencySpanElement.className = 'stat-value';
       const chunkSizeSpanElement = document.createElement('span');
-      chunkSizeSpanElement.style.cssText = 'left: 280px;top: 122px;min-width: 14em;';
+      chunkSizeSpanElement.className = 'stat-value';
+      latencyValuesElement.appendChild(latencySpanElement);
+      latencyValuesElement.appendChild(chunkSizeSpanElement);
       latencyElement.appendChild(latencyLabelElement);
-      latencyElement.appendChild(latencySpanElement);
-      latencyElement.appendChild(chunkSizeSpanElement);
+      latencyElement.appendChild(latencyValuesElement);
 
       const receivedElement = document.createElement('div');
-      const receivedLabelElement = document.createElement('div');
-      receivedLabelElement.innerText = 'received:';
-      receivedLabelElement.style.cssText = 'top: 138px';
+      const receivedLabelElement = document.createElement('span');
+      receivedLabelElement.innerText = 'Received';
+      receivedLabelElement.className = 'stat-label accent-pink';
+      const receivedValuesElement = document.createElement('span');
+      receivedValuesElement.className = 'stat-values';
       const currentRecvSpanElement = document.createElement('span');
-      currentRecvSpanElement.style.cssText = 'top: 138px;min-width: 15em;';
+      currentRecvSpanElement.className = 'stat-value';
       const totalRecvSpanElement = document.createElement('span');
-      totalRecvSpanElement.style.cssText = 'left: 280px;top: 138px;min-width: 20em;';
+      totalRecvSpanElement.className = 'stat-value';
+      receivedValuesElement.appendChild(currentRecvSpanElement);
+      receivedValuesElement.appendChild(totalRecvSpanElement);
       receivedElement.appendChild(receivedLabelElement);
-      receivedElement.appendChild(currentRecvSpanElement);
-      receivedElement.appendChild(totalRecvSpanElement);
+      receivedElement.appendChild(receivedValuesElement);
 
       const timestampElement = document.createElement('div');
-      const timestampLabelElement = document.createElement('div');
-      timestampLabelElement.innerText = 'timestamp:';
-      timestampLabelElement.style.cssText = 'top: 154px';
+      const timestampLabelElement = document.createElement('span');
+      timestampLabelElement.innerText = 'Timestamp';
+      timestampLabelElement.className = 'stat-label accent-slate';
+      const timestampValuesElement = document.createElement('span');
+      timestampValuesElement.className = 'stat-values';
       const timestampSpanElement = document.createElement('span');
-      timestampSpanElement.style.cssText = 'top: 154px;min-width: 15em;';
+      timestampSpanElement.className = 'stat-value';
       const timestampIntetvalSpanElement = document.createElement('span');
-      timestampIntetvalSpanElement.style.cssText = 'left: 280px;top: 154px;min-width: 20em;';
+      timestampIntetvalSpanElement.className = 'stat-value';
+      timestampValuesElement.appendChild(timestampSpanElement);
+      timestampValuesElement.appendChild(timestampIntetvalSpanElement);
       timestampElement.appendChild(timestampLabelElement);
-      timestampElement.appendChild(timestampSpanElement);
-      timestampElement.appendChild(timestampIntetvalSpanElement);
+      timestampElement.appendChild(timestampValuesElement);
 
       const dataElement = document.createElement('div');
-      const dataLabelElement = document.createElement('div');
-      dataLabelElement.innerText = 'data:';
-      dataLabelElement.style.cssText = 'top: 170px';
+      const dataLabelElement = document.createElement('span');
+      dataLabelElement.innerText = 'Data';
+      dataLabelElement.className = 'stat-label accent-slate';
       const dataSpanElement = document.createElement('span');
-      dataSpanElement.style.cssText = 'top: 170px;min-width: 15em;min-width: 20em;';
+      dataSpanElement.className = 'stat-value wrap';
       dataElement.appendChild(dataLabelElement);
       dataElement.appendChild(dataSpanElement);
 

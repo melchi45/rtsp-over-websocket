@@ -24,34 +24,46 @@ export const CHANNEL_DIV_STYLE =
 
 export const STATISTICS_STYLE =
   '.statistics {\r\n' +
-  'background: rgba(28,28,28,0.5);\r\n' +
-  'border: 5px;\r\n' +
-  'border-radius: 4px;\r\n' +
-  'color: #fff;\r\n' +
+  'display: flex;\r\n' +
+  'flex-direction: column;\r\n' +
+  'background: rgba(15,17,21,0.78);\r\n' +
+  '-webkit-backdrop-filter: blur(6px);\r\n' +
+  'backdrop-filter: blur(6px);\r\n' +
+  'border: 1px solid rgba(255,255,255,0.08);\r\n' +
+  'border-radius: 10px;\r\n' +
+  'box-shadow: 0 4px 16px rgba(0,0,0,0.35);\r\n' +
+  'color: #E8EAED;\r\n' +
   'right: 10px;\r\n' +
   'bottom: 30px;\r\n' +
   'position: absolute;\r\n' +
   'z-index: 1000;\r\n' +
-  'min-width: 25em;\r\n' +
-  'min-height: 14em;\r\n' +
+  'padding: 10px 14px;\r\n' +
+  'font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;\r\n' +
+  'font-size: 11px;\r\n' +
+  'line-height: 1.7;\r\n' +
+  'min-width: 15em;\r\n' +
+  'max-width: 22em;\r\n' +
   '}';
 
 export const STATISTICS_DIV_STYLE =
   '.statistics div{\r\n' +
   'border: 0px;\r\n' +
+  'border-bottom: 1px solid rgba(255,255,255,0.06);\r\n' +
   'margin: 0px;\r\n' +
-  'padding: 0px;\r\n' +
+  'padding: 2px 0px;\r\n' +
   'background: transparent;\r\n' +
-  'font-size: 10px;\r\n' +
-  'font-family: arial;\r\n' +
-  'text-align: right;\r\n' +
-  'border-radius: 4px;\r\n' +
-  'color: #FFF;\r\n' +
-  'left: 1px;\r\n' +
-  'position: absolute;\r\n' +
-  'z-index: 65;\r\n' +
-  'min-width: 8em;\r\n' +
-  'min-height: 1em;\r\n' +
+  'font-family: inherit;\r\n' +
+  'border-radius: 0px;\r\n' +
+  'position: static;\r\n' +
+  'z-index: auto;\r\n' +
+  'display: flex;\r\n' +
+  'align-items: baseline;\r\n' +
+  'column-gap: 14px;\r\n' +
+  'min-width: 0;\r\n' +
+  'min-height: 0;\r\n' +
+  '}\r\n' +
+  '.statistics div:last-child{\r\n' +
+  'border-bottom: none;\r\n' +
   '}';
 
 export const STATISTICS_SPAN_STYLE =
@@ -60,17 +72,58 @@ export const STATISTICS_SPAN_STYLE =
   'margin: 0px;\r\n' +
   'padding: 0px;\r\n' +
   'background: transparent;\r\n' +
-  'font-size: 10px;\r\n' +
-  'font-family: arial;\r\n' +
+  'font-size: 11px;\r\n' +
+  'font-family: inherit;\r\n' +
+  'text-align: right;\r\n' +
+  'border-radius: 0px;\r\n' +
+  'color: #E8EAED;\r\n' +
+  'position: static;\r\n' +
+  'z-index: auto;\r\n' +
+  'min-width: 0;\r\n' +
+  'min-height: 0;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-label{\r\n' +
+  'flex: 0 0 auto;\r\n' +
+  'min-width: 70px;\r\n' +
   'text-align: left;\r\n' +
-  'border-radius: 4px;\r\n' +
-  'color: #FFF;\r\n' +
-  'left: 110px;\r\n' +
-  'position: absolute;\r\n' +
-  'z-index: 65;\r\n' +
-  'min-width: 25em;\r\n' +
-  'min-height: 1em;\r\n' +
-  '}';
+  'font-weight: 600;\r\n' +
+  'letter-spacing: 0.2px;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-value{\r\n' +
+  'flex: 1 1 auto;\r\n' +
+  'min-width: 0;\r\n' +
+  'overflow: hidden;\r\n' +
+  'text-overflow: ellipsis;\r\n' +
+  'white-space: nowrap;\r\n' +
+  'font-variant-numeric: tabular-nums;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-value.wrap{\r\n' +
+  'white-space: normal;\r\n' +
+  'overflow: visible;\r\n' +
+  'text-overflow: clip;\r\n' +
+  'text-align: left;\r\n' +
+  'word-break: break-word;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-values{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: baseline;\r\n' +
+  'flex: 1 1 auto;\r\n' +
+  'min-width: 0;\r\n' +
+  'column-gap: 10px;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-values .stat-value{\r\n' +
+  'flex: 1 1 0;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-values .stat-value:last-child{\r\n' +
+  'color: #9AA7B4;\r\n' +
+  'font-size: 10px;\r\n' +
+  '}\r\n' +
+  '.statistics .accent-cyan{ color: #5DD8E8; }\r\n' +
+  '.statistics .accent-mint{ color: #5FDE9A; }\r\n' +
+  '.statistics .accent-amber{ color: #FFB454; }\r\n' +
+  '.statistics .accent-blue{ color: #6EA8FF; }\r\n' +
+  '.statistics .accent-pink{ color: #FF6FB5; }\r\n' +
+  '.statistics .accent-slate{ color: #9AA7B4; }';
 
 export const NETWORK_STATE_WRAPPER_STYLE =
   // reference from: https://codepen.io/anon/pen/RzJNqM

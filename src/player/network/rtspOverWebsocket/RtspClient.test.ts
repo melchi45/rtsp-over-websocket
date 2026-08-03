@@ -241,4 +241,56 @@ describe('RtspClient parity with the legacy player’s Network/RTSPoverWebsocket
       expect(ported.getCurrentState()).toBe(legacy.getCurrentState());
     });
   });
+
+  // Not a legacy-parity case: the legacy source was never exercised against
+  // this SDP variant, so there is nothing to compare it to. MediaMTX's g726
+  // encoder (used by this repo's own demo server) announces G.726 as
+  // "AAL2-G726-32" rather than the bare "G726-32" real hardware sends, which
+  // the codec-name assignment in RtspResponseHandler's Describe branch used
+  // to match with `===` only — silently dropping the audio track (no
+  // G726Session ever got created) instead of erroring, because the SETUP
+  // sequence itself doesn't depend on codecName being resolved.
+  describe('RtspResponseHandler — audio codec-name recognition', () => {
+    function describeResponseWithAudio(rtpmapLine: string): string {
+      const sdp = [
+        'v=0',
+        'o=- 0 0 IN IP4 127.0.0.1',
+        's=No Name',
+        'c=IN IP4 0.0.0.0',
+        't=0 0',
+        'm=audio 0 RTP/AVP 97',
+        'a=control:trackID=1',
+        rtpmapLine,
+        ''
+      ].join('\r\n');
+      return `RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Base: rtsp://127.0.0.1/session/\r\nContent-Type: application/sdp\r\nContent-Length: ${sdp.length}\r\n\r\n${sdp}`;
+    }
+
+    function sdpInfoFor(rtpmapLine: string): { codecName?: string; codecMime?: string } {
+      const ported = newPorted() as unknown as {
+        currentState: string;
+        errorCallbackFunc: () => void;
+        RtspResponseHandler(message: string): void;
+        SDPinfo: { codecName?: string; codecMime?: string }[];
+      };
+      ported.currentState = 'Describe';
+      ported.errorCallbackFunc = () => {};
+      ported.RtspResponseHandler(describeResponseWithAudio(rtpmapLine));
+      return ported.SDPinfo[0];
+    }
+
+    it('recognizes the bare RFC 3551 G.726 name ("G726-32"), matching real-camera SDP', () => {
+      expect(sdpInfoFor('a=rtpmap:97 G726-32/8000').codecName).toBe('G.726-32');
+    });
+
+    it('also recognizes the AAL2-mode name ("AAL2-G726-32") MediaMTX/ffmpeg announces', () => {
+      expect(sdpInfoFor('a=rtpmap:97 AAL2-G726-32/8000').codecName).toBe('G.726-32');
+    });
+
+    it('recognizes AAL2-mode names for the other three G.726 bitrates', () => {
+      expect(sdpInfoFor('a=rtpmap:97 AAL2-G726-16/8000').codecName).toBe('G.726-16');
+      expect(sdpInfoFor('a=rtpmap:97 AAL2-G726-24/8000').codecName).toBe('G.726-24');
+      expect(sdpInfoFor('a=rtpmap:97 AAL2-G726-40/8000').codecName).toBe('G.726-40');
+    });
+  });
 });

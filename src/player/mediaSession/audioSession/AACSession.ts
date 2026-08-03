@@ -21,7 +21,13 @@ export class AACSession extends RtpSession {
     }
     const firstTwoConfig = parseInt(this.config.substring(0, 2), 16);
     const lastTwoConfig = parseInt(this.config.substring(2, 4), 16);
-    const mChannels = 1;
+    // channelConfiguration lives in AudioSpecificConfig right after the
+    // 4-bit samplingFrequencyIndex (ISO/IEC 14496-3 §1.6.2.1) — bits [1:5)
+    // of the second config byte. Was hardcoded to 1 (mono); real streams
+    // (e.g. this repo's own demo server, which encodes AAC as stereo) can
+    // be 2+, and the ADTS bit-packing below already handles any 3-bit
+    // channel_configuration value correctly once given the real one.
+    const mChannels = (lastTwoConfig >> 3) & 0x07;
 
     const mAOT = firstTwoConfig >> 3;
     const freqIndex = ((firstTwoConfig & 0x07) << 1) | ((lastTwoConfig & 0x80) >> 7);

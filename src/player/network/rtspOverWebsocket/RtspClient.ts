@@ -1402,14 +1402,14 @@ export class RtspClient {
           } else {
             if (codecMime === 'PCMU' || codecMime === 'PCMA') {
               sdpInfoObj.codecName = 'G.711';
-            } else if (codecMime === 'G726-16') {
-              sdpInfoObj.codecName = 'G.726-16';
-            } else if (codecMime === 'G726-24') {
-              sdpInfoObj.codecName = 'G.726-24';
-            } else if (codecMime === 'G726-32') {
-              sdpInfoObj.codecName = 'G.726-32';
-            } else if (codecMime === 'G726-40') {
-              sdpInfoObj.codecName = 'G.726-40';
+            } else {
+              // Match the bare RFC 3551 name ("G726-32") as well as the
+              // AAL2-mode name ("AAL2-G726-32") some encoders (e.g.
+              // MediaMTX/ffmpeg's g726 encoder) announce instead.
+              const g726Match = codecMime.match(/G726-(16|24|32|40)$/i);
+              if (g726Match) {
+                sdpInfoObj.codecName = 'G.726-' + g726Match[1];
+              }
             }
             sdpInfoObj.codecMime = codecMime;
             sdpInfoObj.trackID = controlUrl;
