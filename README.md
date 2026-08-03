@@ -101,4 +101,15 @@ Most of `src/player`'s test suite consists of parity tests that diff the new Typ
 legacy player's source, loaded from a `legacy-player` git submodule at the repo root. That submodule isn't checked
 out in every environment — tests that depend on it will fail with `ENOENT` until it's present.
 
+## Milestones
+
+- **Upgrade `three` past `0.84.0` (pending).** `three@0.84.0` has a known high-severity denial-of-service advisory,
+  but it's pinned to that exact version deliberately: `src/player/util/FishEye3D.ts` and `FishEye3DMulti.ts` (the
+  fisheye camera dewarp rendering) depend on APIs removed from three.js in later releases — `THREE.Geometry`,
+  `THREE.Face3`, `THREE.AxisHelper`, `THREE.RGBFormat`, `BufferGeometry.fromGeometry`, `THREE.Math.degToRad`.
+  Upgrading requires rewriting that mesh-construction/rendering code against modern `BufferGeometry`-based APIs, and
+  there's no visual-regression test for the fisheye dewarp output — only structural/unit tests — so the rendered
+  result can't be verified automatically. On hold until that rewrite can be checked against a real fisheye camera
+  feed in a browser.
+
 ![license-image](https://img.shields.io/badge/license-HanwhaVision%201.0-blue.svg?style=flat) [license-url](LICENSE.txt)
