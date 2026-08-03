@@ -116,7 +116,7 @@ export class CanvasRenderer {
     }
 
     // drawer.drawCanvas(data) is called generically here for both possible
-    // drawer kinds (Uint8Array frame data for YUVWebGLCanvas, an
+    // drawer types (Uint8Array frame data for YUVWebGLCanvas, an
     // HTMLImageElement for Image2DCanvas via draw()'s MJPEG branch below) —
     // legacy relies on plain JS duck-typing since Image2DCanvas isn't
     // actually related to YUVWebGLCanvas by inheritance; the cast just gives

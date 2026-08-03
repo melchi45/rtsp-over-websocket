@@ -1,15 +1,15 @@
 /**
- * TypeScript port of the legacy AngularJS `kindStreamInterface` factory.
+ * TypeScript port of the legacy host-framework `rtspOverWebSocketStreamInterface` factory.
  *
- * The legacy file registers `kindStreamInterface` directly as an AngularJS
- * factory (`kindStreamModule.factory('kindStreamInterface', function (Attributes, ...) {...})`).
+ * The legacy file registers `rtspOverWebSocketStreamInterface` directly as a
+ * host-framework factory (`rtspOverWebSocketStreamModule.factory('rtspOverWebSocketStreamInterface', function (Attributes, ...) {...})`).
  * Here the factory body is extracted into a plain, dependency-injected
- * function so it can be unit-tested without a real AngularJS/host-app
- * runtime (see angularInterface/types.ts for why the real service
- * implementations aren't available in this repository). `register.ts` wires
- * this function back onto the global `angular`/`kindStreamModule` exactly as
- * the legacy file did, for the (currently unverified) host-app consumption
- * path.
+ * function so it can be unit-tested without a real legacy-host-framework/host-app
+ * runtime (see legacyHostInterface/types.ts for why the real service
+ * implementations aren't available in this repository). The actual
+ * module/factory registration wiring is left to the (currently
+ * unverified) external host app that consumes this factory — this repo
+ * never calls into that host framework itself.
  *
  * Ported close to 1:1 with the legacy control flow — this is a syntax/type
  * migration, not a logic rewrite. Behavioral quirks are preserved unless
@@ -36,7 +36,7 @@ import type {
   IntervalServiceLike,
   JQueryLike,
   JQueryStaticLike,
-  KindPlayerData,
+  RTSPOverWebSocketPlayerData,
   MinimapChangeData,
   RootScopeLike,
   StreamManagerCtor,
@@ -44,7 +44,7 @@ import type {
   UniversialManagerServiceType
 } from './types';
 
-export interface KindStreamInterfaceDeps {
+export interface RTSPOverWebSocketStreamInterfaceDeps {
   Attributes: AttributesService;
   UniversialManagerService: UniversialManagerServiceType;
   EventNotificationService: EventNotificationServiceType;
@@ -60,10 +60,10 @@ export interface KindStreamInterfaceDeps {
   $: JQueryStaticLike;
 }
 
-export interface KindStreamInterface {
-  init(info: KindPlayerData, sunapiClient: unknown): void;
-  destroyPlayer(data: KindPlayerData): void;
-  changeStreamInfo(kindplayerdata: KindPlayerData | undefined): boolean | void;
+export interface RTSPOverWebSocketStreamInterface {
+  init(info: RTSPOverWebSocketPlayerData, sunapiClient: unknown): void;
+  destroyPlayer(data: RTSPOverWebSocketPlayerData): void;
+  changeStreamInfo(rtspOverWebSocketPlayerData: RTSPOverWebSocketPlayerData | undefined): boolean | void;
   changeDrawInfo(data: { channelId: number; elementId: string; zoomArray: unknown }): void;
   changeMinimapInfo(data: MinimapChangeData): boolean | void;
   controlWorker(controlData: ControlWorkerData): void;
@@ -87,7 +87,7 @@ export interface KindStreamInterface {
   getBorderElement(): JQueryLike;
 }
 
-export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindStreamInterface {
+export function createRTSPOverWebSocketStreamInterface(deps: RTSPOverWebSocketStreamInterfaceDeps): RTSPOverWebSocketStreamInterface {
   const {
     Attributes,
     UniversialManagerService,
@@ -408,8 +408,8 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
       $('#cm-bottom-menu #cm-menu-content').css({ top: 50 + 'px' });
 
       if (checkHeight < 0) {
-        if ($('.kind-responsive-live').length) $('.kind-responsive-live').addClass('land-scape');
-        if ($('.kind-responsive-playback').length) $('.kind-responsive-playback').addClass('land-scape');
+        if ($('.rtsp-responsive-live').length) $('.rtsp-responsive-live').addClass('land-scape');
+        if ($('.rtsp-responsive-playback').length) $('.rtsp-responsive-playback').addClass('land-scape');
 
         const bottomMenuWidth = controlShowValue ? 470 : 70;
 
@@ -427,7 +427,7 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
           $('.full-screen').css({
             height: 'calc(100% - 50px)'
           });
-          $('.full-screen kind_stream').css({
+          $('.full-screen rtsp-stream').css({
             width: 'calc(100% - ' + bottomMenuWidth + 'px)',
             height: '100%'
           });
@@ -506,12 +506,12 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
           bottomMenuHeight += 100;
         }
 
-        $('#cm-video, #event-sidebar, .full-screen, kind_stream').removeAttr('style');
+        $('#cm-video, #event-sidebar, .full-screen, rtsp-stream').removeAttr('style');
         $('#event-sidebar').css({
           height: $('#cm-video').height() ?? 0
         });
         if ($('.full-screen img').length || $('.full-screen object').length) {
-          $('.full-screen kind_stream').css({
+          $('.full-screen rtsp-stream').css({
             height: '100%'
           });
           $('.full-screen').css({
@@ -521,7 +521,7 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
           $('.full-screen').css({
             height: '100%'
           });
-          $('.full-screen kind_stream').css({
+          $('.full-screen rtsp-stream').css({
             height: 'calc(100% - ' + bottomMenuHeight + 'px)'
           });
         }
@@ -785,8 +785,8 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
   function videoModeCallback(info: { channelId?: number; mode: string; [key: string]: unknown }): void {
     $rootScope.$emit('StatisticsService:statistics', info, true);
     const channelId = typeof info.channelId !== 'undefined' ? info.channelId : UniversialManagerService.getChannelId();
-    const canvasElem = $('canvas[kind-channel-id="' + channelId + '"]')[0];
-    const videoElem = $('video[kind-channel-id="' + channelId + '"]')[0];
+    const canvasElem = $('canvas[rtsp-channel-id="' + channelId + '"]')[0];
+    const videoElem = $('video[rtsp-channel-id="' + channelId + '"]')[0];
     $(canvasElem).removeClass('video-display-none');
     $(videoElem).removeClass('video-display-none');
     if (info.mode === 'video') {
@@ -872,7 +872,7 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
   }
 
   return {
-    init(info: KindPlayerData, sunapiClient: unknown): void {
+    init(info: RTSPOverWebSocketPlayerData, sunapiClient: unknown): void {
       if (!manager) {
         manager = new StreamManager();
       }
@@ -904,7 +904,7 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
       DigitalZoomService.init();
       EventNotificationService.clearObjectDetectionMetaData();
     },
-    destroyPlayer(data: KindPlayerData): void {
+    destroyPlayer(data: RTSPOverWebSocketPlayerData): void {
       EventNotificationService.initEventStatusList();
       currentPage = null;
       if (manager === undefined || manager === null) return;
@@ -918,14 +918,14 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
         });
       }
     },
-    changeStreamInfo(kindplayerdata: KindPlayerData | undefined): boolean | void {
-      if (kindplayerdata === undefined) return false;
+    changeStreamInfo(rtspOverWebSocketPlayerData: RTSPOverWebSocketPlayerData | undefined): boolean | void {
+      if (rtspOverWebSocketPlayerData === undefined) return false;
       if (manager === undefined || manager === null) return false;
-      manager.controlPlayer(kindplayerdata as unknown as ControlPlayerInfo);
-      const cmd = kindplayerdata.media.requestInfo.cmd;
-      if (cmd === 'capture') kindplayerdata.media.requestInfo.cmd = 'init';
+      manager.controlPlayer(rtspOverWebSocketPlayerData as unknown as ControlPlayerInfo);
+      const cmd = rtspOverWebSocketPlayerData.media.requestInfo.cmd;
+      if (cmd === 'capture') rtspOverWebSocketPlayerData.media.requestInfo.cmd = 'init';
       if (cmd === 'close') {
-        this.destroyPlayer(kindplayerdata);
+        this.destroyPlayer(rtspOverWebSocketPlayerData);
       }
     },
     changeDrawInfo(data: { channelId: number; elementId: string; zoomArray: unknown }): void {
@@ -1064,7 +1064,7 @@ export function createKindStreamInterface(deps: KindStreamInterfaceDeps): KindSt
       return ispreview;
     },
     locationChangeViewmode(): void {
-      // $rootScope.curViewMode is set by the outer AngularJS host app (outside
+      // $rootScope.curViewMode is set by the outer legacy host app (outside
       // this repository) — see types.ts. Falls back to '' to satisfy the
       // typed setCanvasStyle signature; legacy passed `undefined` through untyped.
       setCanvasStyle($rootScope.curViewMode ?? '');

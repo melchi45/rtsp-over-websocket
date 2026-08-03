@@ -698,7 +698,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       } else {
         this.info.device.channelId = Number(this.getAttribute('channel')) - 1;
       }
-      this.video.setAttribute('kind-channel-id', String(this.info.device.channelId));
+      this.video.setAttribute('rtsp-channel-id', String(this.info.device.channelId));
 
       // Legacy bug preserved (tautology): `getAttribute('width') !== null ||
       // getAttribute('width') !== undefined` — `getAttribute()` never
@@ -713,7 +713,7 @@ export class RTSPOverWebSocket extends HTMLElement {
 
       if (this.getAttribute('id') !== null) {
         this.video.id = 'live-' + this.getAttribute('id');
-        this.video.setAttribute('kind-channel-mapped-id', this.getAttribute('id') as string);
+        this.video.setAttribute('rtsp-channel-mapped-id', this.getAttribute('id') as string);
         this.info.media.element = this.getAttribute('id');
       } else {
         console.warn('The rtsp-over-websocket tag does not allow an empty tag id.');
@@ -2837,8 +2837,8 @@ export class RTSPOverWebSocket extends HTMLElement {
         // calls are commented out).
         height = (oldVideoElement as unknown as { offsetH?: number }).offsetH as unknown as number;
       }
-      const kindChannelid = oldVideoElement.getAttribute('kind-channel-id');
-      const mappedId = oldVideoElement.getAttribute('kind-channel-mapped-id');
+      const rtspChannelId = oldVideoElement.getAttribute('rtsp-channel-id');
+      const mappedId = oldVideoElement.getAttribute('rtsp-channel-mapped-id');
       if (this._playType === RTSPOverWebSocketPlayType.LIVE) {
         classList = oldVideoElement.getAttribute('class');
       }
@@ -2847,8 +2847,8 @@ export class RTSPOverWebSocket extends HTMLElement {
 
       const newVideoElement = document.createElement(event.mode);
       newVideoElement.setAttribute('id', tagid);
-      newVideoElement.setAttribute('kind-channel-id', kindChannelid as string);
-      newVideoElement.setAttribute('kind-channel-mapped-id', mappedId as string);
+      newVideoElement.setAttribute('rtsp-channel-id', rtspChannelId as string);
+      newVideoElement.setAttribute('rtsp-channel-mapped-id', mappedId as string);
       let styleText = '';
       // Legacy bug preserved: `event.mode.toLowerCase !== 'canvas'` compares
       // the FUNCTION REFERENCE `toLowerCase` (never called) to the string
@@ -3066,7 +3066,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.resolutionElement.textContent = event.width + ' x ' + event.height;
     }
 
-    const videoElement = getElementByAttributeValue(event.tagmode, 'kind-channel-mapped-id', event.elementId);
+    const videoElement = getElementByAttributeValue(event.tagmode, 'rtsp-channel-mapped-id', event.elementId);
 
     if (videoElement !== undefined) {
       let styleText = '';

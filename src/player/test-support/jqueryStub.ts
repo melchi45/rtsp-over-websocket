@@ -1,7 +1,7 @@
 /**
  * Minimal, spy-friendly stand-in for jQuery, used only by the Layer 12
- * (angularInterface) contract tests. Deliberately not real jQuery — see
- * angularInterface/types.ts (`JQueryLike`) for why this migration doesn't
+ * (legacyHostInterface) contract tests. Deliberately not real jQuery — see
+ * legacyHostInterface/types.ts (`JQueryLike`) for why this migration doesn't
  * take on a `jquery`/`@types/jquery` dependency. Every call is a Vitest
  * spy so tests can assert on DOM-manipulation intent without needing an
  * actual DOM to manipulate correctly.
@@ -11,7 +11,7 @@
  * pixel-accurate DOM state).
  */
 import { vi } from 'vitest';
-import type { JQueryLike, JQueryStaticLike } from '../angularInterface/types';
+import type { JQueryLike, JQueryStaticLike } from '../legacyHostInterface/types';
 
 export function createJQueryChainStub(): JQueryLike {
   const chain = {} as Record<string, unknown>;

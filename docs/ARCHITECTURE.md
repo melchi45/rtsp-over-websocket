@@ -20,7 +20,7 @@ src/
 │   ├── talk/                  Two-way audio (talk-back) support
 │   ├── exceptions/             RTSPOverWebSocketBaseError and its subclasses (Auth/RTCP/RTSP/Sunapi errors)
 │   ├── util/                    Shared helpers (SPS parsing, digest auth, byte/format utilities, a small Map utility)
-│   ├── angularInterface/        Optional AngularJS 1.x glue for a specific host app (not part of the neutral ESM API)
+│   ├── legacyHostInterface/      Optional legacy host-framework glue for a specific host app (not part of the neutral ESM API)
 │   ├── vendor/                  Vendored third-party decode libraries (mp4 muxing, minizip, ffmpeg-derived AAC decoder)
 │   └── test-support/             Test harness helpers, including the legacy-parity sandbox loader
 │

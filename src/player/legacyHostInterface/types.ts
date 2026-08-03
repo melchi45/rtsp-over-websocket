@@ -1,10 +1,10 @@
 /**
- * Ambient contracts for the angularInterface layer.
+ * Ambient contracts for the legacyHostInterface layer.
  *
- * `streamInterface.ts`/`streamCanvas.ts` depend on several AngularJS 1.x
+ * `streamInterface.ts`/`streamCanvas.ts` depend on several legacy host-framework
  * services (Attributes, UniversialManagerService, EventNotificationService,
  * DigitalZoomService, CAMERA_STATUS, EventDataParser, `isPhone`) and a
- * `kindStreamModule` AngularJS module that are **not defined anywhere in this
+ * `rtspOverWebSocketStreamModule` host-framework module that are **not defined anywhere in this
  * repository**. They must be registered by the outer host application that
  * consumes this library via `<script src>`.
  *
@@ -49,10 +49,11 @@ export interface JQueryLike {
 export type JQueryStaticLike = (selector?: string | Element | Document | Window | null | undefined) => JQueryLike;
 
 /**
- * Minimal structural shapes for the AngularJS 1.x `$rootScope`/`$interval`
- * services this layer injects. Declared locally rather than adding
- * `@types/angular` as a new dependency, for the same reason as `JQueryLike`
- * above — only the members actually called in the legacy source are typed.
+ * Minimal structural shapes for the legacy host framework's `$rootScope`/`$interval`
+ * services this layer injects. Declared locally rather than adding the host
+ * framework's own type-definitions package as a new dependency, for the same
+ * reason as `JQueryLike` above — only the members actually called in the
+ * legacy source are typed.
  */
 export interface RootScopeLike {
   $emit(name: string, ...args: unknown[]): void;
@@ -68,8 +69,8 @@ export interface IntervalServiceLike {
   cancel(promise: IntervalPromise): void;
 }
 
-/** Shape of the object passed between the AngularJS host and kindStreamInterface. */
-export interface KindPlayerData {
+/** Shape of the object passed between the legacy host app and rtspOverWebSocketStreamInterface. */
+export interface RTSPOverWebSocketPlayerData {
   device: {
     channelId: number | null;
     zipPassword?: string;
@@ -104,7 +105,7 @@ export interface ControlPlayerInfo {
 
 /** Stand-in for the legacy StreamManager service — not yet ported to this repository. */
 export interface StreamManagerHandle {
-  initStreamPlayer(info: KindPlayerData, sunapiClient: SunapiClientHandle): void;
+  initStreamPlayer(info: RTSPOverWebSocketPlayerData, sunapiClient: SunapiClientHandle): void;
   controlPlayer(info: ControlPlayerInfo): void;
   destroyPlayer(channelId: number, elementId: string): void;
   controlWorker(controlData: ControlWorkerData): void;
@@ -129,7 +130,7 @@ export interface AttributesShape {
   [key: string]: unknown;
 }
 
-/** External AngularJS service, host-app-defined; not present in this repository. */
+/** External host-framework service, host-app-defined; not present in this repository. */
 export interface AttributesService {
   get(): AttributesShape;
 }
@@ -140,7 +141,7 @@ export interface ProfileInfo {
   ViewModeIndex: number;
 }
 
-/** External AngularJS service, host-app-defined; not present in this repository. */
+/** External host-framework service, host-app-defined; not present in this repository. */
 export interface UniversialManagerServiceType {
   calcRatioPositionFromOverlay(offset: { offsetX: number; offsetY: number }): { x: number; y: number } | null | undefined;
   getVideoMode(): string;
@@ -161,7 +162,7 @@ export interface UniversialManagerServiceType {
 
 export type UpdateEventStatusCallback = (...args: unknown[]) => void;
 
-/** External AngularJS service, host-app-defined; not present in this repository. */
+/** External host-framework service, host-app-defined; not present in this repository. */
 export interface EventNotificationServiceType {
   getBorderSize(): number;
   setBorderElement(element: JQueryLike | Element | null | undefined, currentPage: string | null): void;
@@ -171,12 +172,12 @@ export interface EventNotificationServiceType {
   updateEventStatus: UpdateEventStatusCallback;
 }
 
-/** External AngularJS service, host-app-defined; not present in this repository. */
+/** External host-framework service, host-app-defined; not present in this repository. */
 export interface DigitalZoomServiceType {
   init(force?: boolean): void;
 }
 
-/** External AngularJS constant, host-app-defined; not present in this repository. */
+/** External host-framework constant, host-app-defined; not present in this repository. */
 export interface CameraStatusConstant {
   STREAMING_MODE: { PLUGIN_MODE: unknown; [key: string]: unknown };
   PLAY_MODE: { LIVE: unknown; [key: string]: unknown };

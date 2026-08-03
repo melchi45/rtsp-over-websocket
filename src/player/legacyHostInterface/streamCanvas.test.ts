@@ -1,17 +1,17 @@
 // @vitest-environment jsdom
 /**
- * Contract tests for Layer 12 (angularInterface) — see streamInterface.test.ts
+ * Contract tests for Layer 12 (legacyHostInterface) — see streamInterface.test.ts
  * header for why this layer uses contract tests instead of Phase 1's
  * vm-sandboxed behavioral-parity tests.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createJQueryStub } from '../test-support/jqueryStub';
-import { createKindStreamDirective, type KindStreamDirectiveDeps, type KindStreamScope } from './streamCanvas';
-import type { KindStreamInterface } from './streamInterface';
-import type { KindPlayerData } from './types';
+import { createRTSPOverWebSocketStreamDirective, type RTSPOverWebSocketStreamDirectiveDeps, type RTSPOverWebSocketStreamScope } from './streamCanvas';
+import type { RTSPOverWebSocketStreamInterface } from './streamInterface';
+import type { RTSPOverWebSocketPlayerData } from './types';
 
-function createDeps(): { deps: KindStreamDirectiveDeps; kindStreamInterface: KindStreamInterface } {
-  const kindStreamInterface: KindStreamInterface = {
+function createDeps(): { deps: RTSPOverWebSocketStreamDirectiveDeps; rtspOverWebSocketStreamInterface: RTSPOverWebSocketStreamInterface } {
+  const rtspOverWebSocketStreamInterface: RTSPOverWebSocketStreamInterface = {
     init: vi.fn(),
     destroyPlayer: vi.fn(),
     changeStreamInfo: vi.fn(),
@@ -38,8 +38,8 @@ function createDeps(): { deps: KindStreamDirectiveDeps; kindStreamInterface: Kin
     getBorderElement: vi.fn()
   };
 
-  const deps: KindStreamDirectiveDeps = {
-    kindStreamInterface,
+  const deps: RTSPOverWebSocketStreamDirectiveDeps = {
+    rtspOverWebSocketStreamInterface,
     UniversialManagerService: {
       calcRatioPositionFromOverlay: vi.fn(),
       getVideoMode: vi.fn(),
@@ -61,10 +61,10 @@ function createDeps(): { deps: KindStreamDirectiveDeps; kindStreamInterface: Kin
     isPhone: false
   };
 
-  return { deps, kindStreamInterface };
+  return { deps, rtspOverWebSocketStreamInterface };
 }
 
-function createScope(): KindStreamScope & { $parent: { child?: unknown; updatePlayer?: (v: KindPlayerData | null) => void } } {
+function createScope(): RTSPOverWebSocketStreamScope & { $parent: { child?: unknown; updatePlayer?: (v: RTSPOverWebSocketPlayerData | null) => void } } {
   return {
     $parent: {},
     $on: vi.fn(),
@@ -72,15 +72,15 @@ function createScope(): KindStreamScope & { $parent: { child?: unknown; updatePl
   };
 }
 
-const kindPlayerData: KindPlayerData = {
+const rtspOverWebSocketPlayerData: RTSPOverWebSocketPlayerData = {
   device: { channelId: 1 },
   media: { element: 'el-1', type: 'live', requestInfo: {} }
 };
 
-describe('createKindStreamDirective (Layer 12 contract)', () => {
+describe('createRTSPOverWebSocketStreamDirective (Layer 12 contract)', () => {
   it('returns an "E"-restricted directive with the legacy isolate scope bindings and template markup', () => {
     const { deps } = createDeps();
-    const directive = createKindStreamDirective(deps);
+    const directive = createRTSPOverWebSocketStreamDirective(deps);
 
     expect(directive.restrict).toBe('E');
     expect(directive.scope).toEqual({ control: '=', objectDetectionEnable: '=' });
@@ -90,8 +90,8 @@ describe('createKindStreamDirective (Layer 12 contract)', () => {
   });
 
   it('link() wires the stream canvas, resize handler, and canvas tag/video-mode on setup', () => {
-    const { deps, kindStreamInterface } = createDeps();
-    const directive = createKindStreamDirective(deps);
+    const { deps, rtspOverWebSocketStreamInterface } = createDeps();
+    const directive = createRTSPOverWebSocketStreamDirective(deps);
     const stub = createJQueryStub();
     const elem = { find: vi.fn(() => stub.root) };
     const scope = createScope();
@@ -99,16 +99,16 @@ describe('createKindStreamDirective (Layer 12 contract)', () => {
     directive.link(scope, elem);
 
     expect(elem.find).toHaveBeenCalledWith('#stream-canvas');
-    expect(kindStreamInterface.setStreamCanvas).toHaveBeenCalledWith(stub.root);
-    expect(kindStreamInterface.setResizeEvent).toHaveBeenCalled();
-    expect(kindStreamInterface.setTagType).toHaveBeenCalledWith('canvas');
+    expect(rtspOverWebSocketStreamInterface.setStreamCanvas).toHaveBeenCalledWith(stub.root);
+    expect(rtspOverWebSocketStreamInterface.setResizeEvent).toHaveBeenCalled();
+    expect(rtspOverWebSocketStreamInterface.setTagType).toHaveBeenCalledWith('canvas');
     expect(deps.UniversialManagerService.setVideoMode).toHaveBeenCalledWith('canvas');
     expect(scope.$parent.child).toBe(scope);
   });
 
   it('$destroy: skips teardown entirely when isPhone is true', () => {
-    const { deps, kindStreamInterface } = createDeps();
-    const directive = createKindStreamDirective({ ...deps, isPhone: true });
+    const { deps, rtspOverWebSocketStreamInterface } = createDeps();
+    const directive = createRTSPOverWebSocketStreamDirective({ ...deps, isPhone: true });
     const elem = { find: vi.fn(() => createJQueryStub().root) };
     const scope = createScope();
 
@@ -116,59 +116,59 @@ describe('createKindStreamDirective (Layer 12 contract)', () => {
     const destroyHandler = (scope.$on as ReturnType<typeof vi.fn>).mock.calls[0][1] as () => void;
     destroyHandler();
 
-    expect(kindStreamInterface.setIspreview).not.toHaveBeenCalled();
-    expect(kindStreamInterface.changeStreamInfo).not.toHaveBeenCalled();
+    expect(rtspOverWebSocketStreamInterface.setIspreview).not.toHaveBeenCalled();
+    expect(rtspOverWebSocketStreamInterface.changeStreamInfo).not.toHaveBeenCalled();
   });
 
   it('$destroy: sets requestInfo.cmd to "close" and tears down the player when isPhone is false', () => {
-    const { deps, kindStreamInterface } = createDeps();
-    const directive = createKindStreamDirective(deps);
+    const { deps, rtspOverWebSocketStreamInterface } = createDeps();
+    const directive = createRTSPOverWebSocketStreamDirective(deps);
     const elem = { find: vi.fn(() => createJQueryStub().root) };
     const scope = createScope();
-    scope.kindplayer = { device: { channelId: 1 }, media: { element: 'el-1', requestInfo: {} } };
+    scope.rtspOverWebSocketPlayer = { device: { channelId: 1 }, media: { element: 'el-1', requestInfo: {} } };
 
     directive.link(scope, elem);
     const destroyHandler = (scope.$on as ReturnType<typeof vi.fn>).mock.calls[0][1] as () => void;
     destroyHandler();
 
-    expect(scope.kindplayer.media.requestInfo.cmd).toBe('close');
-    expect(kindStreamInterface.setIspreview).toHaveBeenCalledWith(false);
-    expect(kindStreamInterface.changeStreamInfo).toHaveBeenCalledWith(scope.kindplayer);
+    expect(scope.rtspOverWebSocketPlayer.media.requestInfo.cmd).toBe('close');
+    expect(rtspOverWebSocketStreamInterface.setIspreview).toHaveBeenCalledWith(false);
+    expect(rtspOverWebSocketStreamInterface.changeStreamInfo).toHaveBeenCalledWith(scope.rtspOverWebSocketPlayer);
   });
 
-  it('updatePlayer(null) returns immediately without touching kindStreamInterface', () => {
-    const { deps, kindStreamInterface } = createDeps();
-    const directive = createKindStreamDirective(deps);
+  it('updatePlayer(null) returns immediately without touching rtspOverWebSocketStreamInterface', () => {
+    const { deps, rtspOverWebSocketStreamInterface } = createDeps();
+    const directive = createRTSPOverWebSocketStreamDirective(deps);
     const elem = { find: vi.fn(() => createJQueryStub().root) };
     const scope = createScope();
 
     directive.link(scope, elem);
     scope.$parent.updatePlayer?.(null);
 
-    expect(kindStreamInterface.init).not.toHaveBeenCalled();
+    expect(rtspOverWebSocketStreamInterface.init).not.toHaveBeenCalled();
   });
 
   it('updatePlayer() tags the live/canvas elements with the channel id and initializes the player', () => {
-    const { deps, kindStreamInterface } = createDeps();
-    const directive = createKindStreamDirective(deps);
+    const { deps, rtspOverWebSocketStreamInterface } = createDeps();
+    const directive = createRTSPOverWebSocketStreamDirective(deps);
     const stub = createJQueryStub();
     const elem = { find: vi.fn(() => stub.root) };
     const scope = createScope();
 
     directive.link(scope, elem);
-    scope.$parent.updatePlayer?.(kindPlayerData);
+    scope.$parent.updatePlayer?.(rtspOverWebSocketPlayerData);
 
-    expect(stub.root.attr).toHaveBeenCalledWith('kind-channel-id', 1);
-    expect(stub.root.attr).toHaveBeenCalledWith('kind-channel-mapped-id', 'el-1');
-    expect(kindStreamInterface.init).toHaveBeenCalledWith(kindPlayerData, deps.SunapiClient);
+    expect(stub.root.attr).toHaveBeenCalledWith('rtsp-channel-id', 1);
+    expect(stub.root.attr).toHaveBeenCalledWith('rtsp-channel-mapped-id', 'el-1');
+    expect(rtspOverWebSocketStreamInterface.init).toHaveBeenCalledWith(rtspOverWebSocketPlayerData, deps.SunapiClient);
   });
 
   it('updatePlayer() strips zipPassword from the original object while still forwarding a copy that retains it (discovered legacy bug, preserved)', () => {
-    const { deps, kindStreamInterface } = createDeps();
-    const directive = createKindStreamDirective(deps);
+    const { deps, rtspOverWebSocketStreamInterface } = createDeps();
+    const directive = createRTSPOverWebSocketStreamDirective(deps);
     const elem = { find: vi.fn(() => createJQueryStub().root) };
     const scope = createScope();
-    const withPassword: KindPlayerData = {
+    const withPassword: RTSPOverWebSocketPlayerData = {
       device: { channelId: 1, zipPassword: 'secret' },
       media: { element: 'el-1', type: 'live', requestInfo: { cmd: 'open' } }
     };
@@ -177,16 +177,16 @@ describe('createKindStreamDirective (Layer 12 contract)', () => {
     scope.$parent.updatePlayer?.(withPassword);
 
     expect(withPassword.device.zipPassword).toBeUndefined();
-    const forwarded = (kindStreamInterface.changeStreamInfo as ReturnType<typeof vi.fn>).mock.calls[0][0] as KindPlayerData;
+    const forwarded = (rtspOverWebSocketStreamInterface.changeStreamInfo as ReturnType<typeof vi.fn>).mock.calls[0][0] as RTSPOverWebSocketPlayerData;
     expect(forwarded.device.zipPassword).toBe('secret');
   });
 
-  it('updatePlayer() remaps "forward"/"backward" requestInfo.cmd to "init" before storing scope.kindplayer', () => {
+  it('updatePlayer() remaps "forward"/"backward" requestInfo.cmd to "init" before storing scope.rtspOverWebSocketPlayer', () => {
     const { deps } = createDeps();
-    const directive = createKindStreamDirective(deps);
+    const directive = createRTSPOverWebSocketStreamDirective(deps);
     const elem = { find: vi.fn(() => createJQueryStub().root) };
     const scope = createScope();
-    const forwardData: KindPlayerData = {
+    const forwardData: RTSPOverWebSocketPlayerData = {
       device: { channelId: 1 },
       media: { element: 'el-1', type: 'live', requestInfo: { cmd: 'forward' } }
     };
@@ -194,6 +194,6 @@ describe('createKindStreamDirective (Layer 12 contract)', () => {
     directive.link(scope, elem);
     scope.$parent.updatePlayer?.(forwardData);
 
-    expect(scope.kindplayer?.media.requestInfo.cmd).toBe('init');
+    expect(scope.rtspOverWebSocketPlayer?.media.requestInfo.cmd).toBe('init');
   });
 });

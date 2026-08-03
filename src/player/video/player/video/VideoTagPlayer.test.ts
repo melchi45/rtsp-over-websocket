@@ -114,7 +114,7 @@ class FakeVideoElement {
   onemptied: (() => void) | null = null;
   attributes: Record<string, string> = {};
 
-  addTextTrack(_kind: string, _label: string, _lang: string): FakeTextTrack {
+  addTextTrack(_type: string, _label: string, _lang: string): FakeTextTrack {
     const track = new FakeTextTrack();
     this.textTracks.tracks.push(track);
     return track;

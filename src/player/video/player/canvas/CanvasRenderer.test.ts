@@ -113,7 +113,7 @@ describe('CanvasRenderer contract tests (the legacy player’s Video/Player/Canv
     expect(() => renderer.renewCanvas()).not.toThrow();
   });
 
-  it('digitalZoom() throws TypeError once a drawer exists — updateVertexArray is dead/commented-out in legacy on every drawer kind', () => {
+  it('digitalZoom() throws TypeError once a drawer exists — updateVertexArray is dead/commented-out in legacy on every drawer type', () => {
     const renderer = new CanvasRenderer();
     expect(() => renderer.digitalZoom({ x: 1, y: 1, z: 1 })).not.toThrow(); // no drawer yet: no-op
 

@@ -1280,14 +1280,14 @@ export class MediaRouter {
 
     if (mode === 'canvas') {
       this.videoElement =
-        getElementByAttributeValue('canvas', 'kind-channel-mapped-id', this.getElement()) ??
-        getElementByAttributeValue('canvas', 'kind-channel-mapped-id', this.channelId) ??
-        getElementByAttributeValue('canvas', 'kind-channel-id', this.channelId);
+        getElementByAttributeValue('canvas', 'rtsp-channel-mapped-id', this.getElement()) ??
+        getElementByAttributeValue('canvas', 'rtsp-channel-mapped-id', this.channelId) ??
+        getElementByAttributeValue('canvas', 'rtsp-channel-id', this.channelId);
     } else {
       this.videoElement =
-        getElementByAttributeValue('video', 'kind-channel-mapped-id', this.getElement()) ??
-        getElementByAttributeValue('video', 'kind-channel-mapped-id', this.channelId) ??
-        getElementByAttributeValue('video', 'kind-channel-id', this.channelId);
+        getElementByAttributeValue('video', 'rtsp-channel-mapped-id', this.getElement()) ??
+        getElementByAttributeValue('video', 'rtsp-channel-mapped-id', this.channelId) ??
+        getElementByAttributeValue('video', 'rtsp-channel-id', this.channelId);
     }
 
     if (typeof this.videoElement === 'undefined' || this.videoElement === null) {

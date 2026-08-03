@@ -20,9 +20,9 @@ export interface FakeWebGLRenderingContext extends WebGLRenderingContext {
 
 let idCounter = 0;
 
-export function createFakeGLObject(kind: string): Record<string, unknown> {
+export function createFakeGLObject(type: string): Record<string, unknown> {
   idCounter += 1;
-  return { __kind: kind, __id: idCounter };
+  return { __type: type, __id: idCounter };
 }
 
 export function createFakeWebGLContext(canvas: HTMLCanvasElement): FakeWebGLRenderingContext {
