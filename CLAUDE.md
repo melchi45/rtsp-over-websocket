@@ -15,7 +15,7 @@ the full structure/data-flow writeup and [README.md](README.md) for build/run in
 npm run build:player          # tsc + vite build -> dist/player/*.js, copies src/index.html -> dist/index.html
 npm run build:server          # tsc -> dist/server/*.js
 npm run start:server[:http|:https]
-npm run stop
+npm run stop:server
 npm run test:player            # vitest run
 ```
 

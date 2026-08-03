@@ -31,7 +31,7 @@ npm run build:server   # tsc -> dist/server/*.js
 npm run start:server         # builds src/server, then starts it (prompts for http/https/both if run in a real terminal)
 npm run start:server:http    # http only (REST + ws://.../StreamingServer on port 4000)
 npm run start:server:https   # https only (REST + wss://.../StreamingServer on port 4001)
-npm run stop                 # stops whatever is listening on those ports
+npm run stop:server          # stops whatever is listening on those ports
 ```
 
 Once running, open `http://localhost:4000/` (or `https://localhost:4001/`) — the server serves the demo page

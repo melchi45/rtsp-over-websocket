@@ -59,7 +59,7 @@ curl -s -X POST http://127.0.0.1:4000/api/sessions -H "Content-Type: application
 ## Stop
 
 ```bash
-npm run stop
+npm run stop:server
 ```
 
 Kills whatever is listening on the configured HTTP/HTTPS ports (respects `RTSP_WS_HTTP_PORT`/`RTSP_WS_HTTPS_PORT`

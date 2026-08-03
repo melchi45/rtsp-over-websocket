@@ -17,9 +17,14 @@ function videoEncoderArgs(codec: VideoCodec, encoder: string, height: number): s
     case 'MJPEG':
       return ['-c:v', encoder, '-q:v', '5', ...scale];
     case 'H264':
-      return ['-c:v', encoder, '-preset', 'veryfast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p', ...scale];
+      // repeat-headers makes libx264 embed SPS/PPS in-band before every keyframe (confirmed empirically — the
+      // `dump_extra` bitstream filter was tried first but only fires once at stream start, not per keyframe, so a
+      // player joining mid-stream would still never see one). Without this, ffmpeg's rtsp muxer only declares
+      // SPS/PPS out-of-band via SDP sprop-parameter-sets, which this player's H264Session never reads — matching
+      // real IP camera encoders (which normally repeat parameter sets in-band) is what the player actually expects.
+      return ['-c:v', encoder, '-preset', 'veryfast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p', '-x264-params', 'repeat-headers=1', ...scale];
     case 'H265':
-      return ['-c:v', encoder, '-preset', 'veryfast', '-pix_fmt', 'yuv420p', ...scale];
+      return ['-c:v', encoder, '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-x265-params', 'repeat-headers=1', ...scale];
     case 'AV1':
       return encoder === 'libsvtav1'
         ? ['-c:v', encoder, '-preset', '10', '-pix_fmt', 'yuv420p', ...scale]

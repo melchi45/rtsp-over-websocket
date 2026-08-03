@@ -60,6 +60,6 @@
         "start:server": "npm run build:server && node dist/server/index.js",
         "start:server:http": "npm run build:server && node dist/server/index.js --http",
         "start:server:https": "npm run build:server && node dist/server/index.js --https",
-        "stop": "node scripts/stop-server.js"
+        "stop:server": "node scripts/stop-server.js"
     }
 }
