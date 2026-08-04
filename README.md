@@ -17,6 +17,78 @@ scripts/       Standalone helper scripts (static file server, stop-server).
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deeper look at the structure, data flow, and diagrams.
 
+## Pipeline: YouTube → ffmpeg → MediaMTX → Player
+
+`src/server` exists so the player can be exercised without a real RTSP camera. It turns a YouTube URL into a live
+RTSP source and bridges that back out over the same RTSP-over-WebSocket wire protocol a real camera would speak:
+
+```
+YouTube URL
+   │  yt-dlp (download, stdout pipe: video+audio, DASH-muxed)
+   ▼
+yt-dlp stdout ──pipe──▶ ffmpeg (transcode to the requested video/audio codec + resolution)
+   │  ffmpeg -f rtsp (TCP), rtsp://127.0.0.1:8554/<sessionId>
+   ▼
+MediaMTX (RTSP server, :8554 publish / :8554 read, :9997 API)
+   │  RTSP (TCP), relayed 1:1 by src/server's own bridge
+   ▼
+src/server/rtspOverWebSocket/server.ts (WS ⇄ RTSP bridge, digest auth, keyframe gating)
+   │  RTSP-over-WebSocket (ws:// or wss://, interleaved framing, RFC 7826 §10.12)
+   ▼
+<rtsp-over-websocket> custom element (src/player) — decode + render in the browser
+```
+
+Each stage is a separate OS process/service `src/server` coordinates but does not itself implement: `yt-dlp` and
+`ffmpeg` are spawned per session (`services/transcodeSession.ts`), MediaMTX is a standalone binary `src/server`
+only connects to (never spawns — see "External tools required by src/server" below), and the bridge is the one
+piece of custom RTSP/WebSocket protocol code in this repo (`src/server/rtspOverWebSocket/`). The player at the far
+end doesn't know or care that the "camera" it's talking to is actually this pipeline — it speaks the identical
+RTSP-over-WebSocket protocol it would use against a real device.
+
+## Server ↔ Player: live-session flow
+
+End-to-end walkthrough of what happens between the demo page's Server and Player tabs, in order:
+
+1. **Probe** — `GET /api/youtube/probe?url=...` runs `yt-dlp -j` against the URL and returns title, duration, and
+   the resolutions/codecs actually available in the source.
+2. **Create session** — `POST /api/sessions` (video/audio codec, resolution, audio bitrate, RTSP-over-WebSocket
+   username/password, optional channel) validates the request, assigns a channel if none was given, and returns
+   `201` with the new session (`status: "starting"`) immediately — `yt-dlp`/`ffmpeg` are then spawned
+   asynchronously in the background.
+3. **Transcode reaches MediaMTX** — `yt-dlp`'s stdout is piped directly into `ffmpeg`'s stdin; `ffmpeg` encodes to
+   the requested codec/resolution and publishes to `rtsp://127.0.0.1:8554/<sessionId>` on MediaMTX. The first
+   `frame=` line in `ffmpeg`'s stderr flips the session to `status: "live"`; no output within 20s (or a process
+   exit/crash) flips it to `"failed"` instead.
+4. **Player connects** — the `<rtsp-over-websocket>` element opens `ws(s)://<host>:<port>/StreamingServer` and
+   sends an RTSP `DESCRIBE` whose URI embeds the channel number (`channel` attribute, 1-based in markup, 0-based on
+   the wire). The bridge reads that channel, looks up the matching session, and challenges with RTSP Digest
+   (`401` + nonce) using **that session's own username/password** — not real camera credentials.
+5. **Relay + keyframe gate** — once authenticated, the bridge opens its own RTSP/TCP connection to MediaMTX and
+   relays `DESCRIBE`/`SETUP`/`PLAY` and the resulting interleaved RTP/RTCP frames 1:1 back over the WebSocket. For
+   H.264/H.265 video it also holds back non-keyframe slices until the first IDR (or a 4s timeout) so a viewer
+   joining mid-GOP doesn't try to decode without SPS/PPS.
+6. **Playback** — the player demuxes interleaved frames by RTP payload type into per-codec sessions, decodes, and
+   renders to canvas/video — the same code path as a real camera stream (see
+   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)'s "Playing a stream" sequence diagram).
+7. **Teardown** — `DELETE /api/sessions/:id` stops `ffmpeg`/`yt-dlp` and removes the session; an already-
+   `stopped`/`failed` session doesn't block its channel from being reused by a later `POST /api/sessions`, but a
+   `starting`/`live` one does (`409 Conflict`) until stopped or reused explicitly.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the underlying state machines (session status, keyframe gate) and full
+sequence diagrams.
+
+## Further documentation
+
+| Doc | Covers |
+| --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Repository structure, module layering, high-level data-flow diagrams |
+| [docs/MRD.md](docs/MRD.md) | Why this project exists — problem statement, target use cases, goals |
+| [docs/PRD.md](docs/PRD.md) | Product-level requirements for the Player and the demo Server |
+| [docs/SRS.md](docs/SRS.md) | Detailed functional/non-functional requirements, REST + WebSocket protocol contracts |
+| [docs/DESIGN.md](docs/DESIGN.md) | Implementation-level design: state machines, sequence diagrams, module responsibilities |
+| [docs/TC.md](docs/TC.md) | Test case catalog for the Player and Server, mapped to SRS requirement IDs |
+| [docs/test-script.md](docs/test-script.md) | Step-by-step manual/automated procedures for executing the test cases |
+
 ## Building
 
 ```

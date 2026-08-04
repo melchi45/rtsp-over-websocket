@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 // The RTSP-over-WebSocket bridge (/StreamingServer) shares whichever of
@@ -27,3 +29,17 @@ export const MAX_PENDING_RTSP_TEXT_BYTES = 1024 * 1024;
 /** How long ffmpeg is given to report at least one encoded frame before a
  * session is declared failed-to-start. */
 export const TRANSCODE_STARTUP_TIMEOUT_MS = 20000;
+
+const LOCAL_YT_DLP_PATH = path.join(os.homedir(), '.local', 'bin', 'yt-dlp');
+
+/** Prefers a user-local ~/.local/bin/yt-dlp over whatever a bare 'yt-dlp'
+ * would resolve to via PATH. This dev environment's distro package
+ * (/usr/bin/yt-dlp) is stuck on a years-old release that YouTube's current
+ * extraction/CDN behavior routinely rejects (see scripts/ensure-yt-dlp.js,
+ * which installs an up-to-date standalone binary to this exact path), and
+ * relying on PATH ordering to prefer it instead would silently break again
+ * on any shell/environment where ~/.local/bin isn't listed first. Falls back
+ * to a plain PATH lookup if no local install exists. */
+export function resolveYtDlpBinary(): string {
+  return fs.existsSync(LOCAL_YT_DLP_PATH) ? LOCAL_YT_DLP_PATH : 'yt-dlp';
+}

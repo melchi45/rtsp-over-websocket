@@ -287,6 +287,12 @@
         font-size: 14px;
         margin: 0 0 12px;
       }
+      .settings-fieldset {
+        border: 0;
+        margin: 0;
+        padding: 0;
+        min-width: 0;
+      }
       footer {
         margin-top: 24px;
         font-size: 12px;
@@ -482,73 +488,75 @@
             <section class="card">
               <h2 class="card-title">Transcoding settings</h2>
 
-              <div class="field-group">
-                <div class="field-group-title">Video</div>
-                <div class="grid-form">
-                  <label
-                    >Resolution
-                    <select id="yt-resolution"></select>
-                  </label>
-                  <label
-                    >Video codec
-                    <select id="yt-video-codec">
-                      <option value="MJPEG">MJPEG</option>
-                      <option value="H264" selected>H.264</option>
-                      <option value="H265">H.265</option>
-                      <option value="AV1">AV1</option>
-                      <option value="VP8">VP8</option>
-                      <option value="VP9">VP9</option>
-                    </select>
-                  </label>
+              <fieldset id="transcoding-settings-fieldset" class="settings-fieldset" disabled>
+                <div class="field-group">
+                  <div class="field-group-title">Video</div>
+                  <div class="grid-form">
+                    <label
+                      >Resolution
+                      <select id="yt-resolution"></select>
+                    </label>
+                    <label
+                      >Video codec
+                      <select id="yt-video-codec">
+                        <option value="MJPEG">MJPEG</option>
+                        <option value="H264" selected>H.264</option>
+                        <option value="H265">H.265</option>
+                        <option value="AV1">AV1</option>
+                        <option value="VP8">VP8</option>
+                        <option value="VP9">VP9</option>
+                      </select>
+                    </label>
+                  </div>
                 </div>
-              </div>
 
-              <div class="field-group">
-                <div class="field-group-title">Audio</div>
-                <div class="grid-form">
-                  <label
-                    >Audio codec
-                    <select id="yt-audio-codec">
-                      <option value="OPUS">Opus</option>
-                      <option value="AAC" selected>AAC</option>
-                      <option value="G711">G.711</option>
-                      <option value="G726">G.726</option>
-                    </select>
-                  </label>
-                  <label
-                    >Audio bitrate (kbps)
-                    <select id="yt-audio-bitrate"></select>
-                  </label>
+                <div class="field-group">
+                  <div class="field-group-title">Audio</div>
+                  <div class="grid-form">
+                    <label
+                      >Audio codec
+                      <select id="yt-audio-codec">
+                        <option value="OPUS">Opus</option>
+                        <option value="AAC" selected>AAC</option>
+                        <option value="G711">G.711</option>
+                        <option value="G726">G.726</option>
+                      </select>
+                    </label>
+                    <label
+                      >Audio bitrate (kbps)
+                      <select id="yt-audio-bitrate"></select>
+                    </label>
+                  </div>
                 </div>
-              </div>
 
-              <div class="field-group">
-                <div class="field-group-title">Connection info</div>
-                <div class="grid-form">
-                  <label
-                    >Channel <span class="field-note">(leave blank to auto-assign, 1-based same as the Player tab)</span>
-                    <input id="yt-channel" type="number" min="1" step="1" placeholder="auto" />
-                  </label>
-                  <label
-                    >Session Username <span class="field-note">(for RTSP-over-WS digest auth)</span>
-                    <input id="yt-username" value="tester" />
-                  </label>
-                  <label
-                    >Session Password
-                    <span class="password-field">
-                      <input id="yt-password" type="password" value="testpass123" />
-                      <button id="btn-toggle-yt-password" type="button">Show</button>
-                    </span>
-                  </label>
+                <div class="field-group">
+                  <div class="field-group-title">Connection info</div>
+                  <div class="grid-form">
+                    <label
+                      >Channel <span class="field-note">(leave blank to auto-assign, 1-based same as the Player tab)</span>
+                      <input id="yt-channel" type="number" min="1" step="1" placeholder="auto" />
+                    </label>
+                    <label
+                      >Session Username <span class="field-note">(for RTSP-over-WS digest auth)</span>
+                      <input id="yt-username" value="tester" />
+                    </label>
+                    <label
+                      >Session Password
+                      <span class="password-field">
+                        <input id="yt-password" type="password" value="testpass123" />
+                        <button id="btn-toggle-yt-password" type="button">Show</button>
+                      </span>
+                    </label>
+                  </div>
                 </div>
-              </div>
 
-              <div class="actions">
-                <button id="btn-start-session" type="button">Start</button>
-                <button id="btn-stop-session" type="button" disabled>Stop</button>
-                <button id="btn-restart-session" type="button" disabled>Restart</button>
-                <button id="btn-use-in-player" type="button" disabled>Fill Player tab connection info</button>
-              </div>
+                <div class="actions">
+                  <button id="btn-start-session" type="button">Start</button>
+                  <button id="btn-stop-session" type="button" disabled>Stop</button>
+                  <button id="btn-restart-session" type="button" disabled>Restart</button>
+                  <button id="btn-use-in-player" type="button" disabled>Fill Player tab connection info</button>
+                </div>
+              </fieldset>
             </section>
 
             <section class="card">
@@ -1469,6 +1477,7 @@
         var ytUrlInput = document.getElementById('yt-url');
         var probeResultEl = document.getElementById('probe-result');
         var resolutionSelect = document.getElementById('yt-resolution');
+        var transcodingSettingsFieldset = document.getElementById('transcoding-settings-fieldset');
         var lastProbe = null;
 
         function formatDuration(sec) {
@@ -1484,6 +1493,11 @@
             probeResultEl.textContent = 'Enter a YouTube URL.';
             return;
           }
+          // Transcoding settings depend on this probe's resolution ladder, so
+          // they stay disabled for the duration of every probe attempt (including
+          // a re-probe after one already succeeded) until a probe completes
+          // successfully below.
+          transcodingSettingsFieldset.disabled = true;
           probeResultEl.textContent = 'Looking up... (yt-dlp may take a few seconds to fetch the real format list)';
           apiFetch('/api/youtube/probe?url=' + encodeURIComponent(url))
             .then(function (probe) {
@@ -1497,6 +1511,15 @@
                 opt.textContent = r.label + ' (' + r.width + 'x' + r.height + ')';
                 resolutionSelect.appendChild(opt);
               });
+
+              console.log('[server-panel] YouTube probe complete:', {
+                url: url,
+                title: probe.title,
+                durationSec: probe.durationSec,
+                maxHeight: probe.maxHeight,
+                availableResolutions: probe.availableResolutions
+              });
+              transcodingSettingsFieldset.disabled = false;
             })
             .catch(function (err) {
               lastProbe = null;

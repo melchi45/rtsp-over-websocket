@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { MEDIAMTX_HOST, MEDIAMTX_RTSP_PORT, TRANSCODE_STARTUP_TIMEOUT_MS } from '../config';
+import { MEDIAMTX_HOST, MEDIAMTX_RTSP_PORT, resolveYtDlpBinary, TRANSCODE_STARTUP_TIMEOUT_MS } from '../config';
 import { getAudioEncoder, getVideoEncoder } from './codecCapabilities';
 import * as sessionStore from './sessionStore';
 import type { AudioCodec, Session, VideoCodec } from '../types';
@@ -22,9 +22,20 @@ function videoEncoderArgs(codec: VideoCodec, encoder: string, height: number): s
       // player joining mid-stream would still never see one). Without this, ffmpeg's rtsp muxer only declares
       // SPS/PPS out-of-band via SDP sprop-parameter-sets, which this player's H264Session never reads — matching
       // real IP camera encoders (which normally repeat parameter sets in-band) is what the player actually expects.
-      return ['-c:v', encoder, '-preset', 'veryfast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p', '-x264-params', 'repeat-headers=1', ...scale];
+      //
+      // force_key_frames forces a keyframe every 2s of output regardless of scene-cut detection — libx264's default
+      // adaptive GOP sizing was observed producing keyframes over 5s apart on low-motion source video, longer than
+      // the bridge's keyframe-gate timeout (KEYFRAME_GATE_TIMEOUT_MS), so a viewer joining mid-GOP could receive
+      // non-keyframe slices with no cached SPS/PPS and fail to decode ("SPS payload is not available").
+      return [
+        '-c:v', encoder, '-preset', 'veryfast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p',
+        '-x264-params', 'repeat-headers=1', '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale
+      ];
     case 'H265':
-      return ['-c:v', encoder, '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-x265-params', 'repeat-headers=1', ...scale];
+      return [
+        '-c:v', encoder, '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+        '-x265-params', 'repeat-headers=1', '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale
+      ];
     case 'AV1':
       return encoder === 'libsvtav1'
         ? ['-c:v', encoder, '-preset', '10', '-pix_fmt', 'yuv420p', ...scale]
@@ -133,7 +144,14 @@ export async function startTranscode(session: Session): Promise<void> {
   console.log(`[transcodeSession][${tag}] yt-dlp ${ytDlpArgs.join(' ')}`);
   console.log(`[transcodeSession][${tag}] ffmpeg ${ffmpegArgs.join(' ')}`);
 
-  const ytDlp = spawn('yt-dlp', ytDlpArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+  // detached: true puts yt-dlp in its own process group (pgid === its own
+  // pid) so killPid(..., group: true) below can also reach the *internal* ffmpeg
+  // yt-dlp itself spawns to merge the separately-fetched video/audio DASH
+  // streams — a grandchild this module never gets a ChildProcess handle to.
+  // Without this, killing yt-dlp only signals yt-dlp; that merge ffmpeg was
+  // observed surviving as an orphan (reparented to init) after a
+  // timed-out/stopped session, still stuck mid-fetch from googlevideo.
+  const ytDlp = spawn(resolveYtDlpBinary(), ytDlpArgs, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
   processes.set(session.id, { ytDlp, ffmpeg });
 
@@ -203,12 +221,40 @@ export async function startTranscode(session: Session): Promise<void> {
   ffmpeg.on('exit', (code, signal) => {
     clearTimeout(startupTimer);
     processes.delete(session.id);
-    if (!ytDlp.killed) ytDlp.kill('SIGTERM');
+    if (!ytDlp.killed && typeof ytDlp.pid === 'number') killPid(ytDlp.pid, 'SIGTERM', true);
     const current = sessionStore.getSession(session.id);
     if (current && current.status !== 'stopped') {
       sessionStore.updateStatus(session.id, code === 0 ? 'stopped' : 'failed', signal ? `ffmpeg killed by ${signal}` : `ffmpeg exited with code ${code}`);
     }
   });
+}
+
+/** Signals `pid` (or, if `group` is true, its whole process group via a
+ * negative pid — reaches a grandchild spawned internally, e.g. yt-dlp's own
+ * merge ffmpeg for split video/audio streams, that this module never gets a
+ * handle to), escalating to SIGKILL ~3s later if it's still around. A stuck
+ * fetch/merge can land in an uninterruptible (D-state) sleep that ignores
+ * SIGTERM until its blocking syscall returns — confirmed live for *both*
+ * this module's own encoding ffmpeg and yt-dlp's internal merge ffmpeg, each
+ * surviving a lone SIGTERM and only clearing on SIGKILL.
+ *
+ * Deliberately does not check whether the tracked ChildProcess has already
+ * exited before signaling: for the grouped case that was the actual bug —
+ * yt-dlp routinely exits (handing off to/having already spawned its merge
+ * ffmpeg) well before that ffmpeg finishes, so bailing out once yt-dlp
+ * itself was gone meant the group kill never even ran, leaving the merge
+ * ffmpeg to be orphaned every time instead of just when it wedged. */
+function killPid(pid: number, signal: NodeJS.Signals, group: boolean): void {
+  const send = (sig: NodeJS.Signals): void => {
+    try {
+      process.kill(group ? -pid : pid, sig);
+    } catch {
+      // ESRCH — process (or, for a group kill, every member of it) already gone.
+    }
+  };
+  send(signal);
+  if (signal === 'SIGKILL') return;
+  setTimeout(() => send('SIGKILL'), 3000).unref();
 }
 
 /** Kills this session's yt-dlp/ffmpeg children without touching its status
@@ -217,8 +263,8 @@ export async function startTranscode(session: Session): Promise<void> {
 function killProcesses(sessionId: string): void {
   const running = processes.get(sessionId);
   if (!running) return;
-  running.ffmpeg.kill('SIGTERM');
-  running.ytDlp.kill('SIGTERM');
+  if (typeof running.ffmpeg.pid === 'number') killPid(running.ffmpeg.pid, 'SIGTERM', false);
+  if (typeof running.ytDlp.pid === 'number') killPid(running.ytDlp.pid, 'SIGTERM', true);
   processes.delete(sessionId);
 }
 
@@ -230,4 +276,14 @@ export function stopTranscode(sessionId: string): void {
 
 export function isRunning(sessionId: string): boolean {
   return processes.has(sessionId);
+}
+
+/** Stops every currently-running session's yt-dlp/ffmpeg children — called
+ * on server shutdown (see index.ts's SIGTERM/SIGINT handler) so `npm run
+ * stop:server` (or a restart) can't leave them orphaned: Node doesn't kill a
+ * process's children automatically when the process itself is killed. */
+export function stopAllTranscodes(): void {
+  for (const sessionId of Array.from(processes.keys())) {
+    stopTranscode(sessionId);
+  }
 }

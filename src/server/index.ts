@@ -25,6 +25,8 @@ import { buildYoutubeRouter } from './api/youtubeRoutes';
 import { buildSessionRouter } from './api/sessionRoutes';
 import { buildCapabilitiesRouter } from './api/capabilitiesRoutes';
 import { attachRtspOverWebSocketServer } from './rtspOverWebSocket/server';
+import { stopAllTranscodes } from './services/transcodeSession';
+import { getYtDlpVersion, isYtDlpVersionStale } from './services/youtubeProbe';
 
 type ServerMode = 'http' | 'https' | 'both';
 
@@ -75,7 +77,22 @@ function checkMediaMtxReachable(): Promise<boolean> {
   });
 }
 
+/** Without this, killing the server (`npm run stop:server`, or a manual
+ * SIGTERM/SIGINT during a restart) leaves any live session's yt-dlp/ffmpeg
+ * children running: Node's default SIGTERM behavior exits immediately with
+ * no cleanup, and killing a parent process does not kill its children. */
+function registerShutdownHandlers(): void {
+  const shutdown = (signal: NodeJS.Signals): void => {
+    console.log(`[server] ${signal} received — stopping active transcode sessions...`);
+    stopAllTranscodes();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
 async function main(): Promise<void> {
+  registerShutdownHandlers();
   const app = express();
   app.use(express.json());
   // dist/index.html (and dist/player/*.js) are also servable straight from
@@ -126,6 +143,23 @@ async function main(): Promise<void> {
     const httpsServer = https.createServer(tlsOptions, app);
     attachRtspOverWebSocketServer(httpsServer);
     httpsServer.listen(HTTPS_PORT, () => console.log(`[server] HTTPS https://127.0.0.1:${HTTPS_PORT}  (REST + wss://.../StreamingServer)`));
+  }
+
+  try {
+    const ytDlpVersion = await getYtDlpVersion();
+    if (isYtDlpVersionStale(ytDlpVersion)) {
+      console.warn(
+        `[server] WARNING: yt-dlp ${ytDlpVersion} is old enough that YouTube sessions may fail in confusing ways ` +
+          '(a "Precondition check failed" 400 on probe, or a transcode that silently hangs and times out with ' +
+          '"ffmpeg produced no output") — upgrade yt-dlp before relying on YouTube sessions (see README).'
+      );
+    } else {
+      console.log(`[server] yt-dlp ${ytDlpVersion}`);
+    }
+  } catch (error) {
+    console.warn(
+      `[server] WARNING: could not determine yt-dlp version (${error instanceof Error ? error.message : String(error)}) — is yt-dlp installed and on PATH?`
+    );
   }
 
   const mediaMtxUp = await checkMediaMtxReachable();

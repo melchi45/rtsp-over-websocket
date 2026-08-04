@@ -82,17 +82,27 @@ export function classifyH264RtpPacket(packet: Buffer): GateDecision {
   const nalType = payload[0] & 0x1f;
 
   if (nalType === 24) {
-    // STAP-A aggregate — scan entries for an embedded IDR
+    // STAP-A aggregate — scan entries for an embedded IDR/SPS/PPS. Forwarding
+    // unconditionally here was a bug: it assumed STAP-A is only ever used to
+    // bundle parameter sets ahead of a keyframe, but this repo's own demo
+    // server packs plain non-IDR slices into STAP-A too, which let
+    // pre-keyframe slice data leak through the gate while closed. An
+    // aggregate of only ordinary slices must be dropped like a standalone
+    // non-IDR slice would be; one carrying SPS/PPS/IDR is still forwarded
+    // (and only an IDR opens the gate).
     let off = 1;
     let sawIdr = false;
+    let sawParamOrIdr = false;
     while (off + 2 <= payload.length) {
       const size = payload.readUInt16BE(off);
       off += 2;
       if (off + size > payload.length) break;
-      if ((payload[off] & 0x1f) === 5) sawIdr = true;
+      const innerType = payload[off] & 0x1f;
+      if (innerType === 5) sawIdr = true;
+      if (innerType === 5 || innerType === 7 || innerType === 8) sawParamOrIdr = true;
       off += size;
     }
-    return { forward: true, opensGate: sawIdr };
+    return { forward: sawParamOrIdr, opensGate: sawIdr };
   }
   if (nalType === 28) {
     // FU-A fragment — original NAL type lives in the FU header byte
@@ -118,18 +128,22 @@ export function classifyH265RtpPacket(packet: Buffer): GateDecision {
   const nalType = (payload[0] >> 1) & 0x3f;
 
   if (nalType === 48) {
-    // Aggregation Packet (RFC 7798 §4.4.2) — assumes no DONL field
+    // Aggregation Packet (RFC 7798 §4.4.2) — assumes no DONL field. Same fix
+    // as classifyH264RtpPacket's STAP-A handling: only forward if it carries
+    // an IRAP or a VPS/SPS/PPS parameter set, not unconditionally.
     let off = 2;
     let sawIrap = false;
+    let sawParamOrIrap = false;
     while (off + 2 <= payload.length) {
       const size = payload.readUInt16BE(off);
       off += 2;
       if (off + size > payload.length || size < 2) break;
       const innerType = (payload[off] >> 1) & 0x3f;
       if (isH265Irap(innerType)) sawIrap = true;
+      if (isH265Irap(innerType) || innerType === 32 || innerType === 33 || innerType === 34) sawParamOrIrap = true;
       off += size;
     }
-    return { forward: true, opensGate: sawIrap };
+    return { forward: sawParamOrIrap, opensGate: sawIrap };
   }
   if (nalType === 49) {
     // Fragmentation Unit (RFC 7798 §4.4.3) — 2-byte NAL header + 1-byte FU header

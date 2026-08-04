@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { resolveYtDlpBinary } from '../config';
 import { RESOLUTION_LADDER } from '../types';
 import type { YoutubeProbeResult } from '../types';
 
@@ -38,10 +39,34 @@ function codecFamily(codec: string): string {
   return codec.split('.')[0];
 }
 
+const YT_DLP_STALE_WARNING_DAYS = 180;
+
+export async function getYtDlpVersion(): Promise<string> {
+  const { stdout } = await execFileAsync(resolveYtDlpBinary(), ['--version']);
+  return stdout.trim();
+}
+
+/** yt-dlp's version string is its release date (YYYY.MM.DD) — YouTube changes
+ * extraction/CDN behavior often enough that a build more than a few months
+ * old routinely starts failing (confirmed live: a 2022.04.08 build hit both
+ * outright "Precondition check failed" 400s on probe and silent multi-minute
+ * hangs mid-download), so this is checked at startup instead of only
+ * surfacing later as a confusing probe/transcode error. Returns false (don't
+ * warn) for a version string that isn't a YYYY.MM.DD date — e.g. a git/dev
+ * build — since its actual age can't be determined this way. */
+export function isYtDlpVersionStale(version: string): boolean {
+  const match = version.match(/^(\d{4})\.(\d{2})\.(\d{2})/);
+  if (!match) return false;
+  const [, y, m, d] = match;
+  const releaseDate = new Date(Number(y), Number(m) - 1, Number(d));
+  const ageDays = (Date.now() - releaseDate.getTime()) / (1000 * 60 * 60 * 24);
+  return ageDays > YT_DLP_STALE_WARNING_DAYS;
+}
+
 export async function probeYoutubeVideo(youtubeUrl: string): Promise<YoutubeProbeResult> {
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync('yt-dlp', ['-j', '--no-playlist', youtubeUrl], {
+    ({ stdout } = await execFileAsync(resolveYtDlpBinary(), ['-j', '--no-playlist', youtubeUrl], {
       timeout: PROBE_TIMEOUT_MS,
       maxBuffer: 32 * 1024 * 1024
     }));
