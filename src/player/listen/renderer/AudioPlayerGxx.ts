@@ -17,7 +17,7 @@ export type AACAudioDecoderFactory = () => AudioDecoderLike;
 
 // Constructing AACAudioDecoder requires the vendored ffmpegAAC.js asm.js
 // build's `Module` global to already be loaded (see AACAudioDecoder.ts's
-// class doc comment) — wiring that load step is `custom/RTSPOverWebSocket.ts`'s
+// class doc comment) — wiring that load step is `elements/RTSPOverWebSocket.ts`'s
 // concern, not this factory's job.
 const defaultAACAudioDecoderFactory: AACAudioDecoderFactory = () => new AACAudioDecoder();
 

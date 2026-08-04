@@ -375,7 +375,7 @@
       <h1>RTSP over WebSocket — Vanilla JS Demo (TypeScript/ESM build)</h1>
       <p class="subtitle">
         An example that verifies the build output (<code>dist/player/rtsp-over-websocket.esm.js</code>) of
-        <code>src/player/custom/RTSPOverWebSocket.ts</code> — the successor to the legacy player — using nothing but a single
+        <code>src/player/elements/RTSPOverWebSocket.ts</code> — the successor to the legacy player — using nothing but a single
         <code>&lt;script type="module"&gt;</code> tag, no bundler or framework. It reproduces the same connection form and event
         wiring as the React version (<code>app-react/dist/index.html</code>).
       </p>
@@ -385,6 +385,7 @@
           <button type="button" id="tab-btn-player" class="active" data-panel="player"><span class="icon">▶</span> Player</button>
           <button type="button" id="tab-btn-server" data-panel="server"><span class="icon">⚙</span> Server</button>
           <button type="button" id="tab-btn-test" data-panel="test"><span class="icon">✓</span> Test</button>
+          <button type="button" id="tab-btn-react" data-panel="react"><span class="icon">⚛</span> React</button>
         </nav>
 
         <div class="content">
@@ -571,7 +572,7 @@
               <h2 class="card-title">RTSP over WebSocket — Browser Unit Test Runner</h2>
               <p class="subtitle" style="margin-bottom: 8px">
                 Reproduces the Contract-tier tests (37 cases) from
-                <code>src/player/custom/RTSPOverWebSocket.test.ts</code> against <code>dist/player/rtsp-over-websocket.esm.js</code>
+                <code>src/player/elements/RTSPOverWebSocket.test.ts</code> against <code>dist/player/rtsp-over-websocket.esm.js</code>
                 (the ESM build this page already loaded), in pure browser JavaScript with no external dependencies.
               </p>
               <div class="note">
@@ -585,6 +586,69 @@
               <div id="test-summary"></div>
               <div id="test-results"></div>
             </section>
+          </div>
+
+          <!-- ================= REACT PANEL (src/player/react's Player.tsx wrapper) ================= -->
+          <div class="panel" id="panel-react">
+            <section class="card">
+              <p class="subtitle" style="margin-bottom: 8px">
+                Same <code>&lt;rtsp-over-websocket&gt;</code> element as the Player tab, but mounted through
+                <code>src/player/react/Player.tsx</code> — the React wrapper component this library ships for
+                React consumers (e.g. react-wisenet-player) — via
+                <code>dist/player/rtsp-over-websocket-react.esm.js</code> (a separate build, see
+                <code>vite.react.config.ts</code>, with React/ReactDOM bundled in so this no-bundler page can load
+                it from one <code>&lt;script type="module"&gt;</code> with no import map).
+              </p>
+            </section>
+            <section class="card grid-form">
+              <label
+                >Hostname
+                <input id="fr-hostname" placeholder="192.168.0.2" />
+              </label>
+              <label
+                >Port
+                <input id="fr-port" />
+              </label>
+              <label
+                >Username
+                <input id="fr-username" value="admin" />
+              </label>
+              <label
+                >Password
+                <input id="fr-password" type="password" />
+              </label>
+              <label
+                >Channel
+                <input id="fr-channel" value="1" />
+              </label>
+              <label
+                >Profile
+                <input id="fr-profile" value="H.264" />
+              </label>
+              <label
+                >Device
+                <select id="fr-device">
+                  <option value="camera">camera</option>
+                  <option value="nvr" selected>nvr</option>
+                </select>
+              </label>
+              <label class="checkbox-field">
+                <input id="fr-statistics" type="checkbox" checked />
+                Show statistics panel
+              </label>
+
+              <div class="actions">
+                <button id="btn-react-connect" type="button">Connect</button>
+                <button id="btn-react-disconnect" type="button" disabled>Disconnect</button>
+              </div>
+            </section>
+
+            <section class="player-status">
+              <span>State: <strong id="status-react-state">STOPPED</strong></span>
+              <span id="status-react-error" class="error" hidden></span>
+            </section>
+
+            <div id="react-player-host"></div>
           </div>
         </div>
       </div>
@@ -630,7 +694,7 @@
     <script type="module" src="./player/rtsp-over-websocket.esm.js"></script>
 
     <!-- Ported from the former dist/test.html (see git history) — same 37
-         Contract-tier cases from src/player/custom/RTSPOverWebSocket.test.ts,
+         Contract-tier cases from src/player/elements/RTSPOverWebSocket.test.ts,
          now run against the same ESM build the Player tab above already
          loads. Importing the same module specifier a second time does NOT
          re-run its side effects (customElements.define(...) included) —
@@ -1158,14 +1222,123 @@
       })();
     </script>
 
+    <!-- ================= REACT PANEL wiring =================
+         Its own module script (like the Test tab's above) rather than folded
+         into the big classic <script> below: that script isn't a module, so
+         it can't `import()` — and dynamic `import()` (used here, not a
+         static one) is also the right call on its own merits, since it
+         defers loading rtsp-over-websocket-react.esm.js's ~750kB
+         (React+ReactDOM+Player bundled in, see vite.react.config.ts) until
+         someone actually clicks the React tab's Connect button, instead of
+         paying that cost on every page load whether the tab is used or not. -->
+    <script type="module">
+      (function () {
+        'use strict';
+
+        var form = {
+          hostname: document.getElementById('fr-hostname'),
+          port: document.getElementById('fr-port'),
+          username: document.getElementById('fr-username'),
+          password: document.getElementById('fr-password'),
+          channel: document.getElementById('fr-channel'),
+          profile: document.getElementById('fr-profile'),
+          device: document.getElementById('fr-device'),
+          statistics: document.getElementById('fr-statistics')
+        };
+        // Same shared dev NVR default as the Player tab (see that tab's
+        // wiring script for why) — this file has no build step / env
+        // support, so it's hardcoded rather than read from an .env.
+        form.hostname.value = 'dev.hanwhavision.com';
+        form.port.value = '3443';
+
+        var reactPlayerHost = document.getElementById('react-player-host');
+        var btnConnect = document.getElementById('btn-react-connect');
+        var btnDisconnect = document.getElementById('btn-react-disconnect');
+        var statusState = document.getElementById('status-react-state');
+        var statusError = document.getElementById('status-react-error');
+
+        var ELEMENT_ID = 'rtsp-over-websocket-react-demo';
+        var unmount = null;
+        var playerEl = null;
+
+        function handleStateChange(event) {
+          var detail = event.detail || {};
+          if (typeof detail.readyState === 'number') {
+            statusState.textContent = ['STOPPED', 'PLAYING', 'PAUSED', 'STEP'][detail.readyState] || String(detail.readyState);
+          }
+        }
+
+        function handleError(event) {
+          var detail = event.detail || {};
+          statusError.hidden = false;
+          statusError.textContent = 'Error: ' + (detail.message || detail.error || 'Unknown player error');
+        }
+
+        function disconnect() {
+          if (playerEl) {
+            playerEl.removeEventListener('statechange', handleStateChange);
+            playerEl.removeEventListener('error', handleError);
+            playerEl = null;
+          }
+          if (unmount) {
+            unmount();
+            unmount = null;
+          }
+          btnDisconnect.disabled = true;
+        }
+
+        btnConnect.addEventListener('click', function () {
+          statusError.hidden = true;
+          disconnect();
+
+          import('./player/rtsp-over-websocket-react.esm.js').then(function (mod) {
+            unmount = mod.mountReactPlayer(reactPlayerHost, {
+              id: ELEMENT_ID,
+              hostname: form.hostname.value,
+              port: Number(form.port.value),
+              username: form.username.value,
+              password: form.password.value,
+              profile: form.profile.value,
+              channel: Number(form.channel.value),
+              device: form.device.value,
+              autoplay: true,
+              statistics: form.statistics.checked,
+              https: window.location.protocol === 'https:'
+            });
+
+            // React's own effect (Player.tsx's useEffect) mounts
+            // synchronously within mountReactPlayer()'s root.render() call
+            // for this simple a tree (no Suspense boundary above it), so the
+            // real element is already in the DOM by the time this callback
+            // runs — matching the timing React.useEffect itself relies on
+            // internally.
+            playerEl = document.getElementById(ELEMENT_ID);
+            if (playerEl) {
+              playerEl.addEventListener('statechange', handleStateChange);
+              playerEl.addEventListener('error', handleError);
+            }
+            btnDisconnect.disabled = false;
+          });
+        });
+
+        btnDisconnect.addEventListener('click', disconnect);
+      })();
+    </script>
+
     <script>
       (function () {
         // ================= tab switching =================
-        var tabButtons = [document.getElementById('tab-btn-player'), document.getElementById('tab-btn-server'), document.getElementById('tab-btn-test')];
+        var tabButtons = [
+          document.getElementById('tab-btn-player'),
+          document.getElementById('tab-btn-server'),
+          document.getElementById('tab-btn-test'),
+          document.getElementById('tab-btn-react')
+        ];
         var panels = {
           player: document.getElementById('panel-player'),
           server: document.getElementById('panel-server'),
-          test: document.getElementById('panel-test')
+          test: document.getElementById('panel-test'),
+          react: document.getElementById('panel-react')
         };
         tabButtons.forEach(function (btn) {
           btn.addEventListener('click', function () {

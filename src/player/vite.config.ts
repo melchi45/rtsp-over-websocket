@@ -5,7 +5,13 @@ import { defineConfig } from 'vite';
 // Produces two artifacts:
 //   - ESM  (dist/player/rtsp-over-websocket.esm.js)    for app-react / modern consumers
 //   - IIFE (dist/player/rtsp-over-websocket.global.js) for legacy <script> consumers
-// (the IIFE bundle registers the <rtsp-over-websocket> custom element, see custom/RTSPOverWebSocket.ts)
+// (the IIFE bundle registers the <rtsp-over-websocket> custom element, see elements/RTSPOverWebSocket.ts)
+//
+// The react/ Player wrapper is a separate build (see vite.react.config.ts,
+// run as its own `vite build` step) rather than a second entry here: Vite's
+// lib mode rejects multiple entry points as soon as any target format is
+// 'iife'/'umd' (single-entry-only formats), and this config's `iife` output
+// is load-bearing for the legacy-<script> consumers above.
 export default defineConfig({
   // Both rtsp-over-websocket.global.js and every `new Worker(new URL(...))`
   // chunk it spawns (audiotranscoderWorker, decoderWorker, zipWorker, ...)

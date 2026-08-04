@@ -34,7 +34,7 @@ Full diagrams: [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md).
 ### 4.1 Custom element registration
 
 - **REQ-PLY-001**: The library MUST register a custom element `rtsp-over-websocket` backed by class
-  `RTSPOverWebSocket extends HTMLElement` (`src/player/custom/RTSPOverWebSocket.ts`).
+  `RTSPOverWebSocket extends HTMLElement` (`src/player/elements/RTSPOverWebSocket.ts`).
 - **REQ-PLY-002**: `version()` MUST return the library's semantic version string.
 
 ### 4.2 Attributes

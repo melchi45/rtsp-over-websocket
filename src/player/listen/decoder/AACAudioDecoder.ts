@@ -12,7 +12,7 @@ const OUTPIC_SIZE = 4096;
  * `Module` and relies on running as its own classic top-level script — this
  * class assumes `Module` is already loaded (legacy's own HTML pages include
  * it via a `<script>` tag before constructing AACAudioDecoder; wiring the
- * equivalent load step into the new build is `custom/RTSPOverWebSocket.ts`'s
+ * equivalent load step into the new build is `elements/RTSPOverWebSocket.ts`'s
  * concern, not something this class does itself).
  *
  * `console.log` calls are literal (not the suppressed `xxx_log.*` wrapped

@@ -143,5 +143,5 @@ with no session (expect a `404` RTSP response then close `1008`).
 2. `npm run build:player && npm run build:server` — both succeed with no `tsc` errors.
 3. Section 3 (end-to-end smoke) — at least once per change touching `src/server` or the player's network/mediaSession
    layers.
-4. Section 4 (Test tab) — at least once per change touching `src/player/custom` or a change to `dist/` build
+4. Section 4 (Test tab) — at least once per change touching `src/player/elements` or a change to `dist/` build
    config (Vite/tsc settings).
