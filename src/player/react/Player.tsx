@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { RTSPOverWebSocket } from '../elements/RTSPOverWebSocket';
 import { RTSPOverWebSocketPlayState } from '../elements/RTSPOverWebSocketTypes';
 import { RTSPOverWebSocketError } from '../exceptions';
+import { SunapiManager, type SunapiManagerDeviceInfo } from '../network/http/SunapiManager';
 import type { PlayerProps } from './Constant';
 
 // `<rtsp-over-websocket>` is registered as a real custom element by the
@@ -41,18 +42,28 @@ declare global {
  * `changeclient`/`changemute`/`changepassword`/`changeprotocol`/`rtsp`/
  * `sunapiclient` exist here but weren't in the ump-player original).
  *
- * The original's login-flow imports (SunapiManager/AccountService/
- * AttributeService/LoginDialog/NavigationBar/Controller) were dead code
- * there already (the whole call chain was commented out, and the JSX never
- * rendered LoginDialog/NavigationBar/Controller), so they aren't ported.
- * Same for the `window.CryptoJS`/`window.Matrix` global assignments —
+ * The original Player.tsx's own login-flow imports (SunapiManager/
+ * AccountService/AttributeService/LoginDialog/NavigationBar/Controller)
+ * were dead code there (the whole call chain was commented out, and the
+ * JSX never rendered LoginDialog/NavigationBar/Controller) — the real,
+ * *live* version of that flow lives in that same app's
+ * `pages/App/Playground.tsx` (`connectSunapi()`), which this component's
+ * own login step below is ported from instead: log into the device via
+ * `SunapiManager.init(...)` (REST, digest auth) first, and only attach
+ * `<rtsp-over-websocket>`'s `sunapiClient` / start playback once that
+ * succeeds — matching how `RTSPOverWebSocket.ts` itself expects to be
+ * driven (see its `sunapiClient` setter and the `password ?? sunapiClient`
+ * fallback its own `play()`/backup paths check). `window.CryptoJS`/
+ * `window.Matrix` global assignments from the original aren't ported —
  * this library's own code imports `crypto-js`/`three` as real ES modules
  * instead of expecting those browser globals.
  */
 export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
   const [playerClassName] = useState('rtsp-over-websocket-player');
   const playerRef = useRef<RTSPOverWebSocket | null>(null);
+  const sunapiManagerRef = useRef<SunapiManager | null>(null);
   const [playState, setPlayState] = useState<RTSPOverWebSocketPlayState>(RTSPOverWebSocketPlayState.STOPPED);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   const onError = (event: Event): void => {
     const detail = (event as CustomEvent).detail;
@@ -210,6 +221,57 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
     }
 
     const player = playerRef.current;
+    let cancelled = false;
+
+    // Ported from react-wisenet-player's pages/App/Playground.tsx's
+    // `connectSunapi()`: log into the device over SUNAPI (REST, digest
+    // auth) first, then hand the authenticated client to the element
+    // instead of a raw password — matching how a real device integration
+    // (vs. this library's own YouTube-transcode demo server, which has no
+    // SUNAPI endpoint to log into at all) is expected to drive this
+    // element. `hostname`/`username` are duplicated onto `cameraIp`/`user`
+    // because `SunapiManager.init()` overwrites the former FROM the latter
+    // for any non-'nvr' deviceType — supplying both sidesteps needing to
+    // know which branch it'll take.
+    const sunapiManager = new SunapiManager();
+    sunapiManagerRef.current = sunapiManager;
+    const deviceInfo: SunapiManagerDeviceInfo = {
+      ClientIPAddress: '127.0.0.1',
+      hostname: props.device.hostname,
+      cameraIp: props.device.hostname,
+      username: props.device.username,
+      user: props.device.username,
+      password: props.device.password,
+      port: props.device.port,
+      protocol: props.device.https ? 'https' : 'http',
+      deviceType: props.device.device,
+      serverType: 'grunt',
+      timeout: 10000,
+      debug: true,
+      async: false
+    };
+    sunapiManager
+      .init(deviceInfo)
+      .then(() => {
+        if (cancelled || playerRef.current === null) return;
+        setLoginError(null);
+        // Cast needed because RTSPOverWebSocket.ts's own `sunapiClient` setter
+        // and SunapiManager.ts's `SunapiClientLike` are two nominally distinct
+        // (structurally near-identical) interfaces — RTSPOverWebSocket.ts's
+        // own internal `this.sunapiClient = v` call into its private
+        // SunapiManager does the exact same cast for the same reason.
+        playerRef.current.sunapiClient = sunapiManager.sunapiClient as unknown as RTSPOverWebSocket['sunapiClient'];
+        if (props.device.autoplay) {
+          playerRef.current.play();
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('SUNAPI login failed: ' + message);
+        setLoginError(message);
+      });
+
     player.addEventListener('error', onError);
     player.addEventListener('meta', onMeta);
     player.addEventListener('resize', onResize);
@@ -238,6 +300,7 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
     player.addEventListener('changetimezone', onTimezoneChanged);
 
     return () => {
+      cancelled = true;
       console.log('Player Component unmounted!');
       if (playerRef.current === null) {
         throw new RTSPOverWebSocketError({
@@ -251,6 +314,9 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
         playerRef.current.stop();
       }
 
+      sunapiManagerRef.current?.dettach();
+      sunapiManagerRef.current = null;
+
       window.removeEventListener('beforeunload', onUnload);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -258,17 +324,20 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
 
   return (
     <div id={'container-' + props.device.id} className="container">
+      {loginError !== null && (
+        <div className="rtsp-over-websocket-login-error" role="alert">
+          SUNAPI login failed: {loginError}
+        </div>
+      )}
       <rtsp-over-websocket
         id={props.device.id}
         className={`${playerClassName} ${playState !== RTSPOverWebSocketPlayState.STOPPED ? 'active' : ''}`}
         hostname={props.device.hostname}
-        port={String(props.device.port)}
         username={props.device.username}
-        password={props.device.password}
+        port={String(props.device.port)}
         profile={props.device.profile}
         channel={String(props.device.channel)}
         device={props.device.device}
-        autoplay={props.device.autoplay ? '' : undefined}
         statistics={props.device.statistics ? '' : undefined}
         https={props.device.https ? '' : undefined}
       />

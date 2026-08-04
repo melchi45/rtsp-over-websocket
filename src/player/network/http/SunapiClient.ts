@@ -406,11 +406,14 @@ export class SunapiClient {
     }
 
     const cnonce = this.generateCnonce();
-    // NOTE: legacy bug preserved — `nc` is never parsed out of the header
-    // (only realm/nonce/opaque/qop are), so `nc++` always runs against its
-    // `null` initializer here and resolves to `1` every time (Number(null)
-    // is 0, then incremented), regardless of the server's actual nc value.
-    (nc as unknown as number)!++;
+    // `nc` starts at 0 for a freshly-issued nonce: setDigestHeader() always
+    // increments before building a request, so the first authenticated
+    // attempt against this nonce sends nc=00000001 per RFC 2617. (A prior
+    // version pre-incremented this to 1 here too, so the first attempt sent
+    // nc=00000002 — confirmed via direct camera testing that at least one
+    // real Wisenet camera firmware rejects that as invalid and re-challenges
+    // with a brand-new nonce instead of authenticating.)
+    nc = 0;
 
     return { scheme, realm, nonce, opaque, qop, cnonce, nc };
   }
@@ -468,7 +471,7 @@ export class SunapiClient {
       '", ' +
       'cnonce="' +
       cache.cnonce +
-      '" ' +
+      '", ' +
       'nc=' +
       this.decimalToHex(cache.nc, 8) +
       ', ' +
@@ -489,7 +492,8 @@ export class SunapiClient {
       if (scheme === 'digest' || scheme === 'xdigest') {
         digestCache.nc = (digestCache.nc ?? 0) + 1;
         digestCache.cnonce = this.generateCnonce();
-        xhr.setRequestHeader('Authorization', this.buildDigestAuthHeader(digestCache, uri, method));
+        const header = this.buildDigestAuthHeader(digestCache, uri, method);
+        xhr.setRequestHeader('Authorization', header);
       } else if (scheme === 'basic') {
         xhr.setRequestHeader('Authorization', digestCache.scheme + ' ' + btoa(`${config.username}:${config.password}`));
       }
