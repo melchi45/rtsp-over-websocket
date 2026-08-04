@@ -488,6 +488,7 @@
 
             <section class="card">
               <h2 class="card-title">Transcoding settings</h2>
+              <p class="hint" id="current-transcoding-url" hidden></p>
 
               <fieldset id="transcoding-settings-fieldset" class="settings-fieldset" disabled>
                 <div class="field-group">
@@ -1637,12 +1638,15 @@
           });
           return hasVideo && hasAudio;
         }
-        function sessionIsRunning() {
-          if (!currentSession) return false;
-          return currentSession.status === 'starting' || currentSession.status === 'live' || currentSession.isRunning === true;
-        }
+        // NOTE: this fieldset's own enabled state does NOT depend on
+        // whether a session is currently running — it stays enabled (once
+        // probed + capable) through starting/live/stopped alike, so its
+        // Resolution/codec selects are always there to prepare the *next*
+        // session's settings. Which of the Start/Stop/Restart/Fill Player
+        // tab connection info buttons are individually enabled is what
+        // actually reflects session state — see renderSessionStatus().
         function updateTranscodingSettingsAvailability() {
-          transcodingSettingsFieldset.disabled = !lastProbe || !serverSupportsTranscoding() || sessionIsRunning();
+          transcodingSettingsFieldset.disabled = !lastProbe || !serverSupportsTranscoding();
         }
 
         function loadCapabilities() {
@@ -1697,6 +1701,7 @@
         var probeResultEl = document.getElementById('probe-result');
         var resolutionSelect = document.getElementById('yt-resolution');
         var transcodingSettingsFieldset = document.getElementById('transcoding-settings-fieldset');
+        var currentTranscodingUrlEl = document.getElementById('current-transcoding-url');
         var lastProbe = null;
 
         function formatDuration(sec) {
@@ -1772,6 +1777,7 @@
             btnStopSession.disabled = true;
             btnRestartSession.disabled = true;
             btnUseInPlayer.disabled = true;
+            currentTranscodingUrlEl.hidden = true;
             updateTranscodingSettingsAvailability();
             return;
           }
@@ -1782,6 +1788,10 @@
           // one on top would just collide. 'stopped'/'failed' are both
           // terminal — nothing left to Stop/Restart into.
           var running = s.status === 'starting' || s.status === 'live';
+          currentTranscodingUrlEl.hidden = !running;
+          if (running) {
+            currentTranscodingUrlEl.textContent = 'Currently transcoding: ' + s.request.youtubeUrl + ' (channel ' + (s.channel + 1) + ', ' + s.status + ')';
+          }
           var parts =
             '<span class="badge ' +
             s.status +
