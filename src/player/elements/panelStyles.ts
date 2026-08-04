@@ -125,6 +125,58 @@ export const STATISTICS_SPAN_STYLE =
   '.statistics .accent-pink{ color: #FF6FB5; }\r\n' +
   '.statistics .accent-slate{ color: #9AA7B4; }';
 
+/** Rolling-history "intensity graph" (bar chart, e.g. received bitrate) and
+ * "line chart" (e.g. buffer/latency) mini-visualizations added to the
+ * statistics panel — flat, non-animated styling to match the rest of the
+ * panel's plain accent-color convention, unlike the pulsing/glowing
+ * standalone network-state ball (NETWORK_STATE_WRAPPER_STYLE/BALL_STYLE
+ * below), which is a separate, more attention-grabbing floating badge. */
+export const STATISTICS_GRAPH_STYLE =
+  '.statistics .stat-graph{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: flex-end;\r\n' +
+  'flex: 1 1 auto;\r\n' +
+  'height: 20px;\r\n' +
+  'gap: 1px;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-graph-bar{\r\n' +
+  'flex: 1 1 0;\r\n' +
+  'min-width: 1px;\r\n' +
+  'height: 2px;\r\n' +
+  'background: #6EA8FF;\r\n' +
+  'border-radius: 1px;\r\n' +
+  'transition: height 0.2s ease-out;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-chart{\r\n' +
+  'flex: 1 1 auto;\r\n' +
+  'height: 20px;\r\n' +
+  'display: block;\r\n' +
+  'overflow: visible;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-chart polyline{\r\n' +
+  'fill: none;\r\n' +
+  'stroke: #FF6FB5;\r\n' +
+  'stroke-width: 1.5;\r\n' +
+  'stroke-linejoin: round;\r\n' +
+  'stroke-linecap: round;\r\n' +
+  '}\r\n' +
+  '.statistics .network-dot{\r\n' +
+  'width: 8px;\r\n' +
+  'height: 8px;\r\n' +
+  'border-radius: 50%;\r\n' +
+  'flex: 0 0 auto;\r\n' +
+  'margin-right: 6px;\r\n' +
+  '}\r\n' +
+  '.statistics .network-dot.state-poor{ background: #FF5A5A; }\r\n' +
+  '.statistics .network-dot.state-fair{ background: #FFB454; }\r\n' +
+  '.statistics .network-dot.state-good{ background: #F5D76E; }\r\n' +
+  '.statistics .network-dot.state-very_good{ background: #9ACD32; }\r\n' +
+  '.statistics .network-dot.state-excellent{ background: #5FDE9A; }\r\n' +
+  '.statistics .network-label-row{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: center;\r\n' +
+  '}';
+
 export const NETWORK_STATE_WRAPPER_STYLE =
   // reference from: https://codepen.io/anon/pen/RzJNqM
   '.network_state_wrapper {\r\n' +

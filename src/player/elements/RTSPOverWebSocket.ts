@@ -38,6 +38,11 @@ import * as panelStyles from './panelStyles';
 
 type LegacyListener = (event: Event) => void;
 
+/** Sample count kept for the statistics panel's Rate bar chart / Buffer line
+ * chart (see statisticsDiv()/onRTSPOverWebSocketStatistics()'s 'fps' case) —
+ * 'fps' statistics fire roughly once per second, so 30 is a ~30s window. */
+const STATS_HISTORY_LENGTH = 30;
+
 interface VideoContainerElement extends HTMLElement {
   videoWidth?: number;
   videoHeight?: number;
@@ -147,6 +152,13 @@ export class RTSPOverWebSocket extends HTMLElement {
   timestampElement?: HTMLElement | null;
   timestampIntervalElement?: HTMLElement | null;
   dataElement?: HTMLElement | null;
+
+  networkStatDotElement?: HTMLElement | null;
+  networkStatTextElement?: HTMLElement | null;
+  rateGraphElement?: HTMLElement | null;
+  bufferChartElement?: SVGPolylineElement | null;
+  private readonly bitrateHistory: number[] = [];
+  private readonly bufferHistory: number[] = [];
 
   networkStateElement?: HTMLElement | null;
   dotElement?: HTMLElement | null;
@@ -2261,6 +2273,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         this.appendStyle(panelStyles.STATISTICS_STYLE);
         this.appendStyle(panelStyles.STATISTICS_DIV_STYLE);
         this.appendStyle(panelStyles.STATISTICS_SPAN_STYLE);
+        this.appendStyle(panelStyles.STATISTICS_GRAPH_STYLE);
       }
 
       this.channelElement = document.createElement('div');
@@ -2386,6 +2399,17 @@ export class RTSPOverWebSocket extends HTMLElement {
       latencyElement.appendChild(latencyLabelElement);
       latencyElement.appendChild(latencyValuesElement);
 
+      // Line chart of recent buffer/latency samples — see
+      // onRTSPOverWebSocketStatistics()'s 'fps' case (pushes into
+      // bufferHistory) and renderBufferChart().
+      const bufferChartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      bufferChartSvg.setAttribute('class', 'stat-chart');
+      bufferChartSvg.setAttribute('viewBox', '0 0 100 20');
+      bufferChartSvg.setAttribute('preserveAspectRatio', 'none');
+      const bufferChartPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      bufferChartSvg.appendChild(bufferChartPolyline);
+      latencyElement.appendChild(bufferChartSvg);
+
       const receivedElement = document.createElement('div');
       const receivedLabelElement = document.createElement('span');
       receivedLabelElement.innerText = 'Received';
@@ -2425,10 +2449,44 @@ export class RTSPOverWebSocket extends HTMLElement {
       dataElement.appendChild(dataLabelElement);
       dataElement.appendChild(dataSpanElement);
 
+      // Reuses applyNetworkStateDotClass()'s _networkState value (already
+      // tracked for the separate standalone floating dot — see
+      // networkstateDiv()) as a labeled row inside the statistics panel
+      // too, with its own flat (non-pulsing) color mapping matching the
+      // panel's plain accent-color convention — see
+      // panelStyles.STATISTICS_GRAPH_STYLE's .network-dot.state-* rules.
+      const networkElement = document.createElement('div');
+      const networkLabelElement = document.createElement('span');
+      networkLabelElement.innerText = 'Network';
+      networkLabelElement.className = 'stat-label accent-cyan';
+      const networkRowElement = document.createElement('span');
+      networkRowElement.className = 'stat-value network-label-row';
+      const networkDotElement = document.createElement('span');
+      networkDotElement.className = 'network-dot';
+      const networkTextElement = document.createElement('span');
+      networkRowElement.appendChild(networkDotElement);
+      networkRowElement.appendChild(networkTextElement);
+      networkElement.appendChild(networkLabelElement);
+      networkElement.appendChild(networkRowElement);
+
+      // Intensity graph (bar chart) of recent received-bitrate samples —
+      // see onRTSPOverWebSocketStatistics()'s 'fps' case (pushes into
+      // bitrateHistory) and renderRateGraph().
+      const rateElement = document.createElement('div');
+      const rateLabelElement = document.createElement('span');
+      rateLabelElement.innerText = 'Rate';
+      rateLabelElement.className = 'stat-label accent-blue';
+      const rateGraphElement = document.createElement('span');
+      rateGraphElement.className = 'stat-graph';
+      rateElement.appendChild(rateLabelElement);
+      rateElement.appendChild(rateGraphElement);
+
+      this.statisticsElement.appendChild(networkElement);
       this.statisticsElement.appendChild(resolutionElement);
       this.statisticsElement.appendChild(positionElement);
       this.statisticsElement.appendChild(ratioElement);
       this.statisticsElement.appendChild(codecElement);
+      this.statisticsElement.appendChild(rateElement);
       this.statisticsElement.appendChild(frameElement);
       this.statisticsElement.appendChild(decodedElement);
       this.statisticsElement.appendChild(droppedPacketElement);
@@ -2461,6 +2519,11 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.timestampElement = timestampSpanElement;
       this.timestampIntervalElement = timestampIntetvalSpanElement;
       this.dataElement = dataSpanElement;
+      this.networkStatDotElement = networkDotElement;
+      this.networkStatTextElement = networkTextElement;
+      this.rateGraphElement = rateGraphElement;
+      this.bufferChartElement = bufferChartPolyline;
+      this.applyStatisticsNetworkState();
     } else {
       if (this.statisticsElement !== undefined && this.statisticsElement !== null) {
         this.statisticsElement.remove();
@@ -2469,6 +2532,49 @@ export class RTSPOverWebSocket extends HTMLElement {
         this.video.style.position = '';
       }
     }
+  }
+
+  /** Refreshes the statistics panel's Network row from `_networkState` —
+   * called both when the panel is (re)built and whenever `_networkState`
+   * itself changes (see the '0x1005' error-code handler), independent of
+   * whether the separate standalone floating dot (networkstateDiv(),
+   * gated on the unrelated `network` attribute) is also showing. */
+  private applyStatisticsNetworkState(): void {
+    if (this.networkStatDotElement === undefined || this.networkStatDotElement === null) return;
+    this.networkStatDotElement.setAttribute('class', 'network-dot state-' + this._networkState);
+    if (this.networkStatTextElement !== undefined && this.networkStatTextElement !== null) {
+      this.networkStatTextElement.textContent = this._networkState.replace('_', ' ');
+    }
+  }
+
+  /** Renders bitrateHistory as a bar chart ("intensity graph") — see
+   * onRTSPOverWebSocketStatistics()'s 'fps' case, which pushes into it. */
+  private renderRateGraph(): void {
+    if (this.rateGraphElement === undefined || this.rateGraphElement === null) return;
+    const max = Math.max(...this.bitrateHistory, 1);
+    this.rateGraphElement.innerHTML = '';
+    for (const value of this.bitrateHistory) {
+      const bar = document.createElement('span');
+      bar.className = 'stat-graph-bar';
+      bar.style.height = Math.max(2, Math.round((value / max) * 20)) + 'px';
+      this.rateGraphElement.appendChild(bar);
+    }
+  }
+
+  /** Renders bufferHistory as an SVG line chart — see
+   * onRTSPOverWebSocketStatistics()'s 'fps' case, which pushes into it. */
+  private renderBufferChart(): void {
+    if (this.bufferChartElement === undefined || this.bufferChartElement === null) return;
+    const max = Math.max(...this.bufferHistory, 0.001);
+    const count = this.bufferHistory.length;
+    const points = this.bufferHistory
+      .map((value, index) => {
+        const x = count > 1 ? (index / (count - 1)) * 100 : 100;
+        const y = 20 - (value / max) * 20;
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      })
+      .join(' ');
+    this.bufferChartElement.setAttribute('points', points);
   }
 
   private networkstateDiv(): void {
@@ -3073,6 +3179,7 @@ export class RTSPOverWebSocket extends HTMLElement {
             this.networkStateElement = null;
             this.removeAttribute('network');
           }
+          this.applyStatisticsNetworkState();
         }
         break;
       }
@@ -3236,6 +3343,11 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (this.decodeElement !== null && this.decodeElement !== undefined && statistics.decodedBytesDecodedPerSec !== undefined && statistics.decodedBytesMean !== undefined) {
           this.decodeElement.textContent = 'total: ' + formatBytes(statistics.decodedBytesDecodedPerSec) + ' , average p/s: ' + formatBps(statistics.decodedBytesMean * 8);
         }
+        if (statistics.decodedBytesDecodedPerSec !== undefined) {
+          this.bitrateHistory.push(statistics.decodedBytesDecodedPerSec * 8);
+          if (this.bitrateHistory.length > STATS_HISTORY_LENGTH) this.bitrateHistory.shift();
+          this.renderRateGraph();
+        }
         if (this.dropElement !== null && this.dropElement !== undefined && statistics.dropFramesCount !== undefined && statistics.dropFramesMean !== undefined) {
           this.dropElement.textContent = 'total: ' + statistics.dropFramesCount + ' frame dropped, average p/s: ' + statistics.dropFramesMean + ' dropped';
         }
@@ -3249,6 +3361,11 @@ export class RTSPOverWebSocket extends HTMLElement {
           if (typeof statistics.limit !== 'undefined' && statistics.limit !== null) {
             this.latencyElement.textContent += '/ max limit :' + statistics.limit.toFixed(4) + ' secs';
           }
+        }
+        if (statistics.latency !== undefined) {
+          this.bufferHistory.push(statistics.latency * 1000);
+          if (this.bufferHistory.length > STATS_HISTORY_LENGTH) this.bufferHistory.shift();
+          this.renderBufferChart();
         }
 
         if (this.chunkSizeElement !== null && this.chunkSizeElement !== undefined && statistics.chunksize !== undefined) {
