@@ -2648,20 +2648,25 @@ export class RTSPOverWebSocket extends HTMLElement {
     target.setAttribute('points', points);
   }
 
-  /** Generic rolling-history bar-chart ("intensity graph") renderer — see
-   * renderLineChart()'s comment on why it's normalized against the
-   * history's own local min/max rather than against 0. */
-  private renderBarGraph(target: HTMLElement | null | undefined, history: number[]): void {
+  /** Generic rolling-history intensity graph renderer — a strip of
+   * full-height cells (oldest to newest, left to right — a timeline, same
+   * rolling window `history` already keeps) where color *intensity*
+   * (opacity here, not height) encodes each sample's value, normalized
+   * against the history's own local min/max rather than against 0 (see
+   * renderLineChart()'s comment — same reasoning, so a low-variance run
+   * still shows visible relative differences instead of reading as flat). */
+  private renderIntensityGraph(target: HTMLElement | null | undefined, history: number[]): void {
     if (target === undefined || target === null) return;
     const min = history.length > 0 ? Math.min(...history) : 0;
     const max = history.length > 0 ? Math.max(...history) : 1;
     const range = Math.max(max - min, 1e-6);
     target.innerHTML = '';
     for (const value of history) {
-      const bar = document.createElement('span');
-      bar.className = 'stat-graph-bar';
-      bar.style.height = Math.max(2, Math.round(((value - min) / range) * 20)) + 'px';
-      target.appendChild(bar);
+      const cell = document.createElement('span');
+      cell.className = 'stat-graph-bar';
+      const intensity = (value - min) / range;
+      cell.style.opacity = (0.15 + intensity * 0.85).toFixed(2);
+      target.appendChild(cell);
     }
   }
 
@@ -3415,7 +3420,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.fps !== undefined && statistics.media === 'video') {
           this.videoFpsHistory.push(statistics.fps);
           if (this.videoFpsHistory.length > STATS_HISTORY_LENGTH) this.videoFpsHistory.shift();
-          this.renderBarGraph(this.videoRtpGraphElement, this.videoFpsHistory);
+          this.renderIntensityGraph(this.videoRtpGraphElement, this.videoFpsHistory);
         }
 
         if (this.audioRtpRecvElement !== null && this.audioRtpRecvElement !== undefined && statistics.fps !== undefined && statistics.media === 'audio') {
@@ -3428,7 +3433,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.fps !== undefined && statistics.media === 'audio') {
           this.audioFpsHistory.push(statistics.fps);
           if (this.audioFpsHistory.length > STATS_HISTORY_LENGTH) this.audioFpsHistory.shift();
-          this.renderBarGraph(this.audioRtpGraphElement, this.audioFpsHistory);
+          this.renderIntensityGraph(this.audioRtpGraphElement, this.audioFpsHistory);
         }
 
         this.dispatch('statistics', { statistics: statistics as unknown as Record<string, unknown> });
@@ -3475,7 +3480,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.dropFramesMean !== undefined) {
           this.dropsHistory.push(statistics.dropFramesMean);
           if (this.dropsHistory.length > STATS_HISTORY_LENGTH) this.dropsHistory.shift();
-          this.renderBarGraph(this.dropsGraphElement, this.dropsHistory);
+          this.renderIntensityGraph(this.dropsGraphElement, this.dropsHistory);
         }
 
         if (this.resolutionElement !== null && this.resolutionElement !== undefined && statistics.width !== undefined && statistics.height !== undefined) {
@@ -3491,7 +3496,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.latency !== undefined) {
           this.bufferHistory.push(statistics.latency * 1000);
           if (this.bufferHistory.length > STATS_HISTORY_LENGTH) this.bufferHistory.shift();
-          this.renderBarGraph(this.bufferGraphElement, this.bufferHistory);
+          this.renderIntensityGraph(this.bufferGraphElement, this.bufferHistory);
         }
 
         if (this.chunkElement !== null && this.chunkElement !== undefined && statistics.chunksize !== undefined) {

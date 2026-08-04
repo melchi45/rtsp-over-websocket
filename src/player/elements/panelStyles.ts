@@ -197,18 +197,22 @@ export const STATISTICS_SPAN_STYLE =
 export const STATISTICS_GRAPH_STYLE =
   '.statistics .stat-graph{\r\n' +
   'display: flex;\r\n' +
-  'align-items: flex-end;\r\n' +
+  'align-items: stretch;\r\n' +
   'flex: 1 1 auto;\r\n' +
   'height: 20px;\r\n' +
-  'gap: 1px;\r\n' +
+  'gap: 0;\r\n' +
   '}\r\n' +
+  // Intensity graph: every cell is the same full-height rectangle — value
+  // is encoded as color intensity (opacity), not height, and the strip of
+  // cells left-to-right is a timeline (oldest to newest, same rolling
+  // window renderIntensityGraph()'s history array already keeps).
   '.statistics .stat-graph-bar{\r\n' +
   'flex: 1 1 0;\r\n' +
   'min-width: 1px;\r\n' +
-  'height: 2px;\r\n' +
+  'height: 100%;\r\n' +
   'background: #6EA8FF;\r\n' +
-  'border-radius: 1px;\r\n' +
-  'transition: height 0.2s ease-out;\r\n' +
+  'border-radius: 0;\r\n' +
+  'transition: opacity 0.2s ease-out;\r\n' +
   '}\r\n' +
   '.statistics .stat-chart{\r\n' +
   'flex: 1 1 auto;\r\n' +
