@@ -19,7 +19,7 @@ function buildRtpHeader(marker: boolean, timestamp: number): Uint8Array {
 }
 
 /** Contract-tier test: this file is thin onmessage/postMessage glue around MjpegDepacketizer (parity-tested separately). */
-describe('mjpegDepacketizeWorker contract tests (the legacy player’s Worker/MjpegSession/mjpegDepacketizeWorker.js)', () => {
+describe('mjpegDepacketizeWorker contract tests (the legacy player’s Worker/MjpegSession/mjpegDepacketizeWorker)', () => {
   let onmessage: ((event: { data: { dataArray: MjpegDepacketizeRequestEntry[] } }) => void) | null;
   let postMessage: ReturnType<typeof vi.fn>;
 

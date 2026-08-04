@@ -3,7 +3,7 @@ import { Shader, Program, Texture, createShaderScript } from './GLPrimitives';
 import { Size } from '../../../../util/Size';
 import { createFakeWebGLContext, createFakeCanvas } from './testSupport/fakeWebGLContext';
 
-describe('GLPrimitives contract tests (the legacy player’s Video/Player/Canvas/webglCanvas.js — Script/Shader/Program/Texture)', () => {
+describe('GLPrimitives contract tests (the legacy player’s Video/Player/Canvas/webglCanvas — Script/Shader/Program/Texture)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });

@@ -3,7 +3,7 @@ import { WebGLCanvas } from './WebGLCanvas';
 import { Size } from '../../../../util/Size';
 import { createFakeWebGLContext, createFakeCanvas } from './testSupport/fakeWebGLContext';
 
-describe('WebGLCanvas contract tests (the legacy player’s Video/Player/Canvas/webglCanvas.js — WebGLCanvas)', () => {
+describe('WebGLCanvas contract tests (the legacy player’s Video/Player/Canvas/webglCanvas — WebGLCanvas)', () => {
   it('constructor sets canvas.width/height from size.w/h when no viewWidth/viewHeight is given', () => {
     const canvas = createFakeCanvas();
     const gl = createFakeWebGLContext(canvas);

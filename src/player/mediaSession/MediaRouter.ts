@@ -517,7 +517,7 @@ export class MediaRouter {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0304'),
-        place: 'mediaRouter.js:spsParse',
+        place: 'MediaRouter.ts:spsParse',
         message:
           'SPS payload is not available for channel ' +
           this.channelId +
@@ -560,7 +560,7 @@ export class MediaRouter {
           oldErrorCode: '103',
           isLimit: true,
           description: 'limit speed',
-          place: 'mediaRouter.js:197',
+          place: 'MediaRouter.ts:197',
           channelId: this.channelId
         });
       }
@@ -572,7 +572,7 @@ export class MediaRouter {
           oldErrorCode: '103',
           isLimit: false,
           description: 'default speed list',
-          place: 'mediaRouter.js:210',
+          place: 'MediaRouter.ts:210',
           channelId: this.channelId
         });
       }
@@ -671,14 +671,14 @@ export class MediaRouter {
               throw new RTSPOverWebSocketError({
                 channelId: self.channelId,
                 errorCode: fromHex('0x0900'),
-                place: 'mediaRouter.js:onVideoData',
+                place: 'MediaRouter.ts:onVideoData',
                 message: 'The video element do not exist. Check your video element or video element was released.'
               });
             } else {
               throw new RTSPOverWebSocketError({
                 channelId: self.channelId,
                 errorCode: fromHex('0x0901'),
-                place: 'mediaRouter.js:onVideoData',
+                place: 'MediaRouter.ts:onVideoData',
                 message: 'The canvas element do not exist. Check your canvas element or canvas element was released.'
               });
             }
@@ -816,8 +816,8 @@ export class MediaRouter {
       throw new RTSPOverWebSocketError({
         channelId: self.channelId,
         errorCode: fromHex('0x030B'),
-        place: 'mediaRouter.js:onAudioData',
-        message: 'onAudioData from mediaRouter: errorcode [' + err.errorCode + '], message  [' + err.message + ']'
+        place: 'MediaRouter.ts:onAudioData',
+        message: 'onAudioData from mediaRouter: errorcode [' + err.errorCode + '], message [' + err.message + ']'
       });
     }
   }
@@ -864,7 +864,7 @@ export class MediaRouter {
       waiting: waiting.islost,
       duration: waiting.duration,
       description: 'rtp packet lost message',
-      place: 'mediaRouter.js:onWaiting'
+      place: 'MediaRouter.ts:onWaiting'
     });
 
     if (this.player !== null && typeof this.player !== 'undefined' && waiting.media === 'video' && this.supportCovertAndOff) {
@@ -883,7 +883,7 @@ export class MediaRouter {
         this.setAudioVolume(Number(data));
         this.audioPlayer.ControlVolume(data);
       } else {
-        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x030E'), place: 'mediaRouter.js:362', message: 'audio volume do not set' });
+        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x030E'), place: 'MediaRouter.ts:362', message: 'audio volume do not set' });
       }
     } else {
       this.player?.ControlVolume?.(data);
@@ -896,7 +896,7 @@ export class MediaRouter {
         if (Number.isInteger(Number(data))) {
           this.setAudioVolume(Number(data));
         } else {
-          throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x030E'), place: 'mediaRouter.js:389', message: 'audio volume do not set' });
+          throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x030E'), place: 'MediaRouter.ts:389', message: 'audio volume do not set' });
         }
       }
     }
@@ -1206,7 +1206,7 @@ export class MediaRouter {
         oldErrorCode: '103',
         isLimit: false,
         description: 'default speed list',
-        place: 'mediaRouter.js:1011',
+        place: 'MediaRouter.ts:1011',
         channelId: this.channelId
       });
     }
@@ -1298,7 +1298,7 @@ export class MediaRouter {
         errorCode: mode === 'video' ? fromHex('0x0900') : fromHex('0x0901'),
         mode: mode === 'video' ? 'video' : 'canvas',
         description: 'The video tag player does not find from your document.',
-        place: 'mediaRouter.js:setVideoMode',
+        place: 'MediaRouter.ts:setVideoMode',
         channelId: this.channelId
       });
     }
@@ -1348,7 +1348,7 @@ export class MediaRouter {
               errorCode: fromHex('0x0301'),
               oldErrorCode: '996',
               description: 'Not enough decoding for currnet profile, Change UWA profile',
-              place: 'mediaRouter.js:331',
+              place: 'MediaRouter.ts:331',
               channelId: this.channelId
             });
           } else if (this.deviceType === 'nvr' && codecType === 'H264') {

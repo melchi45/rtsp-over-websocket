@@ -88,7 +88,7 @@ function infoFor(channelId: number, overrides: Partial<StreamPlayerInfo> = {}): 
   };
 }
 
-describe('StreamManager contract tests (the legacy player’s Interface/streamManager.js)', () => {
+describe('StreamManager contract tests (the legacy player’s Interface/streamManager)', () => {
   it('getVideoPlayer() throws when no player has ever been looked up (legacy: currentPlayer.getVideoPlayer() has no null guard)', async () => {
     // Isolated module instance so this doesn't depend on test-execution order
     // relative to the other tests below, which do set currentPlayer.

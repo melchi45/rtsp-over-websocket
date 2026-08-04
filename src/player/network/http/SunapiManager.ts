@@ -192,7 +192,7 @@ export class SunapiManager {
           reject(
             new SunapiError({
               errorCode: Number(error.Code),
-              place: 'sunapiManager.js:init',
+              place: 'SunapiManager.ts:init',
               message: HTTP_STATUS_CODES[String(error.Code)]
             })
           ),
@@ -510,7 +510,7 @@ export class SunapiManager {
         // no-op dropped here rather than carried as dead state.
         throw new RTSPOverWebSocketError(
           opts.includeUriPlaceInCatch
-            ? { errorCode: fromHex('0x0700'), place: 'sunapiManager.js:' + place, message: (error as Error).message }
+            ? { errorCode: fromHex('0x0700'), place: 'SunapiManager.ts:' + place, message: (error as Error).message }
             : { errorCode: fromHex('0x0700'), message: (error as Error).message }
         );
       }

@@ -177,13 +177,13 @@ export class SunapiClient {
     ) {
       throw new RTSPOverWebSocketError({
         errorCode: fromHex('0x0400'),
-        place: 'sunapiClient.js:60',
+        place: 'SunapiClient.ts:60',
         message: 'cameraIP is empty from input parameter.'
       });
     } else if ((this.restClientConfig.serverType as string | undefined) === undefined || this.restClientConfig.serverType === null) {
       throw new RTSPOverWebSocketError({
         errorCode: fromHex('0x0404'),
-        place: 'sunapiClient.js:67',
+        place: 'SunapiClient.ts:67',
         message: 'device type is undefined.'
       });
     }
@@ -194,7 +194,7 @@ export class SunapiClient {
     ) {
       throw new RTSPOverWebSocketError({
         errorCode: fromHex('0x0402'),
-        place: 'sunapiClient.js:78',
+        place: 'SunapiClient.ts:78',
         message: 'user id is empty from input parameter.'
       });
     }
@@ -224,7 +224,7 @@ export class SunapiClient {
     } else {
       throw new AuthError({
         errorCode: fromHex('0x0402'),
-        place: 'sunapiClient.js:Constructor',
+        place: 'SunapiClient.ts:Constructor',
         message: 'user id is empty from input parameter.'
       });
     }
@@ -235,7 +235,7 @@ export class SunapiClient {
     } else {
       throw new AuthError({
         errorCode: fromHex('0x0403'),
-        place: 'sunapiClient.js:Constructor',
+        place: 'SunapiClient.ts:Constructor',
         message: 'password is empty from input parameter.'
       });
     }

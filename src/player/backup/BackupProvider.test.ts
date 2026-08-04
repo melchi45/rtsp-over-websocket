@@ -32,7 +32,7 @@ function audioFrame(): { streamData: AudioStreamData; audioInfo: AudioInfo } {
 }
 
 /** Contract-tier tests: backupProvider.js is entirely Worker-message-driven. */
-describe('BackupProvider contract tests (the legacy player’s Backup/backupProvider.js)', () => {
+describe('BackupProvider contract tests (the legacy player’s Backup/backupProvider)', () => {
   it('channelId/deviceType are plain, freely settable fields (real per-instance accessors in legacy, no side effects)', () => {
     const { provider } = newProvider();
     provider.channelId = 5;

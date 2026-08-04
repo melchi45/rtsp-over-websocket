@@ -262,7 +262,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x090D'),
-          place: 'videoTagPlayer.js:Constructor',
+          place: 'VideoTagPlayer.ts:Constructor',
           message: 'This osx version do not support for video tag.'
         });
       } else {
@@ -411,7 +411,7 @@ export class VideoTagPlayer extends VideoPlayer {
             throw new RTSPOverWebSocketError({
               channelId: player.channelId,
               errorCode: (error as { code?: number }).code,
-              place: 'videoTagPlayer.js:onCueChange',
+              place: 'VideoTagPlayer.ts:onCueChange',
               message: (error as Error).message
             });
           }
@@ -437,7 +437,7 @@ export class VideoTagPlayer extends VideoPlayer {
           throw new RTSPOverWebSocketError({
             channelId: player.channelId,
             errorCode: (error as { code?: number }).code,
-            place: 'videoTagPlayer.js:onCueEnter',
+            place: 'VideoTagPlayer.ts:onCueEnter',
             message: (error as Error).message
           });
         }
@@ -457,7 +457,7 @@ export class VideoTagPlayer extends VideoPlayer {
             throw new RTSPOverWebSocketError({
               channelId: player.channelId,
               errorCode: (error as { code?: number }).code,
-              place: 'videoTagPlayer.js:onCueExit',
+              place: 'VideoTagPlayer.ts:onCueExit',
               message: (error as Error).message
             });
           }
@@ -466,7 +466,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: player.channelId,
           errorCode: fromHex('0x0900'),
-          place: 'videoTagPlayer.js:onCueExit',
+          place: 'VideoTagPlayer.ts:onCueExit',
           message: 'video tag element was not initialized.'
         });
       }
@@ -541,7 +541,7 @@ export class VideoTagPlayer extends VideoPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0900'),
-        place: 'videoTagPlayer.js:elementSetting',
+        place: 'VideoTagPlayer.ts:elementSetting',
         message: 'video tag element was not initialized.'
       });
     }
@@ -993,7 +993,7 @@ export class VideoTagPlayer extends VideoPlayer {
           `channel: ${this.channelId}, You should be check the rtp timestamp of your device. ` +
           `The rtp timestamp could not be same value between current frame and previous frame. ` +
           `previous rtp timestamp: ${preVideoFrameTimeStamp}current rtp timestamp: ${curVideoFrameTimeStamp}interval: ${curVideoFrameTimeStamp - preVideoFrameTimeStamp}`,
-        place: 'VideoTagPlayerjs:getVideoFrameDuration',
+        place: 'VideoTagPlayer.ts:getVideoFrameDuration',
         channelId: this.channelId
       });
       this.bVideoUnstableTimestamp = true;
@@ -1337,7 +1337,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x030A'),
-          place: 'videoTagPlayer.js:appendSegmentToSourceBuffer',
+          place: 'VideoTagPlayer.ts:appendSegmentToSourceBuffer',
           message: `Fail to append frame buffer to source buffer from videoTagPlayer. [${(error as { code?: number }).code}, message${(error as Error).message}]`
         });
       }
@@ -1360,7 +1360,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: (error as { code?: number }).code,
-          place: 'videoTagPlayer.js:setSourceBuffer',
+          place: 'VideoTagPlayer.ts:setSourceBuffer',
           message: (error as Error).message
         });
       }
@@ -1395,7 +1395,7 @@ export class VideoTagPlayer extends VideoPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: (error as { code?: number }).code,
-        place: 'videoTagPlayer.js:addSourceBuffer',
+        place: 'VideoTagPlayer.ts:addSourceBuffer',
         message: (error as Error).message
       });
     }
@@ -1554,7 +1554,7 @@ export class VideoTagPlayer extends VideoPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0900'),
-        place: 'videoTagPlayer.js:videoUpdating',
+        place: 'VideoTagPlayer.ts:videoUpdating',
         message: 'fail to detect the video tag element.'
       });
     }
@@ -1617,7 +1617,7 @@ export class VideoTagPlayer extends VideoPlayer {
           throw new RTSPOverWebSocketError({
             channelId: this.channelId,
             errorCode: fromHex('0x0909'),
-            place: 'videoTagPlayer.js:1887',
+            place: 'VideoTagPlayer.ts:1887',
             message: 'can not return capture blob'
           });
         }
@@ -1643,7 +1643,7 @@ export class VideoTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x0905'),
-          place: 'avPlayer.js:audiotranscoderWorkerMessage',
+          place: 'VideoTagPlayer.ts:audiotranscoderWorkerMessage',
           message: 'The audiotranscoderWorker returned unknown data'
         });
     }
@@ -1976,7 +1976,7 @@ export class VideoTagPlayer extends VideoPlayer {
           throw new RTSPOverWebSocketError({
             channelId: this.channelId,
             errorCode: fromHex('0x1104'),
-            place: 'videoTagPlayer.js:instantplaybackCmd:terminated',
+            place: 'VideoTagPlayer.ts:instantplaybackCmd:terminated',
             message: 'fail to terminate instant playback mode.'
           });
         }
