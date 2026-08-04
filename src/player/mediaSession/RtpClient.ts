@@ -164,7 +164,14 @@ export class RtpClient {
         case 'mpeg4-generic': {
           if (entry.trackID.search('trackID=t') === -1 && entry.trackID.search('trackID=back') === -1) {
             const session = new AACSession();
-            session.init({ config: entry.config ?? '', clockFreq: Number(entry.ClockFreq), bitrate: entry.Bitrate || 48 });
+            session.init({
+              config: entry.config ?? '',
+              clockFreq: Number(entry.ClockFreq),
+              bitrate: entry.Bitrate || 48,
+              sizeLength: entry.SizeLength ? Number(entry.SizeLength) : undefined,
+              indexLength: entry.IndexLength ? Number(entry.IndexLength) : undefined,
+              indexDeltaLength: entry.IndexDeltaLength ? Number(entry.IndexDeltaLength) : undefined
+            });
             session.mime = entry.codecMime ?? '';
             rtpSession = session;
           }

@@ -52,32 +52,40 @@ export class G711Session extends RtpSession {
     void paddingSize;
     const rtpTimeStamp = this.ntohl(rtpHeader.subarray(4, 8));
 
-    if (flags.markerBit) {
-      this.rtpTimestamp = (rtpTimeStamp / this.clock).toFixed(0);
-      if (this.isInitializeReceivedPacketCount()) {
-        this.setStartTimeStamp(this.rtpTimestamp);
-      }
-      this.increaseNumberOfReceivedPacketCount();
-
-      const playMode = this.playback ? 'Playback' : 'Live';
-      const streamData = {
-        interleaved: this.interleavedId,
-        codecType: 'G711',
-        codecMime: this.mime,
-        frameData: processedMessage,
-        channelId: this.channelId,
-        timeStamp: {
-          rtpTimestamp: this.rtpTimestamp,
-          timestamp: this.timeData!.timestamp,
-          timestamp_usec: this.timeData!.timestamp_usec,
-          timezone: this.timeData!.timezone
-        },
-        rtcp_interleavedId: this.rtcpSession?.interleavedId
-      };
-      const audioInfo = { bitrate: this.bitrate };
-
-      this.eventAudioCallback?.(playMode, streamData, audioInfo);
+    // Unlike video (NAL fragments/aggregates spanning several packets) or AAC
+    // (multiple access units per packet), G.711 has no framing to reassemble
+    // — every RTP packet is already a complete, independent chunk of
+    // continuous companded PCM, so there's nothing to gate on. Previously
+    // gated on flags.markerBit (a leftover from the video-session pattern),
+    // which silently dropped every packet against this repo's own demo
+    // server: RFC 3551 only defines the marker bit's meaning for talk-spurt
+    // boundaries under silence suppression, and ffmpeg's G.711 RTP muxer
+    // (no silence suppression) never sets it. Real IP cameras happening to
+    // set it on every packet is why that assumption went unnoticed.
+    this.rtpTimestamp = (rtpTimeStamp / this.clock).toFixed(0);
+    if (this.isInitializeReceivedPacketCount()) {
+      this.setStartTimeStamp(this.rtpTimestamp);
     }
+    this.increaseNumberOfReceivedPacketCount();
+
+    const playMode = this.playback ? 'Playback' : 'Live';
+    const streamData = {
+      interleaved: this.interleavedId,
+      codecType: 'G711',
+      codecMime: this.mime,
+      frameData: processedMessage,
+      channelId: this.channelId,
+      timeStamp: {
+        rtpTimestamp: this.rtpTimestamp,
+        timestamp: this.timeData!.timestamp,
+        timestamp_usec: this.timeData!.timestamp_usec,
+        timezone: this.timeData!.timezone
+      },
+      rtcp_interleavedId: this.rtcpSession?.interleavedId
+    };
+    const audioInfo = { bitrate: this.bitrate };
+
+    this.eventAudioCallback?.(playMode, streamData, audioInfo);
   }
 
   override close(): void {

@@ -53,6 +53,7 @@ const VIDEO_MAX_VARIANCE_VALUE = 10;
 const VIDEO_MAX_TIMESTAMP_QUEUE = 10;
 const TEN = 10;
 const TIME_SCALE = 10000;
+const AAC_FRAME_SAMPLES = 1024;
 const MAX_PLAYBACK_DIFF = 1500;
 const MAX_CUE_COUNT = 100;
 const PREFIX_SIZE = 4;
@@ -221,6 +222,13 @@ export class VideoTagPlayer extends VideoPlayer {
   };
   private videoInfoBox: Mp4VideoTrackInfo | null = null;
   private dummyAudio = true;
+  // Tracks whether this.audioInfo currently reflects a real AAC source
+  // (vs. the G711/G726-transcoded-in-browser config) — see setAudioInfo().
+  // Explicit state instead of overloading samplingfrequencyindex as a
+  // sentinel, since that value is now derived from the real stream and can
+  // legitimately land on any table index, including ones a sentinel check
+  // would have collided with.
+  private realAacActive = false;
 
   private audiotranscoderWorker: Worker | null = null;
   private createVideoSegmentTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -303,15 +311,9 @@ export class VideoTagPlayer extends VideoPlayer {
         this.setSourceBuffer();
         break;
       case 'error':
-        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
-        console.error('[VideoTagPlayer debug] MediaSource error event', { readyState: (event.target as MediaSource)?.readyState });
-        break;
+      case 'abort':
       case 'sourceended':
       case 'sourceclose':
-        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
-        console.warn(`[VideoTagPlayer debug] MediaSource ${event.type}`, { readyState: (event.target as MediaSource)?.readyState });
-        break;
-      case 'abort':
       default:
         break;
     }
@@ -320,9 +322,6 @@ export class VideoTagPlayer extends VideoPlayer {
   private readonly sourceBufferEventListener = (event: Event): void => {
     switch (event.type) {
       case 'error':
-        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
-        console.error('[VideoTagPlayer debug] SourceBuffer error event', { mediaSourceReadyState: this.mediaSource?.readyState });
-        break;
       case 'abort':
       case 'updatestart':
       case 'update':
@@ -345,12 +344,6 @@ export class VideoTagPlayer extends VideoPlayer {
 
   private readonly videoElementEventListener = (event: Event): void => {
     switch (event.type) {
-      case 'error': {
-        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
-        const mediaError = (event.target as HTMLVideoElement)?.error;
-        console.error('[VideoTagPlayer debug] video element error event', { code: mediaError?.code, message: mediaError?.message });
-        break;
-      }
       case 'resize': {
         const jQueryWindow = (globalThis as unknown as { window?: { jQuery?: unknown; $?: (target: unknown) => { trigger: (name: string) => void } } }).window;
         if (jQueryWindow?.jQuery) {
@@ -1147,7 +1140,20 @@ export class VideoTagPlayer extends VideoPlayer {
       size: streamData.frameData.byteLength,
       frameData: streamData.frameData,
       frameInfo: audioinfo,
-      timeStamp: streamData.timeStamp as TimestampData
+      timeStamp: streamData.timeStamp as TimestampData,
+      // Live mode's else branch below only computes a duration once a
+      // *previous* sample exists to diff against — the very first audio
+      // sample queued after (re)init never takes that branch and used to be
+      // flushed by createAudioSegment(1) on the *next* call with duration
+      // still unset. An MP4 sample with duration 0 makes Chrome's MSE audio
+      // decoder fail (PipelineStatus::PIPELINE_ERROR_DECODE), which sets the
+      // <video> element's error and makes every appendBuffer() after it
+      // throw InvalidStateError — surfacing as playback dying right after
+      // the first frame. Seed a sane fallback here so that first sample is
+      // never left without one; the delta-based calculation below still
+      // overwrites it with a more precise value once a previous timestamp
+      // is available.
+      duration: this.audioInfo.samplingDuration
     };
 
     this.audioSamples.push(sample);
@@ -1326,24 +1332,8 @@ export class VideoTagPlayer extends VideoPlayer {
 
     if (segment) {
       try {
-        // TEMP DEBUG — remove once the append-failure root cause is confirmed.
-        console.warn('[VideoTagPlayer debug] appendBuffer', {
-          seq: this.sequenseNum,
-          byteLength: segment.byteLength,
-          mediaSourceReadyState: this.mediaSource?.readyState,
-          sourceBufferUpdating: this.sourceBuffer.updating,
-          videoSamplesQueued: this.videoSamples.length,
-          audioSamplesQueued: this.audioSamples.length,
-          remainingSegments: this.segmentArray.length
-        });
         this.sourceBuffer.appendBuffer(segment as Uint8Array<ArrayBuffer>);
       } catch (error) {
-        console.error('[VideoTagPlayer debug] appendBuffer threw', {
-          name: (error as Error).name,
-          code: (error as { code?: number }).code,
-          message: (error as Error).message,
-          mediaSourceReadyState: this.mediaSource?.readyState
-        });
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x030A'),
@@ -1639,7 +1629,7 @@ export class VideoTagPlayer extends VideoPlayer {
     const message = event.data;
     switch (message.type) {
       case 'transcoded':
-        if (this.audioInfo.samplingfrequencyindex !== 8) {
+        if (!this.realAacActive) {
           this.createAudioSample(message.data as unknown as AudioStreamData, this.audioInfo as unknown as AudioInfo, 'AAC');
         }
         break;
@@ -1725,7 +1715,9 @@ export class VideoTagPlayer extends VideoPlayer {
           codecType: streamData.codecType,
           bitrate: audioInfo.bitrate as number,
           interleavedId: streamData.interleaved as number,
-          channelCount: audioInfo.channelCount
+          channelCount: audioInfo.channelCount,
+          samplingFrequencyIndex: audioInfo.samplingFrequencyIndex,
+          sampleRate: audioInfo.sampleRate
         });
       }
       this.createAudioSample(streamData, audioInfo, streamData.codecType);
@@ -2012,7 +2004,15 @@ export class VideoTagPlayer extends VideoPlayer {
     return this.audioInfo;
   }
 
-  setAudioInfo(audioinfo: { codecMime?: string; codecType: string; bitrate: number; interleavedId: number; channelCount?: number }): void {
+  setAudioInfo(audioinfo: {
+    codecMime?: string;
+    codecType: string;
+    bitrate: number;
+    interleavedId: number;
+    channelCount?: number;
+    samplingFrequencyIndex?: number;
+    sampleRate?: number;
+  }): void {
     this.audioCodecInfo.codecType = audioinfo.codecType;
     this.audioCodecInfo.bitrate = audioinfo.bitrate;
     this.audioInfo.interleavedId = audioinfo.interleavedId;
@@ -2020,26 +2020,31 @@ export class VideoTagPlayer extends VideoPlayer {
     if (audioinfo.codecType === 'G711' || audioinfo.codecType === 'G726') {
       (this.audiotranscoderWorker as Worker).postMessage({ type: 'init', data: { codecType: audioinfo.codecType, bitRate: audioinfo.bitrate } });
     }
-    if ((this.audioInfo.samplingfrequencyindex === 8 && audioinfo.codecType !== 'AAC') || (this.audioInfo.samplingfrequencyindex === 11 && audioinfo.codecType === 'AAC')) {
+    const switchingToRealAac = !this.realAacActive && audioinfo.codecType === 'AAC';
+    const switchingAwayFromRealAac = this.realAacActive && audioinfo.codecType !== 'AAC';
+    if (switchingToRealAac || switchingAwayFromRealAac) {
       this.appendSegmentToSourceBuffer();
 
+      const isRealAac = audioinfo.codecType === 'AAC';
+      // For real AAC source audio, use the actual channel_configuration /
+      // samplingFrequencyIndex / frame duration (this repo's own demo server
+      // encodes 48000Hz stereo AAC, not the 16000Hz mono a real IP camera
+      // typically sends) — declaring the wrong ones makes the browser's AAC
+      // decoder reject the audio track partway into playback (see
+      // AACSession.ts's init()). G711/G726 is transcoded to AAC in-browser
+      // at a fixed 8000Hz mono, so that path keeps the hardcoded values.
       this.audioInfo = {
         id: 2,
-        // For real AAC source audio, use the actual channel_configuration
-        // (this repo's own demo server encodes stereo AAC) — declaring mono
-        // for a stereo bitstream makes the browser's AAC decoder reject the
-        // audio track partway into playback (see AACSession.ts's init()).
-        // G711/G726 is transcoded to AAC in-browser as mono, so that path
-        // keeps the hardcoded value.
-        channelcount: audioinfo.codecType === 'AAC' ? (audioinfo.channelCount ?? 1) : 1,
+        channelcount: isRealAac ? (audioinfo.channelCount ?? 1) : 1,
         samplesize: 8,
         type: 'audio',
         codecType: 'AAC',
         audioobjecttype: 2,
-        samplingfrequencyindex: audioinfo.codecType === 'AAC' ? 8 : 11,
-        samplingDuration: audioinfo.codecType === 'AAC' ? 640 : 1280,
+        samplingfrequencyindex: isRealAac ? (audioinfo.samplingFrequencyIndex ?? 8) : 11,
+        samplingDuration: isRealAac && audioinfo.sampleRate ? Math.round((AAC_FRAME_SAMPLES / audioinfo.sampleRate) * TIME_SCALE) : isRealAac ? 640 : 1280,
         interleavedId: audioinfo.interleavedId
       };
+      this.realAacActive = isRealAac;
 
       this.segmentArray = [];
       this.audioSamples = [];

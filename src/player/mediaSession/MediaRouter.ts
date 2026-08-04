@@ -102,6 +102,8 @@ export interface AudioStreamData {
 export interface AudioInfo {
   bitrate?: number;
   channelCount?: number;
+  samplingFrequencyIndex?: number;
+  sampleRate?: number;
 }
 
 export interface MetadataFrame {
@@ -815,7 +817,7 @@ export class MediaRouter {
         channelId: self.channelId,
         errorCode: fromHex('0x030B'),
         place: 'MediaRouter.ts:onAudioData',
-        message: 'onAudioData from mediaRouter: errorcode [' + err.errorCode + '], message  [' + err.message + ']'
+        message: 'onAudioData from mediaRouter: errorcode [' + err.errorCode + '], message [' + err.message + ']'
       });
     }
   }

@@ -52,32 +52,32 @@ export class G726Session extends RtpSession {
     void paddingSize;
     const rtpTimeStamp = this.ntohl(rtpHeader.subarray(4, 8));
 
-    if (flags.markerBit) {
-      this.rtpTimestamp = (rtpTimeStamp / this.clock).toFixed(0);
-      if (this.isInitializeReceivedPacketCount()) {
-        this.setStartTimeStamp(this.rtpTimestamp);
-      }
-      this.increaseNumberOfReceivedPacketCount();
-
-      const playMode = this.playback ? 'Playback' : 'Live';
-      const streamData = {
-        interleaved: this.interleavedId,
-        codecType: 'G726',
-        codecMime: this.mime,
-        frameData: processedMessage,
-        channelId: this.channelId,
-        timeStamp: {
-          rtpTimestamp: this.rtpTimestamp,
-          timestamp: this.timeData!.timestamp,
-          timestamp_usec: this.timeData!.timestamp_usec,
-          timezone: this.timeData!.timezone
-        },
-        rtcp_interleavedId: this.rtcpSession?.interleavedId
-      };
-      const audioInfo = { bitrate: this.bitrate };
-
-      this.eventAudioCallback?.(playMode, streamData, audioInfo);
+    // See G711Session.ts's depacketize() for why this doesn't gate on
+    // flags.markerBit — same continuous-PCM-like codec, same reasoning.
+    this.rtpTimestamp = (rtpTimeStamp / this.clock).toFixed(0);
+    if (this.isInitializeReceivedPacketCount()) {
+      this.setStartTimeStamp(this.rtpTimestamp);
     }
+    this.increaseNumberOfReceivedPacketCount();
+
+    const playMode = this.playback ? 'Playback' : 'Live';
+    const streamData = {
+      interleaved: this.interleavedId,
+      codecType: 'G726',
+      codecMime: this.mime,
+      frameData: processedMessage,
+      channelId: this.channelId,
+      timeStamp: {
+        rtpTimestamp: this.rtpTimestamp,
+        timestamp: this.timeData!.timestamp,
+        timestamp_usec: this.timeData!.timestamp_usec,
+        timezone: this.timeData!.timezone
+      },
+      rtcp_interleavedId: this.rtcpSession?.interleavedId
+    };
+    const audioInfo = { bitrate: this.bitrate };
+
+    this.eventAudioCallback?.(playMode, streamData, audioInfo);
   }
 
   override close(): void {

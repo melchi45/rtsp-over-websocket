@@ -125,6 +125,9 @@ export interface SdpInfoEntry {
   information?: string;
   Bitrate?: number;
   config?: string;
+  SizeLength?: string;
+  IndexLength?: string;
+  IndexDeltaLength?: string;
   RtpInterlevedID?: number;
   RtcpInterlevedID?: number;
   SessionID?: string;
@@ -660,13 +663,20 @@ export class RtspClient {
         fmtpFound = fmtpParams.match(/streamtype=(\S+)(?=;|$)/);
         if (fmtpFound) session.streamtype = fmtpFound[1];
 
-        fmtpFound = fmtpParams.match(/SizeLength=(\S+)(?=;|$)/);
+        // Case-insensitive: RFC 3640 fmtp parameter names aren't case-sensitive
+        // and different encoders capitalize differently — e.g. this repo's own
+        // demo server (ffmpeg) emits lowercase "sizelength=13;indexlength=3;
+        // indexdeltalength=3", which the previous case-sensitive match never
+        // matched, silently leaving these undefined. AACSession then fell back
+        // to assuming exactly one AAC access unit per RTP packet, which broke
+        // as soon as a stream (like this demo server's) aggregates several.
+        fmtpFound = fmtpParams.match(/SizeLength=(\S+)(?=;|$)/i);
         if (fmtpFound) session.SizeLength = fmtpFound[1];
 
-        fmtpFound = fmtpParams.match(/IndexLength=(\S+)(?=;|$)/);
+        fmtpFound = fmtpParams.match(/IndexLength=(\S+)(?=;|$)/i);
         if (fmtpFound) session.IndexLength = fmtpFound[1];
 
-        fmtpFound = fmtpParams.match(/IndexDeltaLength=(\S+)(?=;|$)/);
+        fmtpFound = fmtpParams.match(/IndexDeltaLength=(\S+)(?=;|$)/i);
         if (fmtpFound) session.IndexDeltaLength = fmtpFound[1];
 
         fmtpFound = fmtpParams.match(/profile=(\S+)(?=;|$)/);
@@ -1426,6 +1436,9 @@ export class RtspClient {
           sdpInfoObj.Port = parseInt(rtspSDPData.Sessions[idx].Port ?? '');
           sdpInfoObj.Bitrate = parseInt(rtspSDPData.Sessions[idx].Bitrate ?? '');
           sdpInfoObj.config = rtspSDPData.Sessions[idx].config;
+          sdpInfoObj.SizeLength = rtspSDPData.Sessions[idx].SizeLength;
+          sdpInfoObj.IndexLength = rtspSDPData.Sessions[idx].IndexLength;
+          sdpInfoObj.IndexDeltaLength = rtspSDPData.Sessions[idx].IndexDeltaLength;
           this.SDPinfo.push(sdpInfoObj);
         } else if (codecMime === 'vnd.onvif.metadata') {
           sdpInfoObj.codecName = 'MetaData';
