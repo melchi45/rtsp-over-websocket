@@ -818,9 +818,13 @@ stbl = function (track) {
 
   // Same AudioSampleEntry layout as audioSample() above, but closed with a
   // dOps box instead of esds — Opus doesn't have an ES_Descriptor/
-  // AudioSpecificConfig, and browsers read the real sample rate out of
-  // dOps's InputSampleRate rather than this box's own (here always-zero,
-  // same as audioSample()'s) samplerate field.
+  // AudioSpecificConfig. Unlike audioSample() (where this field is always
+  // zero because AAC's real sample rate only ever comes from esds's
+  // AudioSpecificConfig), this samplerate field has to actually be
+  // 48000<<16 here: Chromium's MP4 demuxer cross-checks it against dOps's
+  // InputSampleRate and rejects the whole append on a mismatch
+  // ("Opus AudioSampleEntry sample rate mismatches OpusSpecificBox..." —
+  // confirmed live against a real camera stream) if it's left at 0.
   opusSample = function (track) {
     return box(types.Opus, new Uint8Array([
 
@@ -840,9 +844,11 @@ stbl = function (track) {
       0x00, 0x00, // pre_defined
       0x00, 0x00, // reserved
 
-      (track.samplerate & 0xff00) >> 8,
-      (track.samplerate & 0xff),
-      0x00, 0x00 // samplerate, 16.16
+      // samplerate, 16.16 fixed-point — must match dOps's InputSampleRate
+      // (also hardcoded to 48000, RFC 7587's fixed Opus-over-RTP clock).
+      (48000 >>> 8) & 0xff,
+      48000 & 0xff,
+      0x00, 0x00
     ]), dOps(track));
   };
 }());
