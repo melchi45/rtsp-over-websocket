@@ -131,6 +131,7 @@ export class RTSPOverWebSocket extends HTMLElement {
   max_scale = 100;
 
   statisticsElement?: HTMLElement | null;
+  statisticsGroupElement?: HTMLElement | null;
   channelElement?: HTMLElement | null;
   channelLabelElement?: HTMLElement | null;
   resolutionElement?: HTMLElement | null;
@@ -159,8 +160,16 @@ export class RTSPOverWebSocket extends HTMLElement {
   chunkElement?: HTMLElement | null;
   fpsChartElement?: SVGPolylineElement | null;
   bufferGraphElement?: HTMLElement | null;
+  videoRtpGraphElement?: HTMLElement | null;
+  audioRtpGraphElement?: HTMLElement | null;
+  rateGraphElement?: HTMLElement | null;
+  dropsGraphElement?: HTMLElement | null;
   private readonly fpsHistory: number[] = [];
   private readonly bufferHistory: number[] = [];
+  private readonly videoFpsHistory: number[] = [];
+  private readonly audioFpsHistory: number[] = [];
+  private readonly rateHistory: number[] = [];
+  private readonly dropsHistory: number[] = [];
   private totalDecodedBytes = 0;
   /** Latest video 'rtp' statistics.receviedPacket — reused by the 'fps'
    * case's Frames row (see onRTSPOverWebSocketStatistics()) rather than
@@ -2277,10 +2286,12 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
 
       if (!this.checkStyle('.statistics')) {
+        this.appendStyle(panelStyles.STATISTICS_GROUP_STYLE);
         this.appendStyle(panelStyles.STATISTICS_STYLE);
         this.appendStyle(panelStyles.STATISTICS_DIV_STYLE);
         this.appendStyle(panelStyles.STATISTICS_SPAN_STYLE);
         this.appendStyle(panelStyles.STATISTICS_GRAPH_STYLE);
+        this.appendStyle(panelStyles.STATISTICS_DATA_STYLE);
       }
 
       this.channelElement = document.createElement('div');
@@ -2376,6 +2387,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       rateValuesElement.appendChild(rateTotalSpanElement);
       rateElement.appendChild(rateLabelElement);
       rateElement.appendChild(rateValuesElement);
+      const rateGraphElement = document.createElement('span');
+      rateGraphElement.className = 'stat-graph';
+      rateElement.appendChild(rateGraphElement);
 
       const dropsElement = document.createElement('div');
       const dropsLabelElement = document.createElement('span');
@@ -2385,6 +2399,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       dropsSpanElement.className = 'stat-value';
       dropsElement.appendChild(dropsLabelElement);
       dropsElement.appendChild(dropsSpanElement);
+      const dropsGraphElement = document.createElement('span');
+      dropsGraphElement.className = 'stat-graph';
+      dropsElement.appendChild(dropsGraphElement);
 
       const chunkElement = document.createElement('div');
       const chunkLabelElement = document.createElement('span');
@@ -2409,6 +2426,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       videoRtpValuesElement.appendChild(videoRtpTotalRecvSpanElement);
       videoRtpElement.appendChild(videoRtpLabelElement);
       videoRtpElement.appendChild(videoRtpValuesElement);
+      const videoRtpGraphElement = document.createElement('span');
+      videoRtpGraphElement.className = 'stat-graph';
+      videoRtpElement.appendChild(videoRtpGraphElement);
 
       const audioRtpElement = document.createElement('div');
       const audioRtpLabelElement = document.createElement('span');
@@ -2424,6 +2444,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       audioRtpValuesElement.appendChild(audioRtpTotalRecvSpanElement);
       audioRtpElement.appendChild(audioRtpLabelElement);
       audioRtpElement.appendChild(audioRtpValuesElement);
+      const audioRtpGraphElement = document.createElement('span');
+      audioRtpGraphElement.className = 'stat-graph';
+      audioRtpElement.appendChild(audioRtpGraphElement);
 
       const latencyElement = document.createElement('div');
       const latencyLabelElement = document.createElement('span');
@@ -2470,14 +2493,24 @@ export class RTSPOverWebSocket extends HTMLElement {
       timestampElement.appendChild(timestampLabelElement);
       timestampElement.appendChild(timestampValuesElement);
 
-      const dataElement = document.createElement('div');
-      const dataLabelElement = document.createElement('span');
-      dataLabelElement.innerText = 'Data';
-      dataLabelElement.className = 'stat-label accent-slate';
-      const dataSpanElement = document.createElement('span');
-      dataSpanElement.className = 'stat-value wrap';
-      dataElement.appendChild(dataLabelElement);
-      dataElement.appendChild(dataSpanElement);
+      // Separate, collapsible panel below the main one instead of a row
+      // inside it — the raw JSON text here varies a lot in length per
+      // event, and used to make the whole statistics panel visibly
+      // resize/shift every time it changed (see STATISTICS_GROUP_STYLE's
+      // comment). Collapsed by default; click the header to toggle.
+      const dataPanelElement = document.createElement('div');
+      dataPanelElement.className = 'statistics-data';
+      const dataToggleElement = document.createElement('div');
+      dataToggleElement.className = 'statistics-data-toggle';
+      dataToggleElement.innerText = 'Data ▸';
+      const dataContentElement = document.createElement('div');
+      dataContentElement.className = 'statistics-data-content';
+      dataToggleElement.addEventListener('click', () => {
+        const expanded = dataPanelElement.classList.toggle('expanded');
+        dataToggleElement.innerText = expanded ? 'Data ▾' : 'Data ▸';
+      });
+      dataPanelElement.appendChild(dataToggleElement);
+      dataPanelElement.appendChild(dataContentElement);
 
       // Reuses applyNetworkStateDotClass()'s _networkState value (already
       // tracked for the separate standalone floating dot — see
@@ -2514,10 +2547,14 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.statisticsElement.appendChild(chunkElement);
       this.statisticsElement.appendChild(receivedElement);
       this.statisticsElement.appendChild(timestampElement);
-      this.statisticsElement.appendChild(dataElement);
 
       this.statisticsElement.setAttribute('class', 'statistics');
-      this.ensureRTSPOverWebSocketWrapper().appendChild(this.statisticsElement);
+
+      this.statisticsGroupElement = document.createElement('div');
+      this.statisticsGroupElement.setAttribute('class', 'statistics-group');
+      this.statisticsGroupElement.appendChild(this.statisticsElement);
+      this.statisticsGroupElement.appendChild(dataPanelElement);
+      this.ensureRTSPOverWebSocketWrapper().appendChild(this.statisticsGroupElement);
 
       this.resolutionElement = resolutionSpanElement;
       this.positionElement = positionSpanElement;
@@ -2539,15 +2576,24 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.totalRecvElement = totalRecvSpanElement;
       this.timestampElement = timestampSpanElement;
       this.timestampIntervalElement = timestampIntetvalSpanElement;
-      this.dataElement = dataSpanElement;
+      this.dataElement = dataContentElement;
       this.networkStatDotElement = networkDotElement;
       this.networkStatTextElement = networkTextElement;
       this.fpsChartElement = fpsChartPolyline;
       this.bufferGraphElement = bufferGraphElement;
+      this.videoRtpGraphElement = videoRtpGraphElement;
+      this.audioRtpGraphElement = audioRtpGraphElement;
+      this.rateGraphElement = rateGraphElement;
+      this.dropsGraphElement = dropsGraphElement;
       this.applyStatisticsNetworkState();
     } else {
       if (this.statisticsElement !== undefined && this.statisticsElement !== null) {
-        this.statisticsElement.remove();
+        if (this.statisticsGroupElement !== undefined && this.statisticsGroupElement !== null) {
+          this.statisticsGroupElement.remove();
+          this.statisticsGroupElement = null;
+        } else {
+          this.statisticsElement.remove();
+        }
         this.statisticsElement = null;
         this.removeAttribute('statistics');
         this.video.style.position = '';
@@ -2568,33 +2614,41 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
-  /** Renders fpsHistory as an SVG line chart — see
-   * onRTSPOverWebSocketStatistics()'s 'fps' case, which pushes into it. */
-  private renderFpsChart(): void {
-    if (this.fpsChartElement === undefined || this.fpsChartElement === null) return;
-    const max = Math.max(...this.fpsHistory, 1);
-    const count = this.fpsHistory.length;
-    const points = this.fpsHistory
+  /** Generic rolling-history line-chart renderer, normalized against the
+   * history's own local min/max (not against 0) so it reads as an actual
+   * "intensity" chart — subtle relative variation stays visible — rather
+   * than a mostly-flat line when the underlying values happen to be large
+   * relative to their own variance (e.g. FPS hovering 28-30). */
+  private renderLineChart(target: SVGPolylineElement | null | undefined, history: number[]): void {
+    if (target === undefined || target === null) return;
+    const min = history.length > 0 ? Math.min(...history) : 0;
+    const max = history.length > 0 ? Math.max(...history) : 1;
+    const range = Math.max(max - min, 1e-6);
+    const count = history.length;
+    const points = history
       .map((value, index) => {
         const x = count > 1 ? (index / (count - 1)) * 100 : 100;
-        const y = 20 - (value / max) * 20;
+        const y = 20 - ((value - min) / range) * 20;
         return x.toFixed(1) + ',' + y.toFixed(1);
       })
       .join(' ');
-    this.fpsChartElement.setAttribute('points', points);
+    target.setAttribute('points', points);
   }
 
-  /** Renders bufferHistory as a bar chart ("intensity graph") — see
-   * onRTSPOverWebSocketStatistics()'s 'fps' case, which pushes into it. */
-  private renderBufferGraph(): void {
-    if (this.bufferGraphElement === undefined || this.bufferGraphElement === null) return;
-    const max = Math.max(...this.bufferHistory, 1);
-    this.bufferGraphElement.innerHTML = '';
-    for (const value of this.bufferHistory) {
+  /** Generic rolling-history bar-chart ("intensity graph") renderer — see
+   * renderLineChart()'s comment on why it's normalized against the
+   * history's own local min/max rather than against 0. */
+  private renderBarGraph(target: HTMLElement | null | undefined, history: number[]): void {
+    if (target === undefined || target === null) return;
+    const min = history.length > 0 ? Math.min(...history) : 0;
+    const max = history.length > 0 ? Math.max(...history) : 1;
+    const range = Math.max(max - min, 1e-6);
+    target.innerHTML = '';
+    for (const value of history) {
       const bar = document.createElement('span');
       bar.className = 'stat-graph-bar';
-      bar.style.height = Math.max(2, Math.round((value / max) * 20)) + 'px';
-      this.bufferGraphElement.appendChild(bar);
+      bar.style.height = Math.max(2, Math.round(((value - min) / range) * 20)) + 'px';
+      target.appendChild(bar);
     }
   }
 
@@ -3345,6 +3399,11 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.receviedPacket !== undefined && statistics.media === 'video') {
           this.lastVideoReceivedPacket = statistics.receviedPacket;
         }
+        if (statistics.fps !== undefined && statistics.media === 'video') {
+          this.videoFpsHistory.push(statistics.fps);
+          if (this.videoFpsHistory.length > STATS_HISTORY_LENGTH) this.videoFpsHistory.shift();
+          this.renderBarGraph(this.videoRtpGraphElement, this.videoFpsHistory);
+        }
 
         if (this.audioRtpRecvElement !== null && this.audioRtpRecvElement !== undefined && statistics.fps !== undefined && statistics.media === 'audio') {
           this.audioRtpRecvElement.textContent = statistics.fps + ' frame/sec:';
@@ -3352,6 +3411,11 @@ export class RTSPOverWebSocket extends HTMLElement {
 
         if (this.audioRtpTotalRecvElement !== null && this.audioRtpTotalRecvElement !== undefined && statistics.receviedPacket !== undefined && statistics.media === 'audio') {
           this.audioRtpTotalRecvElement.textContent = 'total: ' + statistics.receviedPacket + ' frame';
+        }
+        if (statistics.fps !== undefined && statistics.media === 'audio') {
+          this.audioFpsHistory.push(statistics.fps);
+          if (this.audioFpsHistory.length > STATS_HISTORY_LENGTH) this.audioFpsHistory.shift();
+          this.renderBarGraph(this.audioRtpGraphElement, this.audioFpsHistory);
         }
 
         this.dispatch('statistics', { statistics: statistics as unknown as Record<string, unknown> });
@@ -3367,7 +3431,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (fpsSample !== undefined) {
           this.fpsHistory.push(fpsSample);
           if (this.fpsHistory.length > STATS_HISTORY_LENGTH) this.fpsHistory.shift();
-          this.renderFpsChart();
+          this.renderLineChart(this.fpsChartElement, this.fpsHistory);
         }
 
         if (this.framesElement !== null && this.framesElement !== undefined && statistics.dropFramesCount !== undefined) {
@@ -3379,6 +3443,9 @@ export class RTSPOverWebSocket extends HTMLElement {
           if (this.rateTotalElement !== null && this.rateTotalElement !== undefined) {
             this.rateTotalElement.textContent = 'Total ' + formatBytes(this.totalDecodedBytes);
           }
+          this.rateHistory.push(statistics.decodedBytesDecodedPerSec * 8);
+          if (this.rateHistory.length > STATS_HISTORY_LENGTH) this.rateHistory.shift();
+          this.renderBarGraph(this.rateGraphElement, this.rateHistory);
         }
         if (this.rateAvgElement !== null && this.rateAvgElement !== undefined && statistics.decodedBytesMean !== undefined) {
           this.rateAvgElement.textContent = formatBps(statistics.decodedBytesMean * 8) + ' avg';
@@ -3386,6 +3453,11 @@ export class RTSPOverWebSocket extends HTMLElement {
 
         if (this.dropsElement !== null && this.dropsElement !== undefined && statistics.dropFramesMean !== undefined) {
           this.dropsElement.textContent = statistics.dropFramesMean.toFixed(2) + '/sec';
+        }
+        if (statistics.dropFramesMean !== undefined) {
+          this.dropsHistory.push(statistics.dropFramesMean);
+          if (this.dropsHistory.length > STATS_HISTORY_LENGTH) this.dropsHistory.shift();
+          this.renderBarGraph(this.dropsGraphElement, this.dropsHistory);
         }
 
         if (this.resolutionElement !== null && this.resolutionElement !== undefined && statistics.width !== undefined && statistics.height !== undefined) {
@@ -3401,7 +3473,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.latency !== undefined) {
           this.bufferHistory.push(statistics.latency * 1000);
           if (this.bufferHistory.length > STATS_HISTORY_LENGTH) this.bufferHistory.shift();
-          this.renderBufferGraph();
+          this.renderBarGraph(this.bufferGraphElement, this.bufferHistory);
         }
 
         if (this.chunkElement !== null && this.chunkElement !== undefined && statistics.chunksize !== undefined) {

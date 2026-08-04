@@ -22,6 +22,25 @@ export const CHANNEL_DIV_STYLE =
   'border: 2px solid #003B62;\r\n' +
   '}';
 
+/** Positions the main stats panel and the separate collapsible
+ * .statistics-data panel (see STATISTICS_DATA_STYLE) as a single stacked
+ * column, so the Data panel's own content length (raw JSON, can be long
+ * and vary a lot per event) growing/shrinking only reflows within its own
+ * box — not the main panel's, which used to sit right on top of it inside
+ * one flex column and would visibly shift/resize the whole panel every
+ * time Data's text changed length. */
+export const STATISTICS_GROUP_STYLE =
+  '.statistics-group{\r\n' +
+  'display: flex;\r\n' +
+  'flex-direction: column;\r\n' +
+  'align-items: flex-end;\r\n' +
+  'row-gap: 8px;\r\n' +
+  'right: 10px;\r\n' +
+  'bottom: 30px;\r\n' +
+  'position: absolute;\r\n' +
+  'z-index: 1000;\r\n' +
+  '}';
+
 export const STATISTICS_STYLE =
   '.statistics {\r\n' +
   'display: flex;\r\n' +
@@ -33,16 +52,12 @@ export const STATISTICS_STYLE =
   'border-radius: 10px;\r\n' +
   'box-shadow: 0 4px 16px rgba(0,0,0,0.35);\r\n' +
   'color: #E8EAED;\r\n' +
-  'right: 10px;\r\n' +
-  'bottom: 30px;\r\n' +
-  'position: absolute;\r\n' +
-  'z-index: 1000;\r\n' +
   'padding: 10px 14px;\r\n' +
   'font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;\r\n' +
   'font-size: 11px;\r\n' +
   'line-height: 1.7;\r\n' +
-  'min-width: 15em;\r\n' +
-  'max-width: 22em;\r\n' +
+  'min-width: 22em;\r\n' +
+  'max-width: 34em;\r\n' +
   '}';
 
 export const STATISTICS_DIV_STYLE =
@@ -50,20 +65,61 @@ export const STATISTICS_DIV_STYLE =
   'border: 0px;\r\n' +
   'border-bottom: 1px solid rgba(255,255,255,0.06);\r\n' +
   'margin: 0px;\r\n' +
-  'padding: 2px 0px;\r\n' +
+  'padding: 3px 0px;\r\n' +
   'background: transparent;\r\n' +
   'font-family: inherit;\r\n' +
   'border-radius: 0px;\r\n' +
   'position: static;\r\n' +
   'z-index: auto;\r\n' +
   'display: flex;\r\n' +
-  'align-items: baseline;\r\n' +
+  'align-items: center;\r\n' +
   'column-gap: 14px;\r\n' +
   'min-width: 0;\r\n' +
-  'min-height: 0;\r\n' +
+  'min-height: 22px;\r\n' +
   '}\r\n' +
   '.statistics div:last-child{\r\n' +
   'border-bottom: none;\r\n' +
+  '}';
+
+/** Separate, fixed-size (until expanded) panel for the raw Data JSON —
+ * split out of .statistics itself, see STATISTICS_GROUP_STYLE's comment. */
+export const STATISTICS_DATA_STYLE =
+  '.statistics-data{\r\n' +
+  'background: rgba(15,17,21,0.78);\r\n' +
+  '-webkit-backdrop-filter: blur(6px);\r\n' +
+  'backdrop-filter: blur(6px);\r\n' +
+  'border: 1px solid rgba(255,255,255,0.08);\r\n' +
+  'border-radius: 10px;\r\n' +
+  'box-shadow: 0 4px 16px rgba(0,0,0,0.35);\r\n' +
+  'color: #E8EAED;\r\n' +
+  'padding: 6px 14px;\r\n' +
+  'font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;\r\n' +
+  'font-size: 11px;\r\n' +
+  'min-width: 22em;\r\n' +
+  'max-width: 34em;\r\n' +
+  '}\r\n' +
+  '.statistics-data .statistics-data-toggle{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: center;\r\n' +
+  'justify-content: space-between;\r\n' +
+  'cursor: pointer;\r\n' +
+  'user-select: none;\r\n' +
+  'color: #9AA7B4;\r\n' +
+  'font-weight: 600;\r\n' +
+  'letter-spacing: 0.2px;\r\n' +
+  'padding: 3px 0px;\r\n' +
+  '}\r\n' +
+  '.statistics-data .statistics-data-content{\r\n' +
+  'display: none;\r\n' +
+  'padding: 4px 0px 2px 0px;\r\n' +
+  'white-space: normal;\r\n' +
+  'word-break: break-word;\r\n' +
+  'color: #E8EAED;\r\n' +
+  'max-height: 30vh;\r\n' +
+  'overflow-y: auto;\r\n' +
+  '}\r\n' +
+  '.statistics-data.expanded .statistics-data-content{\r\n' +
+  'display: block;\r\n' +
   '}';
 
 export const STATISTICS_SPAN_STYLE =
