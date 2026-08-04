@@ -2,6 +2,7 @@ import { AudioPlayer } from './AudioPlayer';
 import { G711AudioDecoder, type G711Mime } from '../decoder/G711AudioDecoder';
 import { G726xAudioDecoder } from '../decoder/G726xAudioDecoder';
 import { AACAudioDecoder } from '../decoder/AACAudioDecoder';
+import { OPUSAudioDecoder } from '../decoder/OPUSAudioDecoder';
 import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError';
 import { fromHex } from '../../util/hex';
 
@@ -165,6 +166,9 @@ export class AudioPlayerGxx extends AudioPlayer {
     } else if (codecType === 'AAC') {
       this.audioDecoder = this.aacAudioDecoderFactory();
       this.codecInfo.samplingRate = 16000;
+    } else if (codecType === 'OPUS') {
+      this.audioDecoder = new OPUSAudioDecoder();
+      this.codecInfo.samplingRate = 48000;
     } else {
       this.audioDecoder = new G726xAudioDecoder(Number(bitrate) as 16 | 24 | 32 | 40) as unknown as AudioDecoderLike;
     }
@@ -272,7 +276,7 @@ export class AudioPlayerGxx extends AudioPlayer {
       }
     }
 
-    if (this.codecInfo.type === 'AAC') {
+    if (this.codecInfo.type === 'AAC' || this.codecInfo.type === 'OPUS') {
       this.audioDecoder!.close?.();
     }
   }

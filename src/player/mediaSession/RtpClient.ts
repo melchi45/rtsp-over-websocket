@@ -6,6 +6,7 @@ import { MjpegSession } from './videoSession/MjpegSession';
 import { AudioTalkSession } from './audioSession/AudioTalkSession';
 import { G711Session } from './audioSession/G711Session';
 import { G726Session } from './audioSession/G726Session';
+import { OPUSSession } from './audioSession/OPUSSession';
 import { AACSession } from './audioSession/AACSession';
 import { MetaSession } from './textSession/MetaSession';
 import type { SdpInfoEntry } from '../network/rtspOverWebsocket';
@@ -155,6 +156,18 @@ export class RtpClient {
             session.init({
               clockFreq: Number(entry.ClockFreq),
               bitrate: entry.Bitrate ? entry.Bitrate : parseInt(entry.codecName!.substr(6, 2), 10)
+            });
+            session.mime = entry.codecMime ?? '';
+            rtpSession = session;
+          }
+          break;
+        }
+        case 'OPUS': {
+          if (entry.trackID.search('trackID=t') === -1 && entry.trackID.search('trackID=back') === -1) {
+            const session = new OPUSSession();
+            session.init({
+              clockFreq: Number(entry.ClockFreq),
+              bitrate: entry.Bitrate || 0
             });
             session.mime = entry.codecMime ?? '';
             rtpSession = session;

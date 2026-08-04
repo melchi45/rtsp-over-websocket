@@ -1440,6 +1440,14 @@ export class RtspClient {
           sdpInfoObj.IndexLength = rtspSDPData.Sessions[idx].IndexLength;
           sdpInfoObj.IndexDeltaLength = rtspSDPData.Sessions[idx].IndexDeltaLength;
           this.SDPinfo.push(sdpInfoObj);
+        } else if (codecMime.toLowerCase() === 'opus') {
+          sdpInfoObj.codecName = 'OPUS';
+          sdpInfoObj.codecMime = codecMime;
+          sdpInfoObj.trackID = rtspSDPData.Sessions[idx].ControlURL ?? '';
+          sdpInfoObj.ClockFreq = rtspSDPData.Sessions[idx].ClockFreq;
+          sdpInfoObj.Port = parseInt(rtspSDPData.Sessions[idx].Port ?? '');
+          sdpInfoObj.Bitrate = parseInt(rtspSDPData.Sessions[idx].Bitrate ?? '');
+          this.SDPinfo.push(sdpInfoObj);
         } else if (codecMime === 'vnd.onvif.metadata') {
           sdpInfoObj.codecName = 'MetaData';
           sdpInfoObj.trackID = rtspSDPData.Sessions[idx].ControlURL ?? '';
