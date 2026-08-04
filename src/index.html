@@ -1733,12 +1733,19 @@
         function renderSessionStatus() {
           if (!currentSession) {
             sessionStatusEl.innerHTML = 'No session';
+            btnStartSession.disabled = false;
             btnStopSession.disabled = true;
             btnRestartSession.disabled = true;
             btnUseInPlayer.disabled = true;
             return;
           }
           var s = currentSession;
+          // 'starting'/'live' both mean a transcode is actually running
+          // server-side (occupying that channel) — Start has to stay
+          // disabled through both, not just 'live', since starting another
+          // one on top would just collide. 'stopped'/'failed' are both
+          // terminal — nothing left to Stop/Restart into.
+          var running = s.status === 'starting' || s.status === 'live';
           var parts =
             '<span class="badge ' +
             s.status +
@@ -1754,8 +1761,12 @@
           }
           sessionStatusEl.innerHTML = parts;
 
-          btnStopSession.disabled = s.status === 'stopped';
-          btnRestartSession.disabled = false;
+          btnStartSession.disabled = running;
+          btnStopSession.disabled = !running;
+          btnRestartSession.disabled = !running;
+          // Still requires actually 'live' (not just 'starting') — filling
+          // the Player tab with a channel that isn't streaming yet wouldn't
+          // connect to anything.
           btnUseInPlayer.disabled = s.status !== 'live';
         }
 
@@ -1851,6 +1862,27 @@
             });
         }
 
+        // Reflects a session that's already running server-side (started
+        // before this page load — e.g. a previous page load, or another
+        // tab) in the UI, instead of showing "No session" / an enabled
+        // Start button next to a channel that's actually already occupied.
+        function checkExistingSession() {
+          apiFetch('/api/sessions')
+            .then(function (sessions) {
+              var active = sessions.filter(function (s) {
+                return s.status === 'starting' || s.status === 'live';
+              })[0];
+              if (!active) return;
+              currentSession = active;
+              renderSessionStatus();
+              stopPolling();
+              pollSession();
+            })
+            .catch(function (err) {
+              console.warn('[server-panel] existing-session check failed:', err.message);
+            });
+        }
+
         btnStartSession.addEventListener('click', startSession);
         btnStopSession.addEventListener('click', stopSession);
         btnRestartSession.addEventListener('click', function () {
@@ -1879,6 +1911,7 @@
         // (e.g. src/server not running yet) — the manual refresh button and
         // the 422 error at session-start time cover that case either way.
         loadCapabilities();
+        checkExistingSession();
       })();
     </script>
   </body>
