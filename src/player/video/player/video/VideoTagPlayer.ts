@@ -240,6 +240,15 @@ export class VideoTagPlayer extends VideoPlayer {
   // — see mp4Generator.js's opusSample()/dOps()), so this is really just
   // "is the current audio track Opus" rather than "real vs. transcoded".
   private opusActive = false;
+  // What setSourceBuffer()/addSourceBuffer() actually declared the
+  // SourceBuffer's audio codecs string as, at the moment it was created —
+  // see setAudioInfo()'s use of this: MSE doesn't allow changing a
+  // SourceBuffer's codecs after creation, and — unlike the video codec,
+  // which is already known before the SourceBuffer is first created —
+  // there's no ordering guarantee that the real audio codec is known that
+  // early too, so this can legitimately end up permanently mismatched
+  // against `opusActive` for a given connection.
+  private sourceBufferAudioIsOpus = false;
 
   private audiotranscoderWorker: Worker | null = null;
   private createVideoSegmentTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1366,6 +1375,7 @@ export class VideoTagPlayer extends VideoPlayer {
         const mimeCodec = `video/mp4;codecs="${this.videoCodecInfo}, ${this.opusActive ? 'opus' : 'mp4a.40.2'}"`;
         if (MediaSource.isTypeSupported(mimeCodec)) {
           this.sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
+          this.sourceBufferAudioIsOpus = this.opusActive;
         }
       } catch (error) {
         throw new RTSPOverWebSocketError({
@@ -1399,6 +1409,7 @@ export class VideoTagPlayer extends VideoPlayer {
       const mimeCodec = `video/mp4;codecs="${this.videoCodecInfo}, ${this.opusActive ? 'opus' : 'mp4a.40.2'}"`;
       if (MediaSource.isTypeSupported(mimeCodec)) {
         this.sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
+        this.sourceBufferAudioIsOpus = this.opusActive;
       }
 
       mediaSource.removeEventListener('sourceopen', this.sourceOpen);
@@ -1731,7 +1742,13 @@ export class VideoTagPlayer extends VideoPlayer {
           sampleRate: audioInfo.sampleRate
         });
       }
-      this.createAudioSample(streamData, audioInfo, streamData.codecType);
+      // setAudioInfo() may have declined the switch above (SourceBuffer
+      // already created for the other audio codec — see its comment); don't
+      // queue this sample in that case, since createAudioSegment() would mux
+      // it into a track still declared for the mismatched codec.
+      if ((streamData.codecType === 'OPUS') === this.sourceBufferAudioIsOpus) {
+        this.createAudioSample(streamData, audioInfo, streamData.codecType);
+      }
     }
   }
 
@@ -2034,11 +2051,20 @@ export class VideoTagPlayer extends VideoPlayer {
     const isRealAac = audioinfo.codecType === 'AAC';
     const isOpus = audioinfo.codecType === 'OPUS';
     // Opus needs a different SourceBuffer codecs string ('opus' vs.
-    // 'mp4a.40.2') — unlike real-AAC-vs-transcoded-G711/G726 (both declare
-    // 'mp4a.40.2', so no SourceBuffer swap is needed switching between
-    // those two).
-    const sourceBufferCodecChanged = isOpus !== this.opusActive;
-    const switchingCodec = isRealAac !== this.realAacActive || sourceBufferCodecChanged;
+    // 'mp4a.40.2') than real-AAC/transcoded-G711/G726 (which both declare
+    // 'mp4a.40.2', so switching between those two never needs this check).
+    // MSE doesn't allow changing a SourceBuffer's codecs after creation, and
+    // unlike the video codec (already known before the SourceBuffer is
+    // first created), there's no guarantee the real audio codec is known
+    // that early too — if the buffer's already been created for the other
+    // one, there's no safe way to switch mid-stream (attempting a
+    // remove+recreate here previously wedged the whole MediaSource — see
+    // git history), so this stream's audio is dropped rather than crash
+    // video along with it.
+    if (this.sourceBuffer !== null && isOpus !== this.sourceBufferAudioIsOpus) {
+      return;
+    }
+    const switchingCodec = isRealAac !== this.realAacActive || isOpus !== this.opusActive;
     if (switchingCodec) {
       this.appendSegmentToSourceBuffer();
 
@@ -2080,14 +2106,6 @@ export class VideoTagPlayer extends VideoPlayer {
       }
       this.realAacActive = isRealAac;
       this.opusActive = isOpus;
-
-      // MSE doesn't allow changing a SourceBuffer's declared codecs after
-      // creation — swap it out (addSourceBuffer() above already handles
-      // removing the old one first) before building the next init segment,
-      // so it's not appended to a buffer still typed for the previous codec.
-      if (sourceBufferCodecChanged && this.mediaSource !== null) {
-        this.addSourceBuffer();
-      }
 
       this.segmentArray = [];
       this.audioSamples = [];
