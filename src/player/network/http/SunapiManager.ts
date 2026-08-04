@@ -16,7 +16,7 @@ import { HTTP_STATUS_CODES } from './HttpStatusCode';
  * branch it guards is unreachable dead code and is dropped; `init()` always
  * constructs a `SunapiClient`.
  *
- * NOTE — confirmed real bug, preserved as-is: `SunapiClient` (sunapiClient.js)
+ * NOTE — confirmed real bug, preserved as-is: `SunapiClient` (sunapiClient)
  * has no `join()` method (its prototype is only get/post/setTimeout/getAuthInfo).
  * Legacy's `getSessionKey`/`getStorageInfo`/`getRecordingSetup`/
  * `getSearchRecordingPeriod`/`getCalendarSearch`/`getOverlappedIdList`/
@@ -68,7 +68,7 @@ const URI = {
   URI_RECORDING_SETUP: '/stw-cgi/recording.cgi?msubmenu=general',
   URI_SEARCH_RECORDING_PERIOD: '/stw-cgi/recording.cgi?msubmenu=general'
 } as const;
-void URI; // ported verbatim for completeness — confirmed unused anywhere in sunapiManager.js itself
+void URI; // ported verbatim for completeness — confirmed unused anywhere in sunapiManager itself
 
 const CGI = {
   ATTRIBUTES: 'attributes.cgi',
@@ -106,7 +106,7 @@ void ACTION.UPDATE;
 void ACTION.REMOVE;
 void ACTION.CONTROL;
 void ACTION.MONITORDIFF;
-void ACTION.CHECK; // only ACTION.VIEW is ever used in sunapiManager.js — the rest ported for completeness of the const table
+void ACTION.CHECK; // only ACTION.VIEW is ever used in sunapiManager — the rest ported for completeness of the const table
 
 const PARAMS = { CHANNEL_ID_LIST: 'ChannelIDList', OVERLAPPED_ID: 'OverlappedID' } as const;
 

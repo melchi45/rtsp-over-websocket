@@ -1,12 +1,12 @@
 /**
  * Ported from the `meshVertex`/`GridMesh`/`FisheyeConfig`/`GEN` classes
- * shared (byte-for-byte duplicated) between the legacy player’s Util/fishEye3D.js
- * and fishEye3D_multi.js — pure numeric mesh-triangulation math for fisheye
+ * shared (byte-for-byte duplicated) between the legacy player’s Util/fishEye3D
+ * and fishEye3D_multi — pure numeric mesh-triangulation math for fisheye
  * lens dewarping, with zero THREE.js/DOM dependency, extracted into one
  * shared module (DRY) rather than kept duplicated.
  *
- * Only `Fisheye3D` (fishEye3D.js) actually uses this — confirmed via
- * `Fisheye3DMulti`'s own `init()` (fishEye3D_multi.js), which builds its mesh
+ * Only `Fisheye3D` (fishEye3D) actually uses this — confirmed via
+ * `Fisheye3DMulti`'s own `init()` (fishEye3D_multi), which builds its mesh
  * with its own inline cylindrical-panorama generator instead (the `var g =
  * new GEN()` call is commented out there) — so in that file this entire
  * class hierarchy is dead code, and is not ported as part of Fisheye3DMulti.

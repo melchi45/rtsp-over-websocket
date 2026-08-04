@@ -4,7 +4,7 @@
  * Method names (enQueue/deQueue/peak/Clear) and `getLength()`'s naive
  * `this.queue.length` semantics (it does not subtract removed slots) are kept
  * as-is for behavioral parity — this is the actual public contract callers
- * throughout the codebase (videoPlayer.js, videoTagPlayer.js) rely on.
+ * throughout the codebase (videoPlayer, videoTagPlayer) rely on.
  */
 export class CircularTypedArrayQueue<T = unknown> {
   static readonly MAX_SIZE = Math.pow(2, 53) - 1;

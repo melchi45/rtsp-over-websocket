@@ -4,7 +4,7 @@ import { fromHex } from '../../util/hex';
 /**
  * Ported from the legacy player’s Network/http/sunapiRestClient — a digest-auth
  * REST client that offloads each request to a dedicated Web Worker
- * (`sunapiRequestTask.js`, not yet ported — Layer 10).
+ * (`sunapiRequestTask`, not yet ported — Layer 10).
  *
  * `log.debug`/`log.info`/`console.warn` calls are not reproduced (observability
  * only, same judgment as Transport.ts/RtspClient.ts). The two nearly-identical
@@ -145,7 +145,7 @@ export class SunapiRestClient {
     return uri;
   }
 
-  /** Ported from sunapiRestClient.js's `jsonToText`, exposed for parity testing (it was internal-only in legacy but pure/stateless). */
+  /** Ported from sunapiRestClient's `jsonToText`, exposed for parity testing (it was internal-only in legacy but pure/stateless). */
   toQueryString(json: Record<string, unknown>): string {
     return this.jsonToText(json);
   }

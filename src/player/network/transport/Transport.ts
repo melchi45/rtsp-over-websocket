@@ -61,11 +61,11 @@ interface RTSPOverWebSocketErrorLike extends Error {
  */
 export class Transport {
   websock: WebSocketLike | null = null;
-  // NOTE: legacy transport.js never initializes channelId/readyState/autoconnection/index
+  // NOTE: legacy transport never initializes channelId/readyState/autoconnection/index
   // in a constructor — they stay `undefined` until either `initializeWebsocket()` runs
   // (only ever called from within OnClose, not on construction) or a caller sets them
   // explicitly right after creating the Transport. Preserved as-is rather than defaulting
-  // to 0/false, since real callers (rtspClient.js) always set channelId immediately anyway.
+  // to 0/false, since real callers (rtspClient) always set channelId immediately anyway.
   channelId?: number;
   readyState?: number;
   autoconnection?: boolean;
@@ -260,7 +260,7 @@ export class Transport {
       let code = event.code;
       if (event.code === 12592 && event.reason !== '') {
         // Legacy quirk preserved: parses a made-up decimal string out of a hex/reason
-        // concatenation for this one specific close code (see transport.js:OnClose).
+        // concatenation for this one specific close code (see transport:OnClose).
         code = parseInt(hex2AsciiForCloseCode(event.code) + (event.reason ?? ''), 10);
       }
       const state = new WebsocketStatusCode(code);

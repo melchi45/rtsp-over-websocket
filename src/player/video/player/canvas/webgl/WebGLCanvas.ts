@@ -32,11 +32,11 @@ const FRAGMENT_SHADER_SCRIPT: ShaderScript = createShaderScript(
   ].join('\n')
 );
 
-// Sylvester's Matrix.I(4).flatten() (via app/external-lib/util/glUtils.js) is
+// Sylvester's Matrix.I(4).flatten() (via app/external-lib/util/glUtils) is
 // not wrapped as a dependency here: the only live use is this compile-time-
 // constant 4x4 identity matrix — mvMultiply/mvTranslate/zoomScene (the only
 // call sites that would need real matrix math) are commented out/dead in the
-// legacy source itself, confirmed by reading webglCanvas.js directly.
+// legacy source itself, confirmed by reading webglCanvas directly.
 const IDENTITY_MATRIX_4X4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 const BROWSER_TYPE = browserDetect();
@@ -161,7 +161,7 @@ export class WebGLCanvas {
         name = `${known}(${err})`;
       } else {
         // legacy references the undeclared global `value` here (see the
-        // `/* global ... value ... */` comment atop webglCanvas.js — never
+        // `/* global ... value ... */` comment atop webglCanvas — never
         // actually defined anywhere), so it throws a ReferenceError for any
         // WebGL error code not already present in glNames. Only reachable if
         // gl.getError() returns something outside `gl`'s own enumerable

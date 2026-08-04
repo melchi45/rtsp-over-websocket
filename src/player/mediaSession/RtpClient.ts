@@ -57,7 +57,7 @@ export class RtpClient {
   private audioTalkSession: AudioTalkSession | null = null;
   private _running = false;
   channelId: number;
-  /** Never assigned anywhere in legacy rtpClient.js itself — only ever set (if at all) by an external caller directly on the instance. Preserved as a plain public field for that same escape hatch. */
+  /** Never assigned anywhere in legacy rtpClient itself — only ever set (if at all) by an external caller directly on the instance. Preserved as a plain public field for that same escape hatch. */
   rtpWaitingTimeout?: number;
 
   constructor(private readonly mediaRouter: MediaRouterLike) {

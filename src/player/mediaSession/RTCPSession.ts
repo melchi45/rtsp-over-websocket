@@ -61,7 +61,7 @@ export class RTCPSession extends Session {
         this.SetTimeStamp({
           timestamp: (this.ntohl(this.ntpMsw) - 0x83aa7e80) >>> 0,
           timestamp_usec: (this.ntohl(this.ntpLsw) / 0xffffffff) * 1000,
-          // NOTE: legacy rtcpSession.js never sets `timezone` in this branch
+          // NOTE: legacy rtcpSession never sets `timezone` in this branch
           // (unlike the codec sessions' NTP-extension sync) — its tempdata
           // object simply never had the field, so it reads back `undefined`.
           timezone: undefined as unknown as number | null

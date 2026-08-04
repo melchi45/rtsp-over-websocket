@@ -21,9 +21,9 @@ export interface BrowserInfo {
 }
 
 /**
- * Reads `window.jscd` (the legacy player’s Util/util.js's `window.jscd =
+ * Reads `window.jscd` (the legacy player’s Util/util's `window.jscd =
  * getJsClientDetection();`, a ~200-line browser-sniffing function). It's
- * genuinely defined in legacy (found at util.js:91, called at util.js:280 —
+ * genuinely defined in legacy (found at util:91, called at util:280 —
  * not one of this migration's confirmed-broken globals), but re-deriving
  * the full user-agent parser here isn't worthwhile: it needs real
  * `navigator`/`screen` (unavailable under Vitest's Node environment) and
@@ -148,7 +148,7 @@ export class VideoTagPlayer extends VideoPlayer {
   private defaultDelay = CHROME_DEFAULT_DELAY_TIME;
   private delay = CHROME_DEFAULT_DELAY_TIME;
   // NOTE: legacy's own `isCanPlay` is write-only too (set in onCanPlay/
-  // onSeeking, grep-confirmed never read anywhere in videoTagPlayer.js
+  // onSeeking, grep-confirmed never read anywhere in videoTagPlayer
   // itself — a pre-existing legacy quirk, not something this port
   // introduced) — dropped along with its two write sites.
   private preVideoTimeStamp: TimestampData | null = null;
@@ -181,8 +181,8 @@ export class VideoTagPlayer extends VideoPlayer {
   // A separate field from the inherited `speed` accessor's own private
   // backing store (VideoPlayer.ts's `speedValue`, TS forbids reusing that
   // name here anyway) — legacy genuinely has two independent closure
-  // variables too: videoPlayer.js's `_speedValue` (behind the `speed`
-  // accessor) and videoTagPlayer.js's own `speedValue`, kept in sync only
+  // variables too: videoPlayer's `_speedValue` (behind the `speed`
+  // accessor) and videoTagPlayer's own `speedValue`, kept in sync only
   // because onChangeSpeed() (called by the `speed` setter, before it
   // updates its own backing field) assigns this one too.
   private localSpeedValue = 1;
@@ -1049,7 +1049,7 @@ export class VideoTagPlayer extends VideoPlayer {
 
   // NOTE: legacy also defines a symmetric `getAudioFrameDuration` function
   // right after this one — grep-confirmed it has zero call sites anywhere in
-  // videoTagPlayer.js (createAudioSample computes audio sample duration
+  // videoTagPlayer (createAudioSample computes audio sample duration
   // inline via `preAudioTimeStamp` instead). Confirmed 100% dead code,
   // dropped rather than ported as unreachable weight.
 
@@ -1888,7 +1888,7 @@ export class VideoTagPlayer extends VideoPlayer {
   // `VideoPlayerLike` structural contract MediaRouter.ts's `this.player`
   // field is typed against (shared with CanvasTagPlayer, which genuinely
   // implements all four for its step-play/digital-zoom features) requires
-  // these unconditionally — but videoTagPlayer.js's own Constructor.prototype
+  // these unconditionally — but videoTagPlayer's own Constructor.prototype
   // never defines any of them (grep-confirmed, same finding that drove
   // VideoPlayer.ts to *not* declare them abstract). Calling any of these on
   // a real VideoTagPlayer instance genuinely throws `TypeError: ... is not

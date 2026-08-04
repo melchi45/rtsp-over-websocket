@@ -41,7 +41,7 @@ export class H265Session extends RtpSession {
     const flags = parseRtpHeaderFlags(rtpHeader);
     let paddingSize = 0;
 
-    // NOTE: unlike H264Session, the legacy h265Session.js checks raw bits here
+    // NOTE: unlike H264Session, the legacy h265Session checks raw bits here
     // instead of the computed csrcCount/padding flags — in particular the
     // "additional CSRC" branch only fires when the low nibble is exactly
     // 0x0F (CSRC count === 15), not merely nonzero. Preserved as-is.

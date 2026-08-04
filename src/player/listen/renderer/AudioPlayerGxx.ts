@@ -170,7 +170,7 @@ export class AudioPlayerGxx extends AudioPlayer {
     }
 
     // NOTE: write-only for the G.726x path — G726xAudioDecoder has no
-    // `channelId` field (confirmed: audioDecoderG726x.js never references
+    // `channelId` field (confirmed: audioDecoderG726x never references
     // one either) — preserved as legacy's single unconditional assignment
     // covering all three decoder types, rather than special-casing it away.
     this.audioDecoder.channelId = this.channelId;

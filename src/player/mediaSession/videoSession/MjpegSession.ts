@@ -36,7 +36,7 @@ export type MjpegWorkerFactory = () => MjpegWorkerLike;
  * those drive real control flow below.
  *
  * `mjpegDepacketizeWorker` is a *per-instance* closure variable in legacy
- * (mjpegSession.js is a plain factory function, called fresh via `new` for
+ * (mjpegSession is a plain factory function, called fresh via `new` for
  * every session — not a singleton IIFE), so it's ported as a private
  * instance field, not shared module state.
  */

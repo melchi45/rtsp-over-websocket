@@ -23,7 +23,7 @@ export interface ParsedWwwAuthenticate {
   qop: string | null;
 }
 
-/** Verbatim port of window.decimalToHex from the legacy player’s Util/util.js (~line 892). */
+/** Verbatim port of window.decimalToHex from the legacy player’s Util/util (~line 892). */
 function decimalToHex(dec: number, padding = 2): string {
   let hex = Number(dec).toString(16);
   while (hex.length < padding) {

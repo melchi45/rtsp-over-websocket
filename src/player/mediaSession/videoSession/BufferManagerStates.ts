@@ -9,7 +9,7 @@ export interface BufferControlMessage {
   currentState?: string;
 }
 
-/** Common shape of the six playback buffer states (bufferStatus.js). */
+/** Common shape of the six playback buffer states (bufferStatus). */
 export interface BufferState {
   isReadyToPop(): boolean;
   push(): boolean;

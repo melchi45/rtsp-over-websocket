@@ -372,7 +372,7 @@ function ntohl(buffer: Uint8Array): number {
  *
  * `depacketize()`'s 4th legacy parameter (`isBackup`) is dropped: it is never
  * read in the function body, and the only real call site
- * (mjpegDepacketizeWorker.js) never passes a 4th argument either — confirmed
+ * (mjpegDepacketizeWorker) never passes a 4th argument either — confirmed
  * dead on both ends.
  *
  * The RTP header fields legacy computes purely for its own (dropped) debug
@@ -439,7 +439,7 @@ export class MjpegDepacketizer {
     this._deviceType = v;
   }
 
-  // legacy's real call site (mjpegDepacketizeWorker.js) invokes `init()` with
+  // legacy's real call site (mjpegDepacketizeWorker) invokes `init()` with
   // zero arguments, then wires the callback separately via
   // setGotFrameCallback() — callback kept optional to match that faithfully.
   init(callback?: (data: MjpegFrameData) => void): void {
@@ -662,7 +662,7 @@ export class MjpegDepacketizer {
       console.error('There is additional CSRC which is not handled in this version. CSRC count = ' + rtpCSRCCount);
     } else if (rtpPadding) {
       // legacy: `PaddingSize = rtpPayload[rtpPayload.length - 1];` — `PaddingSize`
-      // is never declared anywhere in mjpegDepacketizer.js, and the file runs
+      // is never declared anywhere in mjpegDepacketizer, and the file runs
       // in strict mode, so this throws ReferenceError whenever an MJPEG RTP
       // packet has the padding bit set with no CSRC. Preserved faithfully.
       throw undefinedGlobalError('PaddingSize');

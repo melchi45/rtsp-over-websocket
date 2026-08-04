@@ -6,7 +6,7 @@ import * as THREE from 'three';
  * fixed `#mi-full-camera` DOM element.
  *
  * `meshVertex`/`GridMesh`/`FisheyeConfig`/`GEN` are defined verbatim in the
- * legacy file (byte-for-byte duplicated from fishEye3D.js) but are confirmed
+ * legacy file (byte-for-byte duplicated from fishEye3D) but are confirmed
  * dead code here: `init()` builds its mesh with its own inline
  * cylindrical-panorama generator instead (`var g = new GEN();` is commented
  * out) — so unlike Fisheye3D.ts, this port does not use `fishEyeMesh.ts` at
@@ -47,7 +47,7 @@ interface CylindricalMesh {
   textureCoords: number[];
 }
 
-/** Ported from fishEye3D_multi.js's inline `var g = function () {...}` mesh generator inside `init()`. */
+/** Ported from fishEye3D_multi's inline `var g = function () {...}` mesh generator inside `init()`. */
 function buildCylindricalMesh(videoElement: FisheyeMultiTextureSource): CylindricalMesh {
   const position: number[] = [];
   const textureCoords: number[] = [];
@@ -260,7 +260,7 @@ export class Fisheye3DMulti {
 
   animate = (): void => {
     // NOTE: legacy never stores the requestAnimationFrame handle here (no
-    // `animateId`, unlike Fisheye3D.js's `animate`/`start`/`stop`) — this
+    // `animateId`, unlike Fisheye3D's `animate`/`start`/`stop`) — this
     // class has no way to stop its render loop once started, preserved as-is.
     window.requestAnimationFrame(this.animate);
     this.update();

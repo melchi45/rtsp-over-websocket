@@ -15,7 +15,7 @@ export class RTSPOverWebSocketMap<V = unknown> {
 
   containsValue(value: V): boolean {
     for (const prop in this.map) {
-      // Legacy loose-equality (`==`) semantics preserved intentionally — see hashMap.js.
+      // Legacy loose-equality (`==`) semantics preserved intentionally — see hashMap.
       if (this.map[prop] == value) return true; // eslint-disable-line eqeqeq
     }
     return false;

@@ -19,7 +19,7 @@ export type VideoPlayerErrorCallback = (event: Record<string, unknown>) => void;
  * Legacy defines `type`/`channelId`/`playmode`/`instantplayback`/`rfps`/
  * `boxsize`/`deviceType`/`currentFrameCount`/`previousFrameCount`/`codec`/
  * `framedrop`/`audioshift`/`speed` via `Object.defineProperty(Constructor.prototype, ...)`
- * — real, working accessors (unlike canvasRenderer.js's `channelId`/
+ * — real, working accessors (unlike canvasRenderer's `channelId`/
  * `userPaused`, which were defined on a *discarded* object — see
  * CanvasRenderer.ts's comment for that unrelated bug). Ported here as
  * genuine TS getters/setters so subclasses (CanvasTagPlayer, VideoTagPlayer)
@@ -35,8 +35,8 @@ export type VideoPlayerErrorCallback = (event: Record<string, unknown>) => void;
  * here — a compile-time version of legacy's implicit "must override or
  * crash at runtime" contract. `bufferingVideoData`/`sendToBufferManager`/
  * `digitalZoom`/`controlStepPlay` were *not* included here despite looking
- * similarly universal at first: they're actually canvasTagPlayer.js-only
- * (its step-play/digital-zoom feature) — videoTagPlayer.js's own
+ * similarly universal at first: they're actually canvasTagPlayer-only
+ * (its step-play/digital-zoom feature) — videoTagPlayer's own
  * Constructor.prototype genuinely never defines them, so calling e.g.
  * `.digitalZoom(...)` on a real VideoTagPlayer instance throws
  * `TypeError: ... is not a function` in legacy too. Declaring them abstract

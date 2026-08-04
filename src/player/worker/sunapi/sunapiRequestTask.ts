@@ -72,7 +72,7 @@ export type SunapiTaskPostMessageFn = (data: SunapiTaskResult) => void;
  * **Confirmed real bugs preserved faithfully (not fixed):**
  * - `onMessage()`'s first statement calls `fastJsonStringfy(event.data)` —
  *   that function is a *main-thread-only* global (`window.fastJsonStringfy`
- *   from Util/util.js) never available in this Worker's own global scope, so
+ *   from Util/util) never available in this Worker's own global scope, so
  *   it throws `ReferenceError` immediately, every single time a message is
  *   received. This makes the entire dispatch logic below it unreachable in
  *   the currently-running app — but it's still ported faithfully (not
@@ -524,7 +524,7 @@ export class SunapiRequestTask {
   }
 
   // legacy also defines `clearDigestCache` here — confirmed zero call sites
-  // anywhere in sunapiRequestTask.js, dropped as genuinely dead code.
+  // anywhere in sunapiRequestTask, dropped as genuinely dead code.
 
   private jsonToText(json: Record<string, unknown>): string {
     let uri = '';

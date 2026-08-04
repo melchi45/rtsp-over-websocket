@@ -11,8 +11,8 @@ export interface RtpHeaderFlags {
 
 /**
  * Shared RTP header flag parsing, identical across every codec session
- * (h264Session.js, h265Session.js, aacSession.js, g711Session.js,
- * g726Session.js, metaSession.js in the legacy codebase).
+ * (h264Session, h265Session, aacSession, g711Session,
+ * g726Session, metaSession in the legacy codebase).
  */
 export function parseRtpHeaderFlags(rtpHeader: Uint8Array): RtpHeaderFlags {
   return {

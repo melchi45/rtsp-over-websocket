@@ -4,9 +4,9 @@ function undefinedGlobalError(name: string): ReferenceError {
 
 /**
  * Ported from the legacy player’s Util/util (window.Median, ~line 918) — a
- * grab-bag of basic descriptive-statistics helpers used by videoPlayer.js's
+ * grab-bag of basic descriptive-statistics helpers used by videoPlayer's
  * `rfps` setter (mean/variance/findRangeAndCoefficient) and
- * videoTagPlayer.js (additionally median).
+ * videoTagPlayer (additionally median).
  */
 export const Median = {
   max(array: number[]): number {
@@ -19,7 +19,7 @@ export const Median = {
 
   // legacy references the undeclared global `arr` here (`arr.min(array)`
   // instead of `Median.min(array)`) — never actually defined anywhere in
-  // util.js, so this throws a ReferenceError whenever called. Not used by
+  // util, so this throws a ReferenceError whenever called. Not used by
   // any file ported so far (grep-confirmed), but preserved for fidelity
   // since Median is ported as a complete shared utility object.
   range(array: number[]): number {

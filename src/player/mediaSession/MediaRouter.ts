@@ -31,7 +31,7 @@ import type { WaitingEvent, RtpStatistics } from './RtpSession';
  * `self` reference. `onWaiting`/`onStatistics`, by contrast, are invoked via
  * RtpClient.ts's own wrapper functions as proper method calls
  * (`this.mediaRouter.onWaiting?.(waiting)`), so `this` is the router there —
- * matching legacy's identical distinction (see rtpClient.js's local
+ * matching legacy's identical distinction (see rtpClient's local
  * `onWaiting`/`onStatistics` wrappers).
  */
 

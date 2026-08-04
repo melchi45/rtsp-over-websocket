@@ -74,7 +74,7 @@ export class AudioPlayerAAC extends AudioPlayer {
   };
 
   // NOTE: `sourceOpened`/`isStopped` are write-only in legacy too (confirmed
-  // via grep — set but never read anywhere in audioPlayerAAC.js), dropped
+  // via grep — set but never read anywhere in audioPlayerAAC), dropped
   // here as dead state rather than carried as inert fields.
   private sourceOpenedCallback = (): void => {
     if (this.sourceBuffer === null) {

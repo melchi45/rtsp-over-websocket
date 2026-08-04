@@ -26,7 +26,7 @@ declare const self: {
 /**
  * Ported from the legacy player’s Worker/MjpegSession/mjpegDepacketizeWorker —
  * the Worker entry MjpegSession.ts (mediaSession/videoSession) spawns to
- * depacketize MJPEG RTP data off the main thread. `mjpegDepacketizer.js`'s
+ * depacketize MJPEG RTP data off the main thread. `mjpegDepacketizer`'s
  * standalone JPEG-header/RTP reassembly logic is ported separately in
  * MjpegDepacketizer.ts (old-vs-new vm parity tested there); this file is the
  * thin onmessage/postMessage glue, faithfully reproduced but not parity-

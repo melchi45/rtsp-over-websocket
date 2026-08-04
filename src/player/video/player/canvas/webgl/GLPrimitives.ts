@@ -16,7 +16,7 @@ export function createShaderScript(type: string, source: string): ShaderScript {
   return { type, source };
 }
 
-/** Ported from util.js's window.assert/window.error (log-only, never throws). */
+/** Ported from util's window.assert/window.error (log-only, never throws). */
 export function glAssert(condition: unknown, message: string): void {
   if (!condition) {
     glError(message);

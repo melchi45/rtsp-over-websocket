@@ -254,7 +254,7 @@ export class SunapiClient {
     }
   }
 
-  /** Ported from sunapiClient.js's getDotEqualStrLineToObj — parses NVR's `a.b.c=value` line-based responses. */
+  /** Ported from sunapiClient's getDotEqualStrLineToObj — parses NVR's `a.b.c=value` line-based responses. */
   private getDotEqualStrLineToObj(data: string): Record<string, unknown> {
     const res: Record<string, unknown> = {};
     const getOrInit = (obj: Record<string, unknown>, key: string): Record<string, unknown> => {
@@ -415,7 +415,7 @@ export class SunapiClient {
     return { scheme, realm, nonce, opaque, qop, cnonce, nc };
   }
 
-  /** Ported from sunapiClient.js's local `decimalToHex` — kept separate from util/hex.ts's shared one since the two have diverging default-padding semantics in legacy and this is what setDigestHeader/formulateResponse actually call. */
+  /** Ported from sunapiClient's local `decimalToHex` — kept separate from util/hex.ts's shared one since the two have diverging default-padding semantics in legacy and this is what setDigestHeader/formulateResponse actually call. */
   private decimalToHex(d: number | null, padding: number | undefined): string {
     let hex = Number(d).toString(16);
     const effectivePadding = typeof padding === 'undefined' || padding === null ? 2 : padding;

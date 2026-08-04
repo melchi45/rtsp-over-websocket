@@ -7,7 +7,7 @@ function pad2(n: number): string {
 }
 
 /**
- * Ported from backupWorker.js's `Date.prototype.YYYYMMDDHHMMSS` — legacy
+ * Ported from backupWorker's `Date.prototype.YYYYMMDDHHMMSS` — legacy
  * monkey-patches the global `Date.prototype`; ported as a standalone
  * function taking an explicit `date` argument instead (same computation, no
  * global prototype pollution — this runs in a shared Worker global scope, so
@@ -20,7 +20,7 @@ function pad2(n: number): string {
  * dropped. Mutates `date` in place via setHours/setMinutes, matching legacy
  * exactly (harmless in practice since every call site passes a fresh Date).
  * `YYYYMMDDHHMMSSZ` (a second prototype patch, `return this.toISOString()`)
- * is confirmed to have zero call sites anywhere in backupWorker.js and is
+ * is confirmed to have zero call sites anywhere in backupWorker and is
  * dropped entirely.
  */
 function formatYYYYMMDDHHMMSS(date: Date): string {
@@ -124,7 +124,7 @@ export class BackupSession {
 
   /**
    * Public (not private): legacy's `isPlayback` is a *module-scope* variable
-   * in backupWorker.js shared between `receiveMessage` (which sets it
+   * in backupWorker shared between `receiveMessage` (which sets it
    * whenever any incoming message carries `playMode === 'Playback'`) and
    * every `BackupSession` instance's methods — not private per-instance
    * state. `init()` still resets it to `false` on construction, matching

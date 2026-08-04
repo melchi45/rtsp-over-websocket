@@ -24,7 +24,7 @@ const MIN_BUFFERING_LENGTH = 6;
  * single buffer) and operates on its own private `stepList` array rather
  * than `BufferList`'s head/tail linked list — the inherited `push` is fully
  * shadowed, and `BufferList`'s `pop`/`getCurIdx`/`clear` are never called on
- * a StepBufferList instance anywhere (confirmed via grep — canvasTagPlayer.js
+ * a StepBufferList instance anywhere (confirmed via grep — canvasTagPlayer
  * is the only consumer, and only calls push/forward/backward/searchTimestamp/
  * findIFrame/bufferClear). Extending `BufferList` here would both violate
  * TypeScript's method-override compatibility rules for `push` and carry

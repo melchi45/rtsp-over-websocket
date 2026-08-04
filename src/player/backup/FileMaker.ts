@@ -5,7 +5,7 @@ export type ZipWorkerFactory = () => Worker;
 
 /**
  * Ported from the legacy player’s Backup/FileMaker — assembles AVI/ZIP backup
- * files from the pieces backupWorker.js streams in (header/body/tailHeader/
+ * files from the pieces backupWorker streams in (header/body/tailHeader/
  * tailBody), then saves via file-saver.
  */
 export class FileMaker {

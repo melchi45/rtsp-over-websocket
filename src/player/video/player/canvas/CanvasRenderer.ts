@@ -62,7 +62,7 @@ type Drawer = YUVWebGLCanvas | Image2DCanvas;
  * to `false` by `Constructor()`'s own `this.userPaused = false` line;
  * `channelId` is never assigned internally by CanvasRenderer itself, but
  * callers *can* still set it via ordinary property assignment (no accessor
- * blocks it) — canvasTagPlayer.js's `init()` does exactly that
+ * blocks it) — canvasTagPlayer's `init()` does exactly that
  * (`renderer.channelId = this.channelId`) — so it must stay mutable, not
  * `readonly`, to match that real call site.
  */

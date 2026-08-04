@@ -626,7 +626,7 @@ export class StreamPlayer {
   }
 
   // legacy's `step(info)` is declared but has no call site in
-  // streamPlayer.js's own `control()` switch (only 'forward'/'backward'/
+  // streamPlayer's own `control()` switch (only 'forward'/'backward'/
   // 'step' *cases* exist, and the 'step' case calls stepRequest(), not this
   // function) — grep-confirmed unreachable. Kept off this port as confirmed
   // dead code.
