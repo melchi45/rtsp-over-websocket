@@ -8,7 +8,7 @@
 * Functions that generate fragmented MP4s suitable for use with Media
 * Source Extensions.
 */
-var box, dinf, esds, ftyp, mdat, mfhd, minf, moof, moov, mvex, mvhd,
+var box, dinf, dOps, esds, ftyp, mdat, mfhd, minf, moof, moov, mvex, mvhd,
   trak, tkhd, mdia, mdhd, hdlr, sdtp, stbl, stsd, traf, trex,
   trun, types, MAJOR_BRAND, MINOR_VERSION, AVC1_BRAND, VIDEO_HDLR,
   ISO2_BRAND, ISO5_BRAND, DASH_BRAND, MP41_BRAND, iods, mehd, trep,
@@ -39,6 +39,8 @@ var arr = [];
     moov: [],
     mp4a: [], // codingname
     mp4v: [], // MJPEG
+    Opus: [], // codingname (Opus, capitalized per "Opus in ISOBMFF")
+    dOps: [],
     mvex: [],
     mvhd: [],
     iods: [],
@@ -272,6 +274,29 @@ esds = function (track) {
     (track.audioobjecttype << 3) | (track.samplingfrequencyindex >>> 1),
     (track.samplingfrequencyindex << 7) | (track.channelcount << 3),
     0x06, 0x01, 0x02 // GASpecificConfig
+  ]));
+};
+
+// OpusSpecificBox ("dOps"), per "Encapsulation of Opus in ISO Base Media
+// File Format", version 0. ChannelMappingFamily is hardcoded to 0 (simple
+// mono/stereo, no extra ChannelMappingTable needed) since track.channelcount
+// here is always 1 or 2 — see OPUSAudioDecoder.ts's comment on why this
+// player currently only ever decodes Opus as mono. PreSkip is 0: that field
+// describes encoder-priming samples to discard, sourced from the original
+// Ogg Opus header, which RTP-transported Opus (RFC 7587) has no equivalent
+// of — 0 is the simplest safe value or the alternative. InputSampleRate is
+// hardcoded to 48000 per RFC 7587 §4.1 (Opus-over-RTP's fixed clock rate).
+dOps = function (track) {
+  return box(types.dOps, new Uint8Array([
+    0x00, // Version
+    track.channelcount & 0xff, // OutputChannelCount
+    0x00, 0x00, // PreSkip
+    (48000 >>> 24) & 0xff,
+    (48000 >>> 16) & 0xff,
+    (48000 >>> 8) & 0xff,
+    48000 & 0xff, // InputSampleRate
+    0x00, 0x00, // OutputGain
+    0x00 // ChannelMappingFamily
   ]));
 };
 
@@ -605,7 +630,7 @@ stbl = function (track) {
 };
 
 (function () {
-  var videoSample, audioSample;
+  var videoSample, audioSample, opusSample;
 
   stsd = function (track) {
 
@@ -613,7 +638,7 @@ stbl = function (track) {
       0x00, // version 0
       0x00, 0x00, 0x00, // flags
       0x00, 0x00, 0x00, 0x01
-    ]), track.type === 'video' ? videoSample(track) : audioSample(track));
+    ]), track.type === 'video' ? videoSample(track) : track.codecType === 'OPUS' ? opusSample(track) : audioSample(track));
   };
 
   videoSample = function (track) {
@@ -789,6 +814,36 @@ stbl = function (track) {
 
       // MP4AudioSampleEntry, ISO/IEC 14496-14
     ]), esds(track));
+  };
+
+  // Same AudioSampleEntry layout as audioSample() above, but closed with a
+  // dOps box instead of esds — Opus doesn't have an ES_Descriptor/
+  // AudioSpecificConfig, and browsers read the real sample rate out of
+  // dOps's InputSampleRate rather than this box's own (here always-zero,
+  // same as audioSample()'s) samplerate field.
+  opusSample = function (track) {
+    return box(types.Opus, new Uint8Array([
+
+      // SampleEntry, ISO/IEC 14496-12
+      0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, // reserved
+      0x00, 0x01, // data_reference_index
+
+      // AudioSampleEntry, ISO/IEC 14496-12
+      0x00, 0x00, 0x00, 0x00, // reserved
+      0x00, 0x00, 0x00, 0x00, // reserved
+      (track.channelcount & 0xff00) >> 8,
+      (track.channelcount & 0xff), // channelcount
+
+      (track.samplesize & 0xff00) >> 8,
+      (track.samplesize & 0xff), // samplesize
+      0x00, 0x00, // pre_defined
+      0x00, 0x00, // reserved
+
+      (track.samplerate & 0xff00) >> 8,
+      (track.samplerate & 0xff),
+      0x00, 0x00 // samplerate, 16.16
+    ]), dOps(track));
   };
 }());
 

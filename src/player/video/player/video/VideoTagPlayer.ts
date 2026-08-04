@@ -54,6 +54,12 @@ const VIDEO_MAX_TIMESTAMP_QUEUE = 10;
 const TEN = 10;
 const TIME_SCALE = 10000;
 const AAC_FRAME_SAMPLES = 1024;
+// Opus's most common frame size (20ms @ 48000Hz, RFC 7587's fixed clock) —
+// same default OPUSAudioDecoder.ts uses before it knows the real per-packet
+// sample count. Opus packets can carry other durations (2.5-60ms), so this
+// is only a fallback for computing an initial samplingDuration, same role
+// AAC_FRAME_SAMPLES plays below.
+const OPUS_FRAME_SAMPLES = 960;
 const MAX_PLAYBACK_DIFF = 1500;
 const MAX_CUE_COUNT = 100;
 const PREFIX_SIZE = 4;
@@ -229,6 +235,11 @@ export class VideoTagPlayer extends VideoPlayer {
   // legitimately land on any table index, including ones a sentinel check
   // would have collided with.
   private realAacActive = false;
+  // Same idea as realAacActive, for Opus: unlike G.711/G.726, there's no
+  // transcode-to-AAC fallback for it (Opus is muxed natively into the fMP4
+  // — see mp4Generator.js's opusSample()/dOps()), so this is really just
+  // "is the current audio track Opus" rather than "real vs. transcoded".
+  private opusActive = false;
 
   private audiotranscoderWorker: Worker | null = null;
   private createVideoSegmentTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1352,7 +1363,7 @@ export class VideoTagPlayer extends VideoPlayer {
       mediaSource.duration = 0;
 
       try {
-        const mimeCodec = `video/mp4;codecs="${this.videoCodecInfo}, mp4a.40.2"`;
+        const mimeCodec = `video/mp4;codecs="${this.videoCodecInfo}, ${this.opusActive ? 'opus' : 'mp4a.40.2'}"`;
         if (MediaSource.isTypeSupported(mimeCodec)) {
           this.sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
         }
@@ -1385,7 +1396,7 @@ export class VideoTagPlayer extends VideoPlayer {
         this.sourceBuffer = null;
       }
 
-      const mimeCodec = `video/mp4;codecs="${this.videoCodecInfo}, mp4a.40.2"`;
+      const mimeCodec = `video/mp4;codecs="${this.videoCodecInfo}, ${this.opusActive ? 'opus' : 'mp4a.40.2'}"`;
       if (MediaSource.isTypeSupported(mimeCodec)) {
         this.sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
       }
@@ -1629,7 +1640,7 @@ export class VideoTagPlayer extends VideoPlayer {
     const message = event.data;
     switch (message.type) {
       case 'transcoded':
-        if (!this.realAacActive) {
+        if (!this.realAacActive && !this.opusActive) {
           this.createAudioSample(message.data as unknown as AudioStreamData, this.audioInfo as unknown as AudioInfo, 'AAC');
         }
         break;
@@ -2020,31 +2031,63 @@ export class VideoTagPlayer extends VideoPlayer {
     if (audioinfo.codecType === 'G711' || audioinfo.codecType === 'G726') {
       (this.audiotranscoderWorker as Worker).postMessage({ type: 'init', data: { codecType: audioinfo.codecType, bitRate: audioinfo.bitrate } });
     }
-    const switchingToRealAac = !this.realAacActive && audioinfo.codecType === 'AAC';
-    const switchingAwayFromRealAac = this.realAacActive && audioinfo.codecType !== 'AAC';
-    if (switchingToRealAac || switchingAwayFromRealAac) {
+    const isRealAac = audioinfo.codecType === 'AAC';
+    const isOpus = audioinfo.codecType === 'OPUS';
+    // Opus needs a different SourceBuffer codecs string ('opus' vs.
+    // 'mp4a.40.2') — unlike real-AAC-vs-transcoded-G711/G726 (both declare
+    // 'mp4a.40.2', so no SourceBuffer swap is needed switching between
+    // those two).
+    const sourceBufferCodecChanged = isOpus !== this.opusActive;
+    const switchingCodec = isRealAac !== this.realAacActive || sourceBufferCodecChanged;
+    if (switchingCodec) {
       this.appendSegmentToSourceBuffer();
 
-      const isRealAac = audioinfo.codecType === 'AAC';
-      // For real AAC source audio, use the actual channel_configuration /
-      // samplingFrequencyIndex / frame duration (this repo's own demo server
-      // encodes 48000Hz stereo AAC, not the 16000Hz mono a real IP camera
-      // typically sends) — declaring the wrong ones makes the browser's AAC
-      // decoder reject the audio track partway into playback (see
-      // AACSession.ts's init()). G711/G726 is transcoded to AAC in-browser
-      // at a fixed 8000Hz mono, so that path keeps the hardcoded values.
-      this.audioInfo = {
-        id: 2,
-        channelcount: isRealAac ? (audioinfo.channelCount ?? 1) : 1,
-        samplesize: 8,
-        type: 'audio',
-        codecType: 'AAC',
-        audioobjecttype: 2,
-        samplingfrequencyindex: isRealAac ? (audioinfo.samplingFrequencyIndex ?? 8) : 11,
-        samplingDuration: isRealAac && audioinfo.sampleRate ? Math.round((AAC_FRAME_SAMPLES / audioinfo.sampleRate) * TIME_SCALE) : isRealAac ? 640 : 1280,
-        interleavedId: audioinfo.interleavedId
-      };
+      if (isOpus) {
+        // Opus is muxed natively (no transcode-to-AAC fallback — see
+        // mp4Generator.js's opusSample()/dOps()); audioobjecttype/
+        // samplingfrequencyindex are AAC-only concepts (esds()) that
+        // opusSample()/dOps() never reads, so they're left at 0 here.
+        this.audioInfo = {
+          id: 2,
+          channelcount: audioinfo.channelCount ?? 1,
+          samplesize: 8,
+          type: 'audio',
+          codecType: 'OPUS',
+          audioobjecttype: 0,
+          samplingfrequencyindex: 0,
+          samplingDuration: audioinfo.sampleRate ? Math.round((OPUS_FRAME_SAMPLES / audioinfo.sampleRate) * TIME_SCALE) : Math.round((OPUS_FRAME_SAMPLES / 48000) * TIME_SCALE),
+          interleavedId: audioinfo.interleavedId
+        };
+      } else {
+        // For real AAC source audio, use the actual channel_configuration /
+        // samplingFrequencyIndex / frame duration (this repo's own demo server
+        // encodes 48000Hz stereo AAC, not the 16000Hz mono a real IP camera
+        // typically sends) — declaring the wrong ones makes the browser's AAC
+        // decoder reject the audio track partway into playback (see
+        // AACSession.ts's init()). G711/G726 is transcoded to AAC in-browser
+        // at a fixed 8000Hz mono, so that path keeps the hardcoded values.
+        this.audioInfo = {
+          id: 2,
+          channelcount: isRealAac ? (audioinfo.channelCount ?? 1) : 1,
+          samplesize: 8,
+          type: 'audio',
+          codecType: 'AAC',
+          audioobjecttype: 2,
+          samplingfrequencyindex: isRealAac ? (audioinfo.samplingFrequencyIndex ?? 8) : 11,
+          samplingDuration: isRealAac && audioinfo.sampleRate ? Math.round((AAC_FRAME_SAMPLES / audioinfo.sampleRate) * TIME_SCALE) : isRealAac ? 640 : 1280,
+          interleavedId: audioinfo.interleavedId
+        };
+      }
       this.realAacActive = isRealAac;
+      this.opusActive = isOpus;
+
+      // MSE doesn't allow changing a SourceBuffer's declared codecs after
+      // creation — swap it out (addSourceBuffer() above already handles
+      // removing the old one first) before building the next init segment,
+      // so it's not appended to a buffer still typed for the previous codec.
+      if (sourceBufferCodecChanged && this.mediaSource !== null) {
+        this.addSourceBuffer();
+      }
 
       this.segmentArray = [];
       this.audioSamples = [];

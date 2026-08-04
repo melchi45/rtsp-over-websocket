@@ -84,7 +84,10 @@ export class OPUSSession extends RtpSession {
       },
       rtcp_interleavedId: this.rtcpSession?.interleavedId
     };
-    const audioInfo = { bitrate: this.bitrate };
+    // channelCount/sampleRate are fixed rather than derived from the stream
+    // — see OPUSAudioDecoder.ts's comment on why this player only decodes
+    // Opus as mono, and init()'s comment on the RFC 7587 fixed clock rate.
+    const audioInfo = { bitrate: this.bitrate, channelCount: 1, sampleRate: 48000 };
 
     this.eventAudioCallback?.(playMode, streamData, audioInfo);
   }
