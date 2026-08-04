@@ -160,6 +160,7 @@ export const STATISTICS_GRAPH_STYLE =
   'stroke-linejoin: round;\r\n' +
   'stroke-linecap: round;\r\n' +
   '}\r\n' +
+  '.statistics .stat-chart.chart-mint polyline{ stroke: #5FDE9A; }\r\n' +
   '.statistics .network-dot{\r\n' +
   'width: 8px;\r\n' +
   'height: 8px;\r\n' +

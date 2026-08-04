@@ -139,14 +139,11 @@ export class RTSPOverWebSocket extends HTMLElement {
   videoCodecElement?: HTMLElement | null;
   audioCodecElement?: HTMLElement | null;
   frameElement?: HTMLElement | null;
-  decodeElement?: HTMLElement | null;
-  dropElement?: HTMLElement | null;
   videoRtpRecvElement?: HTMLElement | null;
   videoRtpTotalRecvElement?: HTMLElement | null;
   audioRtpRecvElement?: HTMLElement | null;
   audioRtpTotalRecvElement?: HTMLElement | null;
   latencyElement?: HTMLElement | null;
-  chunkSizeElement?: HTMLElement | null;
   currentRecvElement?: HTMLElement | null;
   totalRecvElement?: HTMLElement | null;
   timestampElement?: HTMLElement | null;
@@ -155,10 +152,20 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   networkStatDotElement?: HTMLElement | null;
   networkStatTextElement?: HTMLElement | null;
-  rateGraphElement?: HTMLElement | null;
-  bufferChartElement?: SVGPolylineElement | null;
-  private readonly bitrateHistory: number[] = [];
+  framesElement?: HTMLElement | null;
+  rateAvgElement?: HTMLElement | null;
+  rateTotalElement?: HTMLElement | null;
+  dropsElement?: HTMLElement | null;
+  chunkElement?: HTMLElement | null;
+  fpsChartElement?: SVGPolylineElement | null;
+  bufferGraphElement?: HTMLElement | null;
+  private readonly fpsHistory: number[] = [];
   private readonly bufferHistory: number[] = [];
+  private totalDecodedBytes = 0;
+  /** Latest video 'rtp' statistics.receviedPacket — reused by the 'fps'
+   * case's Frames row (see onRTSPOverWebSocketStatistics()) rather than
+   * tracking a second, possibly-diverging counter. */
+  private lastVideoReceivedPacket = 0;
 
   networkStateElement?: HTMLElement | null;
   dotElement?: HTMLElement | null;
@@ -2335,24 +2342,58 @@ export class RTSPOverWebSocket extends HTMLElement {
       frameSpanElement.className = 'stat-value';
       frameElement.appendChild(frameLabelElement);
       frameElement.appendChild(frameSpanElement);
+      // Line chart of recent decoded-fps samples — see
+      // onRTSPOverWebSocketStatistics()'s 'fps' case (pushes into
+      // fpsHistory) and renderFpsChart().
+      const fpsChartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      fpsChartSvg.setAttribute('class', 'stat-chart chart-mint');
+      fpsChartSvg.setAttribute('viewBox', '0 0 100 20');
+      fpsChartSvg.setAttribute('preserveAspectRatio', 'none');
+      const fpsChartPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      fpsChartSvg.appendChild(fpsChartPolyline);
+      frameElement.appendChild(fpsChartSvg);
 
-      const decodedElement = document.createElement('div');
-      const decodedLabelElement = document.createElement('span');
-      decodedLabelElement.innerText = 'Decoded';
-      decodedLabelElement.className = 'stat-label accent-amber';
-      const decodedSpanElement = document.createElement('span');
-      decodedSpanElement.className = 'stat-value';
-      decodedElement.appendChild(decodedLabelElement);
-      decodedElement.appendChild(decodedSpanElement);
+      const framesElement = document.createElement('div');
+      const framesLabelElement = document.createElement('span');
+      framesLabelElement.innerText = 'Frames';
+      framesLabelElement.className = 'stat-label accent-amber';
+      const framesSpanElement = document.createElement('span');
+      framesSpanElement.className = 'stat-value';
+      framesElement.appendChild(framesLabelElement);
+      framesElement.appendChild(framesSpanElement);
 
-      const droppedPacketElement = document.createElement('div');
-      const droppedPacketLabelElement = document.createElement('span');
-      droppedPacketLabelElement.innerText = 'Dropped';
-      droppedPacketLabelElement.className = 'stat-label accent-amber';
-      const droppedPacketSpanElement = document.createElement('span');
-      droppedPacketSpanElement.className = 'stat-value';
-      droppedPacketElement.appendChild(droppedPacketLabelElement);
-      droppedPacketElement.appendChild(droppedPacketSpanElement);
+      const rateElement = document.createElement('div');
+      const rateLabelElement = document.createElement('span');
+      rateLabelElement.innerText = 'Rate';
+      rateLabelElement.className = 'stat-label accent-amber';
+      const rateValuesElement = document.createElement('span');
+      rateValuesElement.className = 'stat-values';
+      const rateAvgSpanElement = document.createElement('span');
+      rateAvgSpanElement.className = 'stat-value';
+      const rateTotalSpanElement = document.createElement('span');
+      rateTotalSpanElement.className = 'stat-value';
+      rateValuesElement.appendChild(rateAvgSpanElement);
+      rateValuesElement.appendChild(rateTotalSpanElement);
+      rateElement.appendChild(rateLabelElement);
+      rateElement.appendChild(rateValuesElement);
+
+      const dropsElement = document.createElement('div');
+      const dropsLabelElement = document.createElement('span');
+      dropsLabelElement.innerText = 'Drops';
+      dropsLabelElement.className = 'stat-label accent-amber';
+      const dropsSpanElement = document.createElement('span');
+      dropsSpanElement.className = 'stat-value';
+      dropsElement.appendChild(dropsLabelElement);
+      dropsElement.appendChild(dropsSpanElement);
+
+      const chunkElement = document.createElement('div');
+      const chunkLabelElement = document.createElement('span');
+      chunkLabelElement.innerText = 'Chunk';
+      chunkLabelElement.className = 'stat-label accent-pink';
+      const chunkSpanElement = document.createElement('span');
+      chunkSpanElement.className = 'stat-value';
+      chunkElement.appendChild(chunkLabelElement);
+      chunkElement.appendChild(chunkSpanElement);
 
       const videoRtpElement = document.createElement('div');
       const videoRtpLabelElement = document.createElement('span');
@@ -2386,29 +2427,18 @@ export class RTSPOverWebSocket extends HTMLElement {
 
       const latencyElement = document.createElement('div');
       const latencyLabelElement = document.createElement('span');
-      latencyLabelElement.innerText = 'Buffer';
+      latencyLabelElement.innerText = 'Latency';
       latencyLabelElement.className = 'stat-label accent-pink';
-      const latencyValuesElement = document.createElement('span');
-      latencyValuesElement.className = 'stat-values';
       const latencySpanElement = document.createElement('span');
       latencySpanElement.className = 'stat-value';
-      const chunkSizeSpanElement = document.createElement('span');
-      chunkSizeSpanElement.className = 'stat-value';
-      latencyValuesElement.appendChild(latencySpanElement);
-      latencyValuesElement.appendChild(chunkSizeSpanElement);
       latencyElement.appendChild(latencyLabelElement);
-      latencyElement.appendChild(latencyValuesElement);
-
-      // Line chart of recent buffer/latency samples — see
+      latencyElement.appendChild(latencySpanElement);
+      // Intensity graph (bar chart) of recent buffer/latency samples — see
       // onRTSPOverWebSocketStatistics()'s 'fps' case (pushes into
-      // bufferHistory) and renderBufferChart().
-      const bufferChartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      bufferChartSvg.setAttribute('class', 'stat-chart');
-      bufferChartSvg.setAttribute('viewBox', '0 0 100 20');
-      bufferChartSvg.setAttribute('preserveAspectRatio', 'none');
-      const bufferChartPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-      bufferChartSvg.appendChild(bufferChartPolyline);
-      latencyElement.appendChild(bufferChartSvg);
+      // bufferHistory) and renderBufferGraph().
+      const bufferGraphElement = document.createElement('span');
+      bufferGraphElement.className = 'stat-graph';
+      latencyElement.appendChild(bufferGraphElement);
 
       const receivedElement = document.createElement('div');
       const receivedLabelElement = document.createElement('span');
@@ -2469,30 +2499,19 @@ export class RTSPOverWebSocket extends HTMLElement {
       networkElement.appendChild(networkLabelElement);
       networkElement.appendChild(networkRowElement);
 
-      // Intensity graph (bar chart) of recent received-bitrate samples —
-      // see onRTSPOverWebSocketStatistics()'s 'fps' case (pushes into
-      // bitrateHistory) and renderRateGraph().
-      const rateElement = document.createElement('div');
-      const rateLabelElement = document.createElement('span');
-      rateLabelElement.innerText = 'Rate';
-      rateLabelElement.className = 'stat-label accent-blue';
-      const rateGraphElement = document.createElement('span');
-      rateGraphElement.className = 'stat-graph';
-      rateElement.appendChild(rateLabelElement);
-      rateElement.appendChild(rateGraphElement);
-
       this.statisticsElement.appendChild(networkElement);
       this.statisticsElement.appendChild(resolutionElement);
       this.statisticsElement.appendChild(positionElement);
       this.statisticsElement.appendChild(ratioElement);
       this.statisticsElement.appendChild(codecElement);
+      this.statisticsElement.appendChild(framesElement);
       this.statisticsElement.appendChild(rateElement);
       this.statisticsElement.appendChild(frameElement);
-      this.statisticsElement.appendChild(decodedElement);
-      this.statisticsElement.appendChild(droppedPacketElement);
+      this.statisticsElement.appendChild(dropsElement);
       this.statisticsElement.appendChild(videoRtpElement);
       this.statisticsElement.appendChild(audioRtpElement);
       this.statisticsElement.appendChild(latencyElement);
+      this.statisticsElement.appendChild(chunkElement);
       this.statisticsElement.appendChild(receivedElement);
       this.statisticsElement.appendChild(timestampElement);
       this.statisticsElement.appendChild(dataElement);
@@ -2506,14 +2525,16 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.videoCodecElement = videoCodecSpanElement;
       this.audioCodecElement = audioCodecSpanElement;
       this.frameElement = frameSpanElement;
-      this.decodeElement = decodedSpanElement;
-      this.dropElement = droppedPacketSpanElement;
+      this.framesElement = framesSpanElement;
+      this.rateAvgElement = rateAvgSpanElement;
+      this.rateTotalElement = rateTotalSpanElement;
+      this.dropsElement = dropsSpanElement;
       this.videoRtpRecvElement = videoRtpRecvSpanElement;
       this.videoRtpTotalRecvElement = videoRtpTotalRecvSpanElement;
       this.audioRtpRecvElement = audioRtpRecvSpanElement;
       this.audioRtpTotalRecvElement = audioRtpTotalRecvSpanElement;
       this.latencyElement = latencySpanElement;
-      this.chunkSizeElement = chunkSizeSpanElement;
+      this.chunkElement = chunkSpanElement;
       this.currentRecvElement = currentRecvSpanElement;
       this.totalRecvElement = totalRecvSpanElement;
       this.timestampElement = timestampSpanElement;
@@ -2521,8 +2542,8 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.dataElement = dataSpanElement;
       this.networkStatDotElement = networkDotElement;
       this.networkStatTextElement = networkTextElement;
-      this.rateGraphElement = rateGraphElement;
-      this.bufferChartElement = bufferChartPolyline;
+      this.fpsChartElement = fpsChartPolyline;
+      this.bufferGraphElement = bufferGraphElement;
       this.applyStatisticsNetworkState();
     } else {
       if (this.statisticsElement !== undefined && this.statisticsElement !== null) {
@@ -2547,34 +2568,34 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
-  /** Renders bitrateHistory as a bar chart ("intensity graph") — see
+  /** Renders fpsHistory as an SVG line chart — see
    * onRTSPOverWebSocketStatistics()'s 'fps' case, which pushes into it. */
-  private renderRateGraph(): void {
-    if (this.rateGraphElement === undefined || this.rateGraphElement === null) return;
-    const max = Math.max(...this.bitrateHistory, 1);
-    this.rateGraphElement.innerHTML = '';
-    for (const value of this.bitrateHistory) {
-      const bar = document.createElement('span');
-      bar.className = 'stat-graph-bar';
-      bar.style.height = Math.max(2, Math.round((value / max) * 20)) + 'px';
-      this.rateGraphElement.appendChild(bar);
-    }
-  }
-
-  /** Renders bufferHistory as an SVG line chart — see
-   * onRTSPOverWebSocketStatistics()'s 'fps' case, which pushes into it. */
-  private renderBufferChart(): void {
-    if (this.bufferChartElement === undefined || this.bufferChartElement === null) return;
-    const max = Math.max(...this.bufferHistory, 0.001);
-    const count = this.bufferHistory.length;
-    const points = this.bufferHistory
+  private renderFpsChart(): void {
+    if (this.fpsChartElement === undefined || this.fpsChartElement === null) return;
+    const max = Math.max(...this.fpsHistory, 1);
+    const count = this.fpsHistory.length;
+    const points = this.fpsHistory
       .map((value, index) => {
         const x = count > 1 ? (index / (count - 1)) * 100 : 100;
         const y = 20 - (value / max) * 20;
         return x.toFixed(1) + ',' + y.toFixed(1);
       })
       .join(' ');
-    this.bufferChartElement.setAttribute('points', points);
+    this.fpsChartElement.setAttribute('points', points);
+  }
+
+  /** Renders bufferHistory as a bar chart ("intensity graph") — see
+   * onRTSPOverWebSocketStatistics()'s 'fps' case, which pushes into it. */
+  private renderBufferGraph(): void {
+    if (this.bufferGraphElement === undefined || this.bufferGraphElement === null) return;
+    const max = Math.max(...this.bufferHistory, 1);
+    this.bufferGraphElement.innerHTML = '';
+    for (const value of this.bufferHistory) {
+      const bar = document.createElement('span');
+      bar.className = 'stat-graph-bar';
+      bar.style.height = Math.max(2, Math.round((value / max) * 20)) + 'px';
+      this.bufferGraphElement.appendChild(bar);
+    }
   }
 
   private networkstateDiv(): void {
@@ -3321,6 +3342,9 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (this.videoRtpTotalRecvElement !== null && this.videoRtpTotalRecvElement !== undefined && statistics.receviedPacket !== undefined && statistics.media === 'video') {
           this.videoRtpTotalRecvElement.textContent = 'total: ' + statistics.receviedPacket + ' frame';
         }
+        if (statistics.receviedPacket !== undefined && statistics.media === 'video') {
+          this.lastVideoReceivedPacket = statistics.receviedPacket;
+        }
 
         if (this.audioRtpRecvElement !== null && this.audioRtpRecvElement !== undefined && statistics.fps !== undefined && statistics.media === 'audio') {
           this.audioRtpRecvElement.textContent = statistics.fps + ' frame/sec:';
@@ -3339,17 +3363,29 @@ export class RTSPOverWebSocket extends HTMLElement {
         } else if (this.frameElement !== null && this.frameElement !== undefined && statistics.fps !== undefined) {
           this.frameElement.textContent = statistics.fps + ' fps';
         }
+        const fpsSample = statistics.decodedPerSec ?? statistics.fps;
+        if (fpsSample !== undefined) {
+          this.fpsHistory.push(fpsSample);
+          if (this.fpsHistory.length > STATS_HISTORY_LENGTH) this.fpsHistory.shift();
+          this.renderFpsChart();
+        }
 
-        if (this.decodeElement !== null && this.decodeElement !== undefined && statistics.decodedBytesDecodedPerSec !== undefined && statistics.decodedBytesMean !== undefined) {
-          this.decodeElement.textContent = 'total: ' + formatBytes(statistics.decodedBytesDecodedPerSec) + ' , average p/s: ' + formatBps(statistics.decodedBytesMean * 8);
+        if (this.framesElement !== null && this.framesElement !== undefined && statistics.dropFramesCount !== undefined) {
+          this.framesElement.textContent = this.lastVideoReceivedPacket + ' recv, ' + statistics.dropFramesCount + ' dropped';
         }
+
         if (statistics.decodedBytesDecodedPerSec !== undefined) {
-          this.bitrateHistory.push(statistics.decodedBytesDecodedPerSec * 8);
-          if (this.bitrateHistory.length > STATS_HISTORY_LENGTH) this.bitrateHistory.shift();
-          this.renderRateGraph();
+          this.totalDecodedBytes += statistics.decodedBytesDecodedPerSec;
+          if (this.rateTotalElement !== null && this.rateTotalElement !== undefined) {
+            this.rateTotalElement.textContent = 'Total ' + formatBytes(this.totalDecodedBytes);
+          }
         }
-        if (this.dropElement !== null && this.dropElement !== undefined && statistics.dropFramesCount !== undefined && statistics.dropFramesMean !== undefined) {
-          this.dropElement.textContent = 'total: ' + statistics.dropFramesCount + ' frame dropped, average p/s: ' + statistics.dropFramesMean + ' dropped';
+        if (this.rateAvgElement !== null && this.rateAvgElement !== undefined && statistics.decodedBytesMean !== undefined) {
+          this.rateAvgElement.textContent = formatBps(statistics.decodedBytesMean * 8) + ' avg';
+        }
+
+        if (this.dropsElement !== null && this.dropsElement !== undefined && statistics.dropFramesMean !== undefined) {
+          this.dropsElement.textContent = statistics.dropFramesMean.toFixed(2) + '/sec';
         }
 
         if (this.resolutionElement !== null && this.resolutionElement !== undefined && statistics.width !== undefined && statistics.height !== undefined) {
@@ -3365,11 +3401,11 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.latency !== undefined) {
           this.bufferHistory.push(statistics.latency * 1000);
           if (this.bufferHistory.length > STATS_HISTORY_LENGTH) this.bufferHistory.shift();
-          this.renderBufferChart();
+          this.renderBufferGraph();
         }
 
-        if (this.chunkSizeElement !== null && this.chunkSizeElement !== undefined && statistics.chunksize !== undefined) {
-          this.chunkSizeElement.textContent = 'chunk size: #' + statistics.chunksize;
+        if (this.chunkElement !== null && this.chunkElement !== undefined && statistics.chunksize !== undefined) {
+          this.chunkElement.textContent = '#' + statistics.chunksize;
         }
 
         if (this.ratioElement) {
