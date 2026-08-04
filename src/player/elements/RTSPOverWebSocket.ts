@@ -2781,7 +2781,7 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
-  private contextmenuDiv(): void {
+  private contextmenuDiv(e?: MouseEvent): void {
     if (!this.checkStyle('.menu')) {
       this.appendStyle(panelStyles.CONTEXT_MENU_STYLE);
       this.appendStyle(panelStyles.CONTEXT_MENU_OPTIONS_STYLE);
@@ -2790,6 +2790,12 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.appendStyle(panelStyles.CONTEXT_MENU_BUTTON_STYLE);
       this.appendStyle(panelStyles.CONTEXT_MENU_MOVE_KEYFRAMES);
     }
+
+    const toggleMenu = (command: 'show' | 'hide'): void => {
+      if (this.contextmenuElement === undefined || this.contextmenuElement === null) return;
+      this.contextmenuElement.style.display = command === 'show' ? 'block' : 'none';
+      this.menuVisible = command === 'show';
+    };
 
     if (typeof this.contextmenuElement === 'undefined' || this.contextmenuElement === null) {
       this.contextmenuElement = document.createElement('div');
@@ -2809,26 +2815,12 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.contextmenuElement.appendChild(this.menuOptionElement);
       this.ensureRTSPOverWebSocketWrapper().appendChild(this.contextmenuElement);
 
-      const toggleMenu = (command: 'show' | 'hide'): void => {
-        (this.contextmenuElement as HTMLElement).style.display = command === 'show' ? 'block' : 'none';
-        this.menuVisible = !this.menuVisible;
-      };
-
-      const setPosition = ({ top, left }: { top: number; left: number }): void => {
-        const el = this.contextmenuElement as HTMLElement;
-        el.style.position = 'absolute';
-        el.style.left = `${left}px`;
-        el.style.top = `${top}px`;
-        el.style.background = 'white';
-        toggleMenu('show');
-      };
-
       window.addEventListener('click', () => {
         if (this.menuVisible) toggleMenu('hide');
       });
 
-      this.menuOptionElement.addEventListener('click', (e: Event) => {
-        const target = e.target as HTMLElement;
+      this.menuOptionElement.addEventListener('click', (ev: Event) => {
+        const target = ev.target as HTMLElement;
         const label = target.innerHTML.toLowerCase();
 
         if (label === 'channel') {
@@ -2864,15 +2856,31 @@ export class RTSPOverWebSocket extends HTMLElement {
           this.toggleFullScreen(this);
         }
       });
+    }
 
-      if (this._useContextmenu) {
-        const videoElement = (this.querySelectorAll('video')[0] || this.querySelectorAll('canvas')[0]) as HTMLElement;
-        videoElement.addEventListener('contextmenu', (e: MouseEvent) => {
-          e.preventDefault();
-          setPosition({ left: e.offsetX, top: e.offsetY });
-          return false;
-        });
-      }
+    // Show+position the menu directly off the bubbled event instead of a
+    // listener bound to a specific <video>/<canvas> node captured once at
+    // setup time. That approach had two failure modes: (1) since this method
+    // is itself the reliable, always-firing handler (bound as
+    // `this.oncontextmenu` in the constructor), attaching the child-node
+    // listener *from inside* it meant the very first right-click could never
+    // show anything — the target node's listener phase had already passed
+    // by the time this handler (which did the attaching) ran; only the
+    // second click onward worked. (2) the node was captured once, so if the
+    // actual <video>/<canvas> got replaced later (reconnect, codec switch,
+    // canvas-vs-video rendering fallback), the menu stopped responding to
+    // right-clicks permanently. Reading straight off the bubbled event here
+    // avoids both: `e.offsetX/offsetY` stay relative to `e.target` (the
+    // original video/canvas under the cursor) regardless of which node's
+    // listener reads them.
+    if (this._useContextmenu && e !== undefined) {
+      e.preventDefault();
+      const el = this.contextmenuElement as HTMLElement;
+      el.style.position = 'absolute';
+      el.style.left = `${e.offsetX}px`;
+      el.style.top = `${e.offsetY}px`;
+      el.style.background = 'white';
+      toggleMenu('show');
     }
 
     // legacy: `window.event.returnValue = false;` — relies on the deprecated
