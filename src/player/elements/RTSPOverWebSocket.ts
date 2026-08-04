@@ -2659,16 +2659,22 @@ export class RTSPOverWebSocket extends HTMLElement {
    * "intensity" chart — subtle relative variation stays visible — rather
    * than a mostly-flat line when the underlying values happen to be large
    * relative to their own variance (e.g. FPS hovering 28-30). */
+  /** Fixed at 0, not the history's local min (unlike renderIntensityGraph()) —
+   * a line chart's vertical position needs to carry absolute meaning (e.g.
+   * FPS near the bottom vs. near the top of the strip tells you whether
+   * it's actually near 0 or near its usual value); local-min normalization
+   * would make a healthy 28-30fps run and an unhealthy 2-4fps run look
+   * identical, since both would fill the same visual range. Only the top
+   * (the local max) auto-scales, so the chart still uses the available
+   * height well. */
   private renderLineChart(target: SVGPolylineElement | null | undefined, history: number[]): void {
     if (target === undefined || target === null) return;
-    const min = history.length > 0 ? Math.min(...history) : 0;
-    const max = history.length > 0 ? Math.max(...history) : 1;
-    const range = Math.max(max - min, 1e-6);
+    const max = Math.max(...history, 1e-6);
     const count = history.length;
     const points = history
       .map((value, index) => {
         const x = count > 1 ? (index / (count - 1)) * 100 : 100;
-        const y = 20 - ((value - min) / range) * 20;
+        const y = 20 - (value / max) * 20;
         return x.toFixed(1) + ',' + y.toFixed(1);
       })
       .join(' ');
