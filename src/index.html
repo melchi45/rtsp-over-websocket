@@ -1285,11 +1285,24 @@
             unmount = null;
           }
           btnDisconnect.disabled = true;
+          btnConnect.disabled = false;
         }
 
         btnConnect.addEventListener('click', function () {
+          // Without this, clicking Connect again while a previous connect
+          // attempt is still in flight (SUNAPI login + RTSP setup can take a
+          // real amount of time) tears down and re-mounts the React tree
+          // mid-flight, overlapping the old attempt's async cleanup with the
+          // new one's setup — the kind of race that leaves a stale
+          // MediaSource/SourceBuffer pair behind.
+          if (btnConnect.disabled) return;
+          btnConnect.disabled = true;
           statusError.hidden = true;
           disconnect();
+          // disconnect() re-enables btnConnect (it's also the Disconnect
+          // button's own handler) — re-disable now that a connect attempt
+          // is actually starting.
+          btnConnect.disabled = true;
 
           import('./player/rtsp-over-websocket-react.esm.js').then(function (mod) {
             unmount = mod.mountReactPlayer(reactPlayerHost, {
