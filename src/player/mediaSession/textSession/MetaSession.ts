@@ -34,14 +34,14 @@ export class MetaSession extends RtpSession {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0102,
-        place: 'MetaSession.ts:53',
+        place: 'metaSession.js:53',
         message: `it is not valid interleave header (RTSP over TCP). Interleaved[0] = ${rtspInterleaved[0].toString(16)}`
       });
     } else if (flags.csrcCount !== 0) {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0103,
-        place: 'MetaSession.ts:60',
+        place: 'metaSession.js:60',
         message: `There is additional CSRC which is not handled in this version. CSRC count = ${flags.csrcCount}`
       });
     } else if (flags.padding) {

@@ -98,7 +98,7 @@ export class RTCPSession extends Session {
           throw new RTCPError({
             channelId: this.channelId,
             errorCode: 0x0209,
-            place: 'RTCPSession.ts:parse',
+            place: 'rtcpSession.js:parse',
             message: 'RTCP goodbye message'
           });
         }

@@ -54,7 +54,7 @@ export class AudioPlayerAAC extends AudioPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x030D'),
-        place: 'AudioPlayerAAC.ts:440',
+        place: 'mediaRouter.js:440',
         message: 'MediaSource API is not supported!'
       });
     } else if (window.MediaSource.isTypeSupported(this.mimeCodec)) {

@@ -83,7 +83,7 @@ export class CanvasTagPlayer extends VideoPlayer {
     (this.errorCallback as VideoPlayerErrorCallback)({
       channelId: this.channelId,
       errorCode: fromHex('0x0902'),
-      place: 'CanvasTagPlayer.ts:178',
+      place: 'canvasTagPlayer.js:178',
       description: 'CanvasTagPlayer: WebGL Context Lost detect'
     });
   };
@@ -204,7 +204,7 @@ export class CanvasTagPlayer extends VideoPlayer {
           throw new RTSPOverWebSocketError({
             channelId: this.channelId,
             errorCode: fromHex('0x0904'),
-            place: 'CanvasTagPlayer.ts:113',
+            place: 'canvasTagPlayer.js:113',
             message: 'The canvas element do not exist. Check your canvas element or canvas element was released.'
           });
         }
@@ -232,7 +232,7 @@ export class CanvasTagPlayer extends VideoPlayer {
         (this.errorCallback as VideoPlayerErrorCallback)({
           channelId: this.channelId,
           errorCode: fromHex('0x090B'),
-          place: 'CanvasTagPlayer.ts:decoderWorkerMessage',
+          place: 'canvasTagPlayer.js:decoderWorkerMessage',
           description: 'You need hight performance CPU better than now.',
           decoderId: data.decoderId,
           performance: data.performance
@@ -249,7 +249,7 @@ export class CanvasTagPlayer extends VideoPlayer {
         throw new RTSPOverWebSocketError({
           channelId: this.channelId,
           errorCode: fromHex('0x0905'),
-          place: 'CanvasTagPlayer.ts:decoderWorkerMessage',
+          place: 'canvasTagPlayer.js:decoderWorkerMessage',
           message: 'The decoder worker returned unknown data'
         });
     }
@@ -302,7 +302,7 @@ export class CanvasTagPlayer extends VideoPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0904'),
-        place: 'CanvasTagPlayer.ts:init',
+        place: 'canvasTagPlayer.js:init',
         message: 'The canvas element do not exist. Check your canvas element or canvas element was released.'
       });
     }
@@ -383,7 +383,7 @@ export class CanvasTagPlayer extends VideoPlayer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0903'),
-        place: 'CanvasTagPlayer.ts:290',
+        place: 'canvasTagPlayer.js:290',
         message: 'CanvasTagPlayer: canvas tag renderer is null'
       });
     }

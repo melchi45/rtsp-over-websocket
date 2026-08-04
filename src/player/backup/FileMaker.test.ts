@@ -15,7 +15,7 @@ class FakeWorker {
  * DOM-heavy surfaces. Assembly/ordering logic is verified against the
  * ported class directly instead.
  */
-describe('FileMaker contract tests (the legacy player’s Backup/FileMaker)', () => {
+describe('FileMaker contract tests (the legacy player’s Backup/FileMaker.js)', () => {
   function newFileMaker(): { fileMaker: FileMaker; getWorker: () => FakeWorker } {
     let worker: FakeWorker | undefined;
     const fileMaker = new FileMaker(() => {

@@ -129,14 +129,14 @@ export class AACSession extends RtpSession {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0102,
-        place: 'AACSession.ts:105',
+        place: 'accSession.js:105',
         message: `it is not valid interleave header (RTSP over TCP). Interleaved[0] = ${rtspInterleaved[0].toString(16)}`
       });
     } else if (flags.csrcCount !== 0) {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: 0x0103,
-        place: 'AACSession.ts:112',
+        place: 'accSession.js:112',
         message: `There is additional CSRC which is not handled in this version. CSRC count = ${flags.csrcCount}`
       });
     } else if (flags.padding) {

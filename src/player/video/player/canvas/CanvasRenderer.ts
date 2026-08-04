@@ -101,7 +101,7 @@ export class CanvasRenderer {
             throw new RTSPOverWebSocketError({
               channelId: this.channelId,
               errorCode: fromHex('0x0909'),
-              place: 'CanvasRenderer.ts:53',
+              place: 'canvasRenderer.js:53',
               message: 'can not return capture blob, because of capture callback is not exist.'
             });
           }
@@ -139,7 +139,7 @@ export class CanvasRenderer {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0901'),
-        place: 'CanvasRenderer.ts:47',
+        place: 'canvasRenderer.js:47',
         message: 'canvas tag element is undefined'
       });
     }

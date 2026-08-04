@@ -201,7 +201,7 @@ function audioFrame(): { streamData: AudioStreamData; audioInfo: AudioInfo } {
   };
 }
 
-describe('VideoTagPlayer contract tests (the legacy player’s Video/Player/Video/videoTagPlayer)', () => {
+describe('VideoTagPlayer contract tests (the legacy player’s Video/Player/Video/videoTagPlayer.js)', () => {
   beforeEach(() => {
     (globalThis as unknown as { MediaSource: unknown }).MediaSource = FakeMediaSource;
     (globalThis as unknown as { VTTCue: unknown }).VTTCue = FakeVTTCue;

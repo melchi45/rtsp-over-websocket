@@ -148,7 +148,7 @@ export abstract class VideoPlayer {
         channelId: this.channelId,
         errorCode: fromHex('0x1005'),
         state,
-        place: 'VideoPlayer.ts:set rfps',
+        place: 'videoPlayer.js:set rfps',
         description: `network state (${variance})`
       });
 

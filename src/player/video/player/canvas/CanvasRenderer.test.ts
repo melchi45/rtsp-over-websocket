@@ -39,7 +39,7 @@ function createFakeCanvasElement(attrs: Record<string, string> = {}): FakeCanvas
   return canvas;
 }
 
-describe('CanvasRenderer contract tests (the legacy player’s Video/Player/Canvas/canvasRenderer)', () => {
+describe('CanvasRenderer contract tests (the legacy player’s Video/Player/Canvas/canvasRenderer.js)', () => {
   it('init() throws an RTSPOverWebSocketError when element is undefined, and is otherwise a no-op', () => {
     const renderer = new CanvasRenderer();
     expect(() => renderer.init(undefined)).toThrow(/canvas tag element is undefined/);

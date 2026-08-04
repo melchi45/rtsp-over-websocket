@@ -119,7 +119,7 @@ export class MetaDataParser {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
         errorCode: fromHex('0x0907'),
-        place: 'MetaDataParser.ts:parse',
+        place: 'metaDataParser.js:parse',
         message: `Metadata Parsing Error  [${(error as Error).message}]`
       });
     }

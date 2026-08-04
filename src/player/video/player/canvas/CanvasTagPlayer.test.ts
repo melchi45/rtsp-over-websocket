@@ -138,7 +138,7 @@ function frame(overrides: Partial<{ codecType: string; frameType: string; width:
   };
 }
 
-describe('CanvasTagPlayer contract tests (the legacy player’s Video/Player/Canvas/canvasTagPlayer)', () => {
+describe('CanvasTagPlayer contract tests (the legacy player’s Video/Player/Canvas/canvasTagPlayer.js)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     (globalThis as unknown as { window: unknown }).window = fakeWindow;
