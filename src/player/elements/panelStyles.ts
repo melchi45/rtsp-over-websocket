@@ -229,6 +229,7 @@ export const STATISTICS_GRAPH_STYLE =
   '}\r\n' +
   '.statistics .stat-chart.chart-mint polyline{ stroke: #5FDE9A; }\r\n' +
   '.statistics .stat-chart.chart-amber polyline{ stroke: #FFB454; }\r\n' +
+  '.statistics .stat-chart.chart-blue polyline{ stroke: #6EA8FF; }\r\n' +
   '.statistics .stat-graph-column{\r\n' +
   'display: flex;\r\n' +
   'flex-direction: column;\r\n' +
@@ -236,6 +237,10 @@ export const STATISTICS_GRAPH_STYLE =
   'overflow: visible;\r\n' +
   'white-space: normal;\r\n' +
   '}\r\n' +
+  // Smaller intensity graph for rows where the graph sits below the text
+  // rather than being the row's primary content (Drops/Latency, per
+  // explicit request) — same cells/rendering, just a shorter strip.
+  '.statistics .stat-graph-sm{ height: 8px; }\r\n' +
   '.statistics .network-dot{\r\n' +
   'width: 8px;\r\n' +
   'height: 8px;\r\n' +

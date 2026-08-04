@@ -160,8 +160,8 @@ export class RTSPOverWebSocket extends HTMLElement {
   chunkElement?: HTMLElement | null;
   fpsChartElement?: SVGPolylineElement | null;
   bufferGraphElement?: HTMLElement | null;
-  videoRtpGraphElement?: HTMLElement | null;
-  audioRtpGraphElement?: HTMLElement | null;
+  videoRtpChartElement?: SVGPolylineElement | null;
+  audioRtpChartElement?: SVGPolylineElement | null;
   rateChartElement?: SVGPolylineElement | null;
   dropsGraphElement?: HTMLElement | null;
   private readonly fpsHistory: number[] = [];
@@ -2404,17 +2404,22 @@ export class RTSPOverWebSocket extends HTMLElement {
       rateElement.appendChild(rateLabelElement);
       rateElement.appendChild(rateContentElement);
 
+      // Text on top, a shorter intensity graph strip below it — requested
+      // explicitly, unlike Video/Audio RTP's Rate-style layout below.
       const dropsElement = document.createElement('div');
       const dropsLabelElement = document.createElement('span');
       dropsLabelElement.innerText = 'Drops';
       dropsLabelElement.className = 'stat-label accent-amber';
+      const dropsContentElement = document.createElement('span');
+      dropsContentElement.className = 'stat-value stat-graph-column';
       const dropsSpanElement = document.createElement('span');
       dropsSpanElement.className = 'stat-value';
-      dropsElement.appendChild(dropsLabelElement);
-      dropsElement.appendChild(dropsSpanElement);
       const dropsGraphElement = document.createElement('span');
-      dropsGraphElement.className = 'stat-graph';
-      dropsElement.appendChild(dropsGraphElement);
+      dropsGraphElement.className = 'stat-graph stat-graph-sm';
+      dropsContentElement.appendChild(dropsSpanElement);
+      dropsContentElement.appendChild(dropsGraphElement);
+      dropsElement.appendChild(dropsLabelElement);
+      dropsElement.appendChild(dropsContentElement);
 
       const chunkElement = document.createElement('div');
       const chunkLabelElement = document.createElement('span');
@@ -2425,56 +2430,78 @@ export class RTSPOverWebSocket extends HTMLElement {
       chunkElement.appendChild(chunkLabelElement);
       chunkElement.appendChild(chunkSpanElement);
 
+      // Rate-style layout (small text stacked above a line chart) — requested
+      // explicitly, unlike Drops/Latency's text-then-small-intensity-graph
+      // layout above.
       const videoRtpElement = document.createElement('div');
       const videoRtpLabelElement = document.createElement('span');
       videoRtpLabelElement.innerText = 'Video RTP';
       videoRtpLabelElement.className = 'stat-label accent-blue';
+      const videoRtpContentElement = document.createElement('span');
+      videoRtpContentElement.className = 'stat-value stat-graph-column';
       const videoRtpValuesElement = document.createElement('span');
-      videoRtpValuesElement.className = 'stat-values';
+      videoRtpValuesElement.className = 'stat-values stat-values-sm';
       const videoRtpRecvSpanElement = document.createElement('span');
       videoRtpRecvSpanElement.className = 'stat-value';
       const videoRtpTotalRecvSpanElement = document.createElement('span');
       videoRtpTotalRecvSpanElement.className = 'stat-value';
       videoRtpValuesElement.appendChild(videoRtpRecvSpanElement);
       videoRtpValuesElement.appendChild(videoRtpTotalRecvSpanElement);
+      const videoRtpChartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      videoRtpChartSvg.setAttribute('class', 'stat-chart chart-blue');
+      videoRtpChartSvg.setAttribute('viewBox', '0 0 100 20');
+      videoRtpChartSvg.setAttribute('preserveAspectRatio', 'none');
+      const videoRtpChartPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      videoRtpChartSvg.appendChild(videoRtpChartPolyline);
+      videoRtpContentElement.appendChild(videoRtpValuesElement);
+      videoRtpContentElement.appendChild(videoRtpChartSvg);
       videoRtpElement.appendChild(videoRtpLabelElement);
-      videoRtpElement.appendChild(videoRtpValuesElement);
-      const videoRtpGraphElement = document.createElement('span');
-      videoRtpGraphElement.className = 'stat-graph';
-      videoRtpElement.appendChild(videoRtpGraphElement);
+      videoRtpElement.appendChild(videoRtpContentElement);
 
       const audioRtpElement = document.createElement('div');
       const audioRtpLabelElement = document.createElement('span');
       audioRtpLabelElement.innerText = 'Audio RTP';
       audioRtpLabelElement.className = 'stat-label accent-blue';
+      const audioRtpContentElement = document.createElement('span');
+      audioRtpContentElement.className = 'stat-value stat-graph-column';
       const audioRtpValuesElement = document.createElement('span');
-      audioRtpValuesElement.className = 'stat-values';
+      audioRtpValuesElement.className = 'stat-values stat-values-sm';
       const audioRtpRecvSpanElement = document.createElement('span');
       audioRtpRecvSpanElement.className = 'stat-value';
       const audioRtpTotalRecvSpanElement = document.createElement('span');
       audioRtpTotalRecvSpanElement.className = 'stat-value';
       audioRtpValuesElement.appendChild(audioRtpRecvSpanElement);
       audioRtpValuesElement.appendChild(audioRtpTotalRecvSpanElement);
+      const audioRtpChartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      audioRtpChartSvg.setAttribute('class', 'stat-chart chart-blue');
+      audioRtpChartSvg.setAttribute('viewBox', '0 0 100 20');
+      audioRtpChartSvg.setAttribute('preserveAspectRatio', 'none');
+      const audioRtpChartPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      audioRtpChartSvg.appendChild(audioRtpChartPolyline);
+      audioRtpContentElement.appendChild(audioRtpValuesElement);
+      audioRtpContentElement.appendChild(audioRtpChartSvg);
       audioRtpElement.appendChild(audioRtpLabelElement);
-      audioRtpElement.appendChild(audioRtpValuesElement);
-      const audioRtpGraphElement = document.createElement('span');
-      audioRtpGraphElement.className = 'stat-graph';
-      audioRtpElement.appendChild(audioRtpGraphElement);
+      audioRtpElement.appendChild(audioRtpContentElement);
 
+      // Text on top, a shorter intensity graph strip below it — same
+      // layout as Drops above.
       const latencyElement = document.createElement('div');
       const latencyLabelElement = document.createElement('span');
       latencyLabelElement.innerText = 'Latency';
       latencyLabelElement.className = 'stat-label accent-pink';
+      const latencyContentElement = document.createElement('span');
+      latencyContentElement.className = 'stat-value stat-graph-column';
       const latencySpanElement = document.createElement('span');
       latencySpanElement.className = 'stat-value';
+      latencyContentElement.appendChild(latencySpanElement);
       latencyElement.appendChild(latencyLabelElement);
-      latencyElement.appendChild(latencySpanElement);
-      // Intensity graph (bar chart) of recent buffer/latency samples — see
+      latencyElement.appendChild(latencyContentElement);
+      // Intensity graph of recent buffer/latency samples — see
       // onRTSPOverWebSocketStatistics()'s 'fps' case (pushes into
-      // bufferHistory) and renderBufferGraph().
+      // bufferHistory) and renderIntensityGraph().
       const bufferGraphElement = document.createElement('span');
-      bufferGraphElement.className = 'stat-graph';
-      latencyElement.appendChild(bufferGraphElement);
+      bufferGraphElement.className = 'stat-graph stat-graph-sm';
+      latencyContentElement.appendChild(bufferGraphElement);
 
       const receivedElement = document.createElement('div');
       const receivedLabelElement = document.createElement('span');
@@ -2594,8 +2621,8 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.networkStatTextElement = networkTextElement;
       this.fpsChartElement = fpsChartPolyline;
       this.bufferGraphElement = bufferGraphElement;
-      this.videoRtpGraphElement = videoRtpGraphElement;
-      this.audioRtpGraphElement = audioRtpGraphElement;
+      this.videoRtpChartElement = videoRtpChartPolyline;
+      this.audioRtpChartElement = audioRtpChartPolyline;
       this.rateChartElement = rateChartPolyline;
       this.dropsGraphElement = dropsGraphElement;
       this.applyStatisticsNetworkState();
@@ -3420,7 +3447,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.fps !== undefined && statistics.media === 'video') {
           this.videoFpsHistory.push(statistics.fps);
           if (this.videoFpsHistory.length > STATS_HISTORY_LENGTH) this.videoFpsHistory.shift();
-          this.renderIntensityGraph(this.videoRtpGraphElement, this.videoFpsHistory);
+          this.renderLineChart(this.videoRtpChartElement, this.videoFpsHistory);
         }
 
         if (this.audioRtpRecvElement !== null && this.audioRtpRecvElement !== undefined && statistics.fps !== undefined && statistics.media === 'audio') {
@@ -3433,7 +3460,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (statistics.fps !== undefined && statistics.media === 'audio') {
           this.audioFpsHistory.push(statistics.fps);
           if (this.audioFpsHistory.length > STATS_HISTORY_LENGTH) this.audioFpsHistory.shift();
-          this.renderIntensityGraph(this.audioRtpGraphElement, this.audioFpsHistory);
+          this.renderLineChart(this.audioRtpChartElement, this.audioFpsHistory);
         }
 
         this.dispatch('statistics', { statistics: statistics as unknown as Record<string, unknown> });
