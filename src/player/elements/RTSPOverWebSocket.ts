@@ -3456,12 +3456,17 @@ export class RTSPOverWebSocket extends HTMLElement {
           if (this.rateTotalElement !== null && this.rateTotalElement !== undefined) {
             this.rateTotalElement.textContent = 'Total ' + formatBytes(this.totalDecodedBytes);
           }
-          this.rateHistory.push(statistics.decodedBytesDecodedPerSec * 8);
+        }
+        // The chart graphs the same avg figure the text above it shows
+        // (decodedBytesMean) — not the raw per-tick decodedBytesDecodedPerSec,
+        // which is a different (noisier, instantaneous) number.
+        if (statistics.decodedBytesMean !== undefined) {
+          if (this.rateAvgElement !== null && this.rateAvgElement !== undefined) {
+            this.rateAvgElement.textContent = formatBps(statistics.decodedBytesMean * 8) + ' avg';
+          }
+          this.rateHistory.push(statistics.decodedBytesMean * 8);
           if (this.rateHistory.length > STATS_HISTORY_LENGTH) this.rateHistory.shift();
           this.renderLineChart(this.rateChartElement, this.rateHistory);
-        }
-        if (this.rateAvgElement !== null && this.rateAvgElement !== undefined && statistics.decodedBytesMean !== undefined) {
-          this.rateAvgElement.textContent = formatBps(statistics.decodedBytesMean * 8) + ' avg';
         }
 
         if (this.dropsElement !== null && this.dropsElement !== undefined && statistics.dropFramesMean !== undefined) {
