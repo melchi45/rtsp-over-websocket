@@ -7,6 +7,19 @@ import type { YoutubeProbeResult } from '../types';
 const execFileAsync = promisify(execFile);
 
 const PROBE_TIMEOUT_MS = 30000;
+// yt-dlp intermittently fails against YouTube without a JS runtime available
+// (see its own "No supported JavaScript runtime could be found... YouTube
+// extraction without a JS runtime has been deprecated" warning) — confirmed
+// live: the exact same URL alternates between succeeding and failing
+// ("Command failed: ...yt-dlp -j --no-playlist ...") a few seconds apart
+// with no other change. A short retry smooths over that instead of making
+// every transient block a hard user-facing failure.
+const PROBE_RETRY_COUNT = 2;
+const PROBE_RETRY_DELAY_MS = 1500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 interface YtDlpFormat {
   height?: number | null;
@@ -64,15 +77,24 @@ export function isYtDlpVersionStale(version: string): boolean {
 }
 
 export async function probeYoutubeVideo(youtubeUrl: string): Promise<YoutubeProbeResult> {
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync(resolveYtDlpBinary(), ['-j', '--no-playlist', youtubeUrl], {
-      timeout: PROBE_TIMEOUT_MS,
-      maxBuffer: 32 * 1024 * 1024
-    }));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`yt-dlp probe failed for "${youtubeUrl}": ${message}`);
+  let stdout: string | undefined;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= PROBE_RETRY_COUNT + 1; attempt++) {
+    try {
+      ({ stdout } = await execFileAsync(resolveYtDlpBinary(), ['-j', '--no-playlist', youtubeUrl], {
+        timeout: PROBE_TIMEOUT_MS,
+        maxBuffer: 32 * 1024 * 1024
+      }));
+      lastError = undefined;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt <= PROBE_RETRY_COUNT) await sleep(PROBE_RETRY_DELAY_MS);
+    }
+  }
+  if (lastError !== undefined || stdout === undefined) {
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`yt-dlp probe failed for "${youtubeUrl}" (after ${PROBE_RETRY_COUNT + 1} attempts): ${message}`);
   }
 
   let info: YtDlpInfo;
