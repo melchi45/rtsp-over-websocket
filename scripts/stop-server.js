@@ -22,6 +22,10 @@ function pidsListeningOn(port) {
   }
 }
 
+function sleep(ms) {
+  execSync(`sleep ${ms / 1000}`);
+}
+
 const pids = Array.from(new Set([...pidsListeningOn(HTTP_PORT), ...pidsListeningOn(HTTPS_PORT)]));
 
 if (pids.length === 0) {
@@ -30,6 +34,38 @@ if (pids.length === 0) {
 }
 
 for (const pid of pids) {
-  process.kill(Number(pid), 'SIGTERM');
+  try {
+    process.kill(Number(pid), 'SIGTERM');
+  } catch {
+    // already gone
+  }
 }
+console.log(`[stop-server] sent SIGTERM to pid(s) ${pids.join(', ')} (ports ${HTTP_PORT}/${HTTPS_PORT}) — waiting for the port(s) to free up...`);
+
+// SIGTERM only requests shutdown — index.ts's handler still has to run
+// stopAllTranscodes() (killing any live ffmpeg/yt-dlp children) before the
+// port is actually released. Chained npm scripts (`stop-server.js && ...
+// node dist/server/index.js`) would otherwise race the old process and hit
+// EADDRINUSE on the new one, which is exactly the "previous server still up"
+// scenario this script exists to clean up after a failed Ctrl+C.
+const deadline = Date.now() + 5000;
+let stillListening = pids;
+while (Date.now() < deadline) {
+  stillListening = Array.from(new Set([...pidsListeningOn(HTTP_PORT), ...pidsListeningOn(HTTPS_PORT)]));
+  if (stillListening.length === 0) break;
+  sleep(200);
+}
+
+if (stillListening.length > 0) {
+  console.log(`[stop-server] pid(s) ${stillListening.join(', ')} didn't exit in time — sending SIGKILL`);
+  for (const pid of stillListening) {
+    try {
+      process.kill(Number(pid), 'SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+  sleep(200);
+}
+
 console.log(`[stop-server] stopped pid(s) ${pids.join(', ')} (ports ${HTTP_PORT}/${HTTPS_PORT})`);
