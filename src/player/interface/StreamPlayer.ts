@@ -119,7 +119,7 @@ function defaultMediaRouterFactories(): MediaRouterFactories {
 }
 
 /**
- * Ported from the legacy player’s Interface/streamPlayer.js — the top-level
+ * Ported from the legacy player’s Interface/streamPlayer — the top-level
  * per-channel facade wiring RtspClient (WebSocket RTSP signaling) +
  * RtpClient/MediaRouter (RTP depacketizing, video/audio rendering, backup)
  * into the single `control()`/`controlWorker()` command surface that

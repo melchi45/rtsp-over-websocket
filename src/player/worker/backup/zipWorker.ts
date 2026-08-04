@@ -22,7 +22,7 @@ declare const self: {
 importScripts(new URL('../../vendor/minizip-asm.js', import.meta.url).href);
 
 /**
- * Ported from the legacy player’s Worker/Backup/zipWorker.js — zips the backup
+ * Ported from the legacy player’s Worker/Backup/zipWorker — zips the backup
  * clip pieces FileMaker.ts/BackupProvider.ts stream into a Worker
  * (`whole`, an array of Uint8Array chunks) into a single password-protected
  * archive, using the vendored Minizip (minizip-asm.js) WASM build.

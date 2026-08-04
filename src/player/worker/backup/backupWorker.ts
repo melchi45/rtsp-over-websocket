@@ -23,7 +23,7 @@ declare function postMessage(message: unknown): void;
 declare function close(): void;
 
 /**
- * Ported from the legacy player’s Worker/Backup/backupWorker.js — the Worker entry
+ * Ported from the legacy player’s Worker/Backup/backupWorker — the Worker entry
  * that owns one BackupSession, streaming AVI body chunks back to
  * BackupProvider.ts as video/audio frames arrive.
  *

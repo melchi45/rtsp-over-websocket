@@ -1,4 +1,3 @@
-/** Ported from the legacy player’s Listen/Decoder/audioDecoder.js. */
 export class AudioDecoder {
   channelId = 0;
 

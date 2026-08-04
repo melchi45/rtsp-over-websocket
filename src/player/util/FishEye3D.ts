@@ -7,7 +7,7 @@ function undefinedGlobalError(name: string): ReferenceError {
 }
 
 /**
- * Ported from the legacy player’s Util/fishEye3D.js — sets up a THREE.js scene
+ * Ported from the legacy player’s Util/fishEye3D — sets up a THREE.js scene
  * that dewarps a fisheye camera feed (video element or canvas) onto a
  * hemispherical mesh, with mouse/wheel pan-tilt-zoom and a render loop.
  *

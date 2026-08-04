@@ -79,7 +79,7 @@ const SIZE_OF_BITMAP_INFO = 48;
 const SIZE_OF_WAVE_FORMAT = 40;
 
 /**
- * Ported from the legacy player’s Worker/Backup/avi_format_writer.js — the shared
+ * Ported from the legacy player’s Worker/Backup/avi_format_writer — the shared
  * AVI-container binary writer base class VideoHeader/AudioHeader/
  * AviFileWriter all build on (`inheritObject(new AviFormatWriter(), {...})`
  * in legacy; a real `extends` base class here).

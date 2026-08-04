@@ -16,7 +16,7 @@ const MAX_BUFFERING_LENGTH = 240;
 const MIN_BUFFERING_LENGTH = 6;
 
 /**
- * Ported from the legacy player’s Video/Player/Canvas/stepBufferList.js.
+ * Ported from the legacy player’s Video/Player/Canvas/stepBufferList.
  *
  * Legacy grafts these methods onto a `new BufferList()` instance via
  * `inheritObject`, but `push` here has a completely different signature than

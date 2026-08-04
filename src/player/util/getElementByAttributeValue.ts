@@ -1,4 +1,3 @@
-/** Ported from the legacy player’s Util/util.js (window.getElementByAttributeValue, ~line 845). */
 export function getElementByAttributeValue(elementType: string, attribute: string, value: unknown): Element | undefined {
   const type = elementType || '*';
   const all = document.getElementsByTagName(type);

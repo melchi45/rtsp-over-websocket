@@ -7,7 +7,7 @@ import { fromHex } from '../util/hex';
 import type { WaitingEvent, RtpStatistics } from './RtpSession';
 
 /**
- * Ported from the legacy player’s MediaSession/mediaRouter.js — the hub that owns
+ * Ported from the legacy player’s MediaSession/mediaRouter — the hub that owns
  * the active video/audio player, routes depacketized RTP session data to it,
  * and dispatches UI commands (speed/pause/resume/step/minimap/backup/...).
  *

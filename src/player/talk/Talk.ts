@@ -2,7 +2,7 @@ import { RTSPOverWebSocketError } from '../exceptions/RTSPOverWebSocketError';
 import { fromHex } from '../util/hex';
 
 /**
- * Ported from the legacy player’s Talk/Talk.js — captures microphone input via the
+ * Ported from the legacy player’s Talk/Talk — captures microphone input via the
  * Web Audio API and streams PCM chunks to a caller-supplied callback for
  * outbound audio-talk transmission.
  *

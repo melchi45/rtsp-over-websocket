@@ -14,7 +14,7 @@ export interface NetworkStateErrorEvent {
 export type VideoPlayerErrorCallback = (event: Record<string, unknown>) => void;
 
 /**
- * Ported from the legacy player’s Video/Player/videoPlayer.js.
+ * Ported from the legacy player’s Video/Player/videoPlayer.
  *
  * Legacy defines `type`/`channelId`/`playmode`/`instantplayback`/`rfps`/
  * `boxsize`/`deviceType`/`currentFrameCount`/`previousFrameCount`/`codec`/

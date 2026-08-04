@@ -1,5 +1,5 @@
 /**
- * Ported from the legacy player’s Util/util.js (BufferNode/BufferList, ~line 1450).
+ * Ported from the legacy player’s Util/util (BufferNode/BufferList, ~line 1450).
  * Only the members actually consumed elsewhere in the ported codebase so far
  * (push/pop/clear/getCurIdx) are included — pushPop/searchNodeAt/remove/
  * removeTillCurrent are unused by any file ported so far and can be added

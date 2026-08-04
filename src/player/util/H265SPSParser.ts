@@ -18,7 +18,6 @@ function reverseBits(bits: number, size: number): number {
   return parseInt(binaryString, 2);
 }
 
-/** Ported from the legacy player’s Util/h265SPSParser.js. */
 export class H265SPSParser {
   private bitCount = 0;
   private spsMap = new RTSPOverWebSocketMap<SpsValue>();

@@ -1,7 +1,7 @@
 import { RTSPOverWebSocketBaseError, type RTSPOverWebSocketErrorOptions } from './RTSPOverWebSocketBaseError';
 
 /**
- * Ported from the legacy player’s Exception/RTCPError.js.
+ * Ported from the legacy player’s Exception/RTCPError.
  *
  * NOTE: the legacy file set `error.name` to the same base-class name used
  * by every error type in the legacy hierarchy, rather than a name specific

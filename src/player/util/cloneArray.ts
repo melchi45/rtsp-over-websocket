@@ -1,5 +1,5 @@
 /**
- * Ported from the legacy player’s Util/util.js (window.cloneArray, ~line 1438).
+ * Ported from the legacy player’s Util/util (window.cloneArray, ~line 1438).
  * Legacy's implementation is generically typed-array-agnostic, but the only
  * real caller anywhere in the codebase (mediaRouter.js's backup-data path)
  * always passes a `Uint8Array` (`streamData.frameData`) — narrowed to that

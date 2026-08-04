@@ -33,7 +33,6 @@ export interface AudioBackupFileInfo {
   pos: number;
 }
 
-/** Ported from the legacy player’s Worker/Backup/audioBackup.js's private `makeAudioConfig`. */
 function makeAudioConfig(samplerate: number, channels: number): number {
   let bitcnt = 0;
 
@@ -90,7 +89,7 @@ function makeAudioConfig(samplerate: number, channels: number): number {
 }
 
 /**
- * Ported from the legacy player’s Worker/Backup/audioBackup.js (`AudioHeader`) —
+ * Ported from the legacy player’s Worker/Backup/audioBackup (`AudioHeader`) —
  * builds the AVI audio stream header/format for AAC/G.711/G.726 backup
  * audio.
  *

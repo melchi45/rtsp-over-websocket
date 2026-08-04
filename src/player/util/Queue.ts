@@ -1,4 +1,3 @@
-/** Ported from the legacy player’s Util/Queue.js (Kate Morley, CC0 1.0 Universal). */
 export class Queue<T = unknown> {
   private static readonly DEFAULT_MAX_SIZE = Math.pow(2, 53) - 1;
 

@@ -6,7 +6,7 @@ import { fromHex, decimalToHex } from '../../util/hex';
 import { Transport } from '../transport/Transport';
 
 /**
- * Ported from the legacy player’s Network/RTSPoverWebsocket/rtspClient.js.
+ * Ported from the legacy player’s Network/RTSPoverWebsocket/rtspClient.
  *
  * Console/`rtspclient_log` calls from the legacy file are not reproduced
  * (observability only, no effect on behavior — same judgment as Transport.ts).

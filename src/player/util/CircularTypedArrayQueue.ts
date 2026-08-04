@@ -1,5 +1,5 @@
 /**
- * Ported from the legacy player’s Util/CircularTypedArrayQueue.js.
+ * Ported from the legacy player’s Util/CircularTypedArrayQueue.
  *
  * Method names (enQueue/deQueue/peak/Clear) and `getLength()`'s naive
  * `this.queue.length` semantics (it does not subtract removed slots) are kept

@@ -6,7 +6,7 @@ import { SunapiClient, type SunapiClientDeviceInfo, type SunapiClientError } fro
 import { HTTP_STATUS_CODES } from './HttpStatusCode';
 
 /**
- * Ported from the legacy player’s Network/http/sunapiManager.js — a thin
+ * Ported from the legacy player’s Network/http/sunapiManager — a thin
  * promise-wrapping facade over `SunapiClient` exposing one method per SUNAPI
  * endpoint (device info, video profiles, recording search, etc).
  *

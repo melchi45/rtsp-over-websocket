@@ -7,7 +7,6 @@ export interface G726CodecInit {
   clockFreq: number;
 }
 
-/** Ported from the legacy player’s MediaSession/AudioSession/g726Session.js. */
 export class G726Session extends RtpSession {
   private bitrate = 0;
   private playback = false;

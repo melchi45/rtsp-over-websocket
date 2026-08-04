@@ -4,7 +4,7 @@ import { AudioDecoder } from './AudioDecoder';
 const OUTPIC_SIZE = 4096;
 
 /**
- * Ported from the legacy player’s Listen/Decoder/audioDecoderAAC.js — wraps the
+ * Ported from the legacy player’s Listen/Decoder/audioDecoderAAC — wraps the
  * vendored ffmpegAAC.js asm.js build (see vendor/ffmpegAAC.decoder.js) to
  * decode AAC frames to PCM on the main thread.
  *

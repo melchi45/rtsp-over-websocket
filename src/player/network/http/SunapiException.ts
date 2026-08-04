@@ -1,4 +1,3 @@
-/** Ported from the legacy player’s Network/http/sunapiException.js. */
 export class SunapiException {
   name?: string;
   message?: string;

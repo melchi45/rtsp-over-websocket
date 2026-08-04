@@ -42,7 +42,7 @@ const IDENTITY_MATRIX_4X4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0
 const BROWSER_TYPE = browserDetect();
 
 /**
- * Ported from the legacy player’s Video/Player/Canvas/webglCanvas.js (WebGLCanvas).
+ * Ported from the legacy player’s Video/Player/Canvas/webglCanvas (WebGLCanvas).
  * Generic WebGL-backed canvas that sets up a textured quad, vertex/fragment
  * shaders, and scene parameters; YUVWebGLCanvas specializes it for YUV->RGB
  * playback. Overridable hook methods (onInitWebGL/onInitShaders/

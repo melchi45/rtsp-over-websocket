@@ -1,5 +1,5 @@
 /**
- * Ported from the legacy player’s Util/util.js (window.Mean, ~line 1019).
+ * Ported from the legacy player’s Util/util (window.Mean, ~line 1019).
  * Simple running-average tracker used by videoTagPlayer.js's statistics.
  * `mean()` returns a *string* (`.toFixed(3)`) once at least one value has
  * been recorded, or the number `0` before that — a real mixed-type return

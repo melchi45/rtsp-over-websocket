@@ -21,7 +21,6 @@ export interface BufferState {
   checkBufferLength?(): void;
 }
 
-/** Ported from the legacy player’s MediaSession/VideoSession/bufferStatus.js. */
 export class InitState implements BufferState {
   constructor(private readonly manager: BufferManagerLike) {}
   isReadyToPop(): boolean {

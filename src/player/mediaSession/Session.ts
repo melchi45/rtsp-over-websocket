@@ -7,7 +7,6 @@ export interface TimeData {
 export type SessionEventName = 'text' | 'video' | 'metaImage' | 'audio' | 'rtcp' | 'statistics' | 'waiting';
 export type SessionEventCallback = (...args: unknown[]) => void;
 
-/** Ported from the legacy player’s MediaSession/session.js. */
 export class Session {
   interleavedId = 0;
   channelId = 0;

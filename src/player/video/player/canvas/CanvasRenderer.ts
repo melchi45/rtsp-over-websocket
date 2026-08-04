@@ -17,7 +17,7 @@ interface CaptureEventData {
 }
 
 /**
- * Ported from the legacy player’s Video/Player/Canvas/canvasRenderer.js's private
+ * Ported from the legacy player’s Video/Player/Canvas/canvasRenderer's private
  * `Image2DCanvas` — a plain 2D-context drawer used for the MJPEG codec path
  * (YUVWebGLCanvas handles H264/H265).
  */
@@ -50,7 +50,7 @@ class Image2DCanvas {
 type Drawer = YUVWebGLCanvas | Image2DCanvas;
 
 /**
- * Ported from the legacy player’s Video/Player/Canvas/canvasRenderer.js.
+ * Ported from the legacy player’s Video/Player/Canvas/canvasRenderer.
  *
  * `channelId`/`userPaused` are defined in legacy via `Object.defineProperty`
  * calls made on the *outer* `CanvasRenderer()` factory function's own `this`

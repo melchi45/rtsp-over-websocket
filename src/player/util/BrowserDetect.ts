@@ -1,7 +1,7 @@
 export type BrowserName = 'ie' | 'ie10' | 'ie11' | 'edge' | 'chrome' | 'safari' | 'firefox' | undefined;
 
 /**
- * Ported from the legacy player’s Util/util.js (window.BrowserDetect, ~line 1335).
+ * Ported from the legacy player’s Util/util (window.BrowserDetect, ~line 1335).
  * Reads `navigator.userAgent`/`navigator.appName`, so it only returns a
  * meaningful value in a real browser; callers running under Node (tests,
  * SSR) will simply get `undefined`, matching what the legacy code would do

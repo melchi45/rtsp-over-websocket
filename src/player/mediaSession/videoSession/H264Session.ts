@@ -18,7 +18,6 @@ const H264_NAL = {
 const PREFIX = Uint8Array.from([0x00, 0x00, 0x00, 0x01]);
 const SIZE_1_4K = Math.floor(1.4 * 1024);
 
-/** Ported from the legacy player’s MediaSession/VideoSession/h264Session.js. */
 export class H264Session extends RtpSession {
   private inputBuffer = new Uint8Array(SIZE_1_4K);
   private inputLength = 0;

@@ -1,5 +1,5 @@
 /**
- * Ported from the legacy player’s Util/util.js (window.Size, ~line 1279).
+ * Ported from the legacy player’s Util/util (window.Size, ~line 1279).
  *
  * Legacy's `Size` is written as a factory function that assigns
  * width/height/viewWidth/viewHeight onto a *freshly declared, per-call*

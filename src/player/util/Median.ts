@@ -3,7 +3,7 @@ function undefinedGlobalError(name: string): ReferenceError {
 }
 
 /**
- * Ported from the legacy player’s Util/util.js (window.Median, ~line 918) — a
+ * Ported from the legacy player’s Util/util (window.Median, ~line 918) — a
  * grab-bag of basic descriptive-statistics helpers used by videoPlayer.js's
  * `rfps` setter (mean/variance/findRangeAndCoefficient) and
  * videoTagPlayer.js (additionally median).

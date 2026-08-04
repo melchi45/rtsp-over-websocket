@@ -26,7 +26,7 @@ export interface MjpegWorkerLike {
 export type MjpegWorkerFactory = () => MjpegWorkerLike;
 
 /**
- * Ported from the legacy player’s MediaSession/VideoSession/mjpegSession.js.
+ * Ported from the legacy player’s MediaSession/VideoSession/mjpegSession.
  *
  * Debug-only logger calls are not reproduced. The RTP header fields legacy
  * computes purely for its (dropped) debug log — version/padding/extension/

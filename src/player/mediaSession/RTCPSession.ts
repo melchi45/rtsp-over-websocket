@@ -16,7 +16,7 @@ export interface SdesEntry {
 }
 
 /**
- * Ported from the legacy player’s MediaSession/rtcpSession.js.
+ * Ported from the legacy player’s MediaSession/rtcpSession.
  * Debug-only logger calls from the legacy file are not reproduced (see
  * Design doc, Layer 5 notes) — they carried no behavior, only console noise.
  */

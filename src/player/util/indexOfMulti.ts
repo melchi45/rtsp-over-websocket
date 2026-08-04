@@ -1,5 +1,5 @@
 /**
- * Ported from the legacy player’s Util/util.js (Uint8Array.prototype.indexOfMulti,
+ * Ported from the legacy player’s Util/util (Uint8Array.prototype.indexOfMulti,
  * ~line 1823). The legacy version monkey-patches Uint8Array.prototype; this
  * port is a plain function instead (no global prototype mutation).
  */

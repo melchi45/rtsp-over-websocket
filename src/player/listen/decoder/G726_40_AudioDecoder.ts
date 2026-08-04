@@ -15,7 +15,6 @@ const FITAB = [
   0x800, 0x600, 0x400, 0x200, 0x200, 0x200, 0x200, 0x200, 0, 0, 0, 0, 0
 ];
 
-/** Ported from the legacy player’s Listen/Decoder/audioDecoderG726_40.js. */
 export class G726_40_AudioDecoder extends AudioDecoder {
   private readonly commonAudioUtil = new CommonAudioUtil();
   private state: G726State = this.commonAudioUtil.g726_init_state();

@@ -5,7 +5,7 @@ import { fromHex } from '../../util/hex';
 import { HTTP_STATUS_CODES } from './HttpStatusCode';
 
 /**
- * Ported from the legacy player’s Network/http/sunapiClient.js — digest-auth REST
+ * Ported from the legacy player’s Network/http/sunapiClient — digest-auth REST
  * client used for SUNAPI (camera/NVR HTTP control) requests.
  *
  * `log(...)` calls are not reproduced (observability only, gated behind a

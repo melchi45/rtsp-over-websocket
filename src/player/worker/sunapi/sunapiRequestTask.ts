@@ -56,7 +56,7 @@ export type SunapiTaskXHRFactory = () => XMLHttpRequest;
 export type SunapiTaskPostMessageFn = (data: SunapiTaskResult) => void;
 
 /**
- * Ported from the legacy player’s Worker/sunapi/sunapiRequestTask.js — the Worker
+ * Ported from the legacy player’s Worker/sunapi/sunapiRequestTask — the Worker
  * entry SunapiRestClient.ts (Network/http) offloads each SUNAPI REST call to.
  *
  * Legacy declares module-scope state via `this.digestInfo = undefined; ...`

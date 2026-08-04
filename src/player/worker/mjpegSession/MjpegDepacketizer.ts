@@ -366,7 +366,7 @@ function ntohl(buffer: Uint8Array): number {
 }
 
 /**
- * Ported from the legacy player’s Worker/MjpegSession/mjpegDepacketizer.js — runs
+ * Ported from the legacy player’s Worker/MjpegSession/mjpegDepacketizer — runs
  * inside the MJPEG depacketize Worker (see mjpegDepacketizeWorker.ts),
  * reassembling RTP/JPEG payload fragments into full JFIF frames.
  *

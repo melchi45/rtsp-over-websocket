@@ -22,7 +22,7 @@ export type AACAudioDecoderFactory = () => AudioDecoderLike;
 const defaultAACAudioDecoderFactory: AACAudioDecoderFactory = () => new AACAudioDecoder();
 
 /**
- * Ported from the legacy player’s Listen/Renderer/audioPlayerGxx.js — decodes and
+ * Ported from the legacy player’s Listen/Renderer/audioPlayerGxx — decodes and
  * plays G.711/G.726x/AAC audio via the Web Audio API's ScriptProcessor-free
  * AudioBufferSourceNode scheduling path.
  *

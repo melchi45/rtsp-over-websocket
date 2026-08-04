@@ -1,4 +1,3 @@
-/** Ported from the legacy player’s Util/hashMap.js. */
 export class RTSPOverWebSocketMap<V = unknown> {
   private map: Record<string, V> = {};
 

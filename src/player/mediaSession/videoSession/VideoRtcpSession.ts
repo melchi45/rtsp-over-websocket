@@ -6,7 +6,7 @@ export interface PresentationTime {
 }
 
 /**
- * Ported from the legacy player’s MediaSession/VideoSession/videoRtcpSession.js
+ * Ported from the legacy player’s MediaSession/VideoSession/videoRtcpSession
  * (legacy class name `RtcpSession` — renamed to `VideoRtcpSession` here to
  * avoid a case-only collision with mediaSession/RTCPSession.ts, which is a
  * distinct, unrelated class — a discovered pre-existing naming clash,

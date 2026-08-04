@@ -42,7 +42,7 @@ const FRAME_SIZE = {
 let decoderCount = 0;
 
 /**
- * Ported from the legacy player’s Video/Player/Canvas/canvasTagPlayer.js.
+ * Ported from the legacy player’s Video/Player/Canvas/canvasTagPlayer.
  *
  * Legacy stores all state in closures over a single `_self` (the one
  * instance `CanvasTagPlayer()`'s factory ever produces) rather than on

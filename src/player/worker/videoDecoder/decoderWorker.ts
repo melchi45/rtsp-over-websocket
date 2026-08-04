@@ -1,7 +1,7 @@
 /// <reference path="../../vendor/EmscriptenModule.d.ts" />
 import { AssemblyDecoder, type AssemblyDecoderFrame } from './AssemblyDecoder';
 
-// Ported from the legacy player’s Worker/VideoDecoder/decoderWorker.js — legacy
+// Ported from the legacy player’s Worker/VideoDecoder/decoderWorker — legacy
 // pre-declares the ambient `Module` global here, before `importScripts`-ing
 // the vendored Emscripten glue (see AssemblyDecoder.ts), so `AssemblyDecoder`'s
 // constructor can assign `Module.onRuntimeInitialized` without a
@@ -44,7 +44,7 @@ const DEFAULT_THRESHOLD2 = 100;
 const DEFAULT_FRAME_RATE = 30;
 
 /**
- * Ported from the legacy player’s Worker/VideoDecoder/decoderWorker.js — the
+ * Ported from the legacy player’s Worker/VideoDecoder/decoderWorker — the
  * Worker entry that owns one AssemblyDecoder instance (H.264/H.265 WASM
  * decode) and applies the drop-frame performance heuristics: an I-frame is
  * always decoded and its decode time compared against a per-frame-rate

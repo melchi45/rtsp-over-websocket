@@ -34,7 +34,6 @@ function ulaw2linearPcm(uVal: number): number {
 
 export type G711Mime = 'PCMU' | 'PCMA';
 
-/** Ported from the legacy player’s Listen/Decoder/audioDecoderG711.js. */
 export class G711AudioDecoder extends AudioDecoder {
   mime: G711Mime = 'PCMU';
 

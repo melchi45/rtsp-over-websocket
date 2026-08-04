@@ -26,7 +26,7 @@ export interface RtpStatistics {
 }
 
 /**
- * Ported from the legacy player’s MediaSession/rtpSession.js.
+ * Ported from the legacy player’s MediaSession/rtpSession.
  * Debug-only logger calls are not reproduced (see Design doc, Layer 5 notes).
  * The large block of commented-out `addPacket`/mediaQueue code in the legacy
  * file was already dead and is dropped.

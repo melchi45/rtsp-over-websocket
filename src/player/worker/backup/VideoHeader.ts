@@ -22,7 +22,7 @@ export interface VideoBackupFileInfo {
 }
 
 /**
- * Ported from the legacy player’s Worker/Backup/videoBackup.js (`VideoHeader`) —
+ * Ported from the legacy player’s Worker/Backup/videoBackup (`VideoHeader`) —
  * builds the AVI video stream header/format and tracks per-frame index
  * entries (including the "dummy frame" padding used to keep variable frame
  * rate video in sync with a constant-rate AVI timeline).

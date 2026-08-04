@@ -1,4 +1,3 @@
-/** Ported from the legacy player’s Util/util.js (window.IntervalTimer, ~line 1040). */
 export class IntervalTimer {
   private timerId?: ReturnType<typeof setInterval>;
   private startTime = 0;

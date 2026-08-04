@@ -1,7 +1,7 @@
 import type { Size } from '../../../../util/Size';
 
 /**
- * Ported from the legacy player’s Video/Player/Canvas/webglCanvas.js (Script,
+ * Ported from the legacy player’s Video/Player/Canvas/webglCanvas (Script,
  * Shader, Program, Texture). `Script.createFromElementId` and `ImageTexture`
  * are dropped: grep across the whole the legacy player tree confirms neither is
  * ever called/instantiated — only `Script.createFromSource` and `Texture`

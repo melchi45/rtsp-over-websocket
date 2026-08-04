@@ -31,7 +31,6 @@ function lin2Mulaw(pcmValIn: number): number {
   return uval ^ mask;
 }
 
-/** Ported from the legacy player’s Talk/Encoder/audioEncoderG711.js. */
 export class G711AudioEncoder {
   private localSampleRate = 48000;
   private remainBuffer: Float32Array | null = null;

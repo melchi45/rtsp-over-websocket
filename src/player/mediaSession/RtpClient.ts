@@ -39,7 +39,7 @@ function isRtpSession(session: AnySession): session is RtpSession {
 }
 
 /**
- * Ported from the legacy player’s MediaSession/rtpClient.js — creates and manages
+ * Ported from the legacy player’s MediaSession/rtpClient — creates and manages
  * the per-track RTP/RTCP session objects for one channel, and routes
  * incoming interleaved RTP data to the right one.
  *

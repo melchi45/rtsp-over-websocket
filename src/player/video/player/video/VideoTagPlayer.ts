@@ -101,7 +101,7 @@ interface AudioTranscoderMessage {
 }
 
 /**
- * Ported from the legacy player’s Video/Player/Video/videoTagPlayer.js.
+ * Ported from the legacy player’s Video/Player/Video/videoTagPlayer.
  *
  * The single largest, most stateful file in this migration: a `<video>`
  * tag driven by MediaSource Extensions, fed fragmented-MP4 segments built

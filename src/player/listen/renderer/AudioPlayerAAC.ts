@@ -3,7 +3,7 @@ import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError'
 import { fromHex } from '../../util/hex';
 
 /**
- * Ported from the legacy player’s Listen/Renderer/audioPlayerAAC.js — plays AAC
+ * Ported from the legacy player’s Listen/Renderer/audioPlayerAAC — plays AAC
  * audio via a hidden `<audio>` element backed by a MediaSource Extensions
  * `SourceBuffer`.
  *

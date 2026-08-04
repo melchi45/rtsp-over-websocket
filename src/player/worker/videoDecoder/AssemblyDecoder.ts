@@ -10,7 +10,7 @@ export type DecoderReadyCallback = () => void;
 declare function importScripts(...urls: string[]): void;
 
 /**
- * Ported from the legacy player’s Worker/VideoDecoder/assemblyDecoder.js — wraps
+ * Ported from the legacy player’s Worker/VideoDecoder/assemblyDecoder — wraps
  * the vendored ffmpeg.js/ffmpeg.wasm WASM build (see vendor/ffmpeg.js) to
  * decode H.264/H.265 video frames inside the decoder Worker
  * (see decoderWorker.ts).

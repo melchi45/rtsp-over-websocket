@@ -33,7 +33,7 @@ function decimalToHex(dec: number, padding = 2): string {
 }
 
 /**
- * Ported from the legacy player’s Util/digestGenerator.js (HTTP Digest auth per RFC 2617).
+ * Ported from the legacy player’s Util/digestGenerator (HTTP Digest auth per RFC 2617).
  * `makeNonceCount()` and the unused `infoWWWAuthenticate` parameter of `Digest()`
  * were dead code in the legacy file (defined/declared but never exercised) and
  * are dropped here.

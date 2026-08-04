@@ -1,7 +1,7 @@
 /// <reference path="../../vendor/EmscriptenModule.d.ts" />
 import { AssemblyTranscoder, type TranscoderCodecInfo } from './AssemblyTranscoder';
 
-// Ported from the legacy player’s Worker/AudioTranscoder/audiotranscoderWorker.js —
+// Ported from the legacy player’s Worker/AudioTranscoder/audiotranscoderWorker —
 // legacy pre-declares the ambient `Module` global here, before
 // `importScripts`-ing the vendored Emscripten glue (see AssemblyTranscoder.ts),
 // so `AssemblyTranscoder`'s constructor can assign `Module.onRuntimeInitialized`
@@ -24,7 +24,7 @@ declare function addEventListener(type: 'message', listener: (event: MessageEven
 declare function postMessage(message: unknown, transfer?: Transferable[]): void;
 
 /**
- * Ported from the legacy player’s Worker/AudioTranscoder/audiotranscoderWorker.js —
+ * Ported from the legacy player’s Worker/AudioTranscoder/audiotranscoderWorker —
  * the Worker entry that owns one AssemblyTranscoder instance, transcoding
  * backup-recording G.711/G.726 audio to AAC.
  *

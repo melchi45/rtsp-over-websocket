@@ -4,7 +4,7 @@ import { fromHex } from '../util/hex';
 export type ZipWorkerFactory = () => Worker;
 
 /**
- * Ported from the legacy player’s Backup/FileMaker.js — assembles AVI/ZIP backup
+ * Ported from the legacy player’s Backup/FileMaker — assembles AVI/ZIP backup
  * files from the pieces backupWorker.js streams in (header/body/tailHeader/
  * tailBody), then saves via file-saver.
  */

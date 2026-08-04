@@ -12,7 +12,7 @@ declare function importScripts(...urls: string[]): void;
 const OUTPUT_BUFFER_SIZE = 4096;
 
 /**
- * Ported from the legacy player’s Worker/AudioTranscoder/assemblyTranscoder.js —
+ * Ported from the legacy player’s Worker/AudioTranscoder/assemblyTranscoder —
  * wraps the vendored vendor/ffmpegAAC.transcoder.js (Worker/wasm build; NOT
  * the same file as the main-thread asm.js build vendored for
  * AACAudioDecoder.ts) to transcode G.711/G.726 backup audio to AAC inside

@@ -14,7 +14,7 @@ interface FastXmlParserLike {
 }
 
 /**
- * Ported from the legacy player’s Util/metaDataParser.js.
+ * Ported from the legacy player’s Util/metaDataParser.
  *
  * `window.parser` (the optional `external-lib/fast-xml-parser` CDN script
  * the legacy demo page loaded) is read defensively here rather than

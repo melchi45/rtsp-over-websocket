@@ -1,4 +1,3 @@
-/** Ported from the legacy player’s Network/http/httpStatusCode.js. */
 export const HTTP_STATUS_CODES: Record<string, string> = {
   '100': 'Continue',
   '101': 'Switching Protocols',

@@ -35,7 +35,6 @@ export interface PopFrameInfo {
   };
 }
 
-/** Ported from the legacy player’s MediaSession/VideoSession/playbackBufferManager.js. */
 export class PlaybackBufferManager {
   channelId = 0;
   private bufferStatus: BufferState = new InitState(this);

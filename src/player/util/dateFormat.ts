@@ -3,7 +3,7 @@ function pad2(n: number): string {
 }
 
 /**
- * Ported from the legacy player’s Util/util.js's `Date.prototype.YYYYMMDDHHMMSS`
+ * Ported from the legacy player’s Util/util's `Date.prototype.YYYYMMDDHHMMSS`
  * (~line 1124) — a main-thread-only Date prototype patch, ported as a
  * standalone function taking an explicit `date` argument instead (no global
  * prototype pollution). Formats in the LOCAL timezone with no GMT/offset

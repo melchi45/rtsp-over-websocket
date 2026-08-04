@@ -1,5 +1,5 @@
 /**
- * Ported from the legacy player’s Util/audioUtil.js — G.72x ADPCM helper routines
+ * Ported from the legacy player’s Util/audioUtil — G.72x ADPCM helper routines
  * shared by the G.726 audio decoders. Bitwise arithmetic is copied verbatim;
  * this is reference DSP code where the exact operations (not just the
  * mathematical intent) are the contract.

@@ -49,7 +49,7 @@ interface RTSPOverWebSocketErrorLike extends Error {
 }
 
 /**
- * Ported from the legacy player’s Network/transport/transport.js — WebSocket
+ * Ported from the legacy player’s Network/transport/transport — WebSocket
  * transport for RTSP-over-WebSocket, demultiplexing interleaved RTSP text
  * responses from RTP/RTCP binary packets on the same socket.
  *

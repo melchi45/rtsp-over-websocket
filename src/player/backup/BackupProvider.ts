@@ -27,7 +27,7 @@ export interface BackupInitData {
 let sharedFileMaker: FileMaker | null = null;
 
 /**
- * Ported from the legacy player’s Backup/backupProvider.js.
+ * Ported from the legacy player’s Backup/backupProvider.
  * `backupWorkerMessage` is assigned directly as `backupWorker.onmessage =
  * this.backupWorkerMessage` in legacy (an unbound reference) — but its body
  * only reads closure state (fileMaker/callback/timestamp_callback), never

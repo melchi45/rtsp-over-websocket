@@ -2,7 +2,7 @@ import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError'
 import { fromHex } from '../../util/hex';
 
 /**
- * Ported from the legacy player’s Network/http/sunapiRestClient.js — a digest-auth
+ * Ported from the legacy player’s Network/http/sunapiRestClient — a digest-auth
  * REST client that offloads each request to a dedicated Web Worker
  * (`sunapiRequestTask.js`, not yet ported — Layer 10).
  *

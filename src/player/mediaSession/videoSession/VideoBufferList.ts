@@ -21,7 +21,6 @@ export class VideoBufferNode {
 
 const DEFAULT_BUFFERING = 240;
 
-/** Ported from the legacy player’s MediaSession/VideoSession/videoBuffer.js. */
 export class VideoBufferList {
   private length = 0;
   private head: VideoBufferNode | null = null;

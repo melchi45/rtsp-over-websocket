@@ -6,7 +6,6 @@ import { G726_40_AudioDecoder } from './G726_40_AudioDecoder';
 type G726Bits = 16 | 24 | 32 | 40;
 type G726Decoder = G726_16_AudioDecoder | G726_24_AudioDecoder | G726_32_AudioDecoder | G726_40_AudioDecoder;
 
-/** Ported from the legacy player’s Listen/Decoder/audioDecoderG726x.js. */
 export class G726xAudioDecoder {
   private decoder: G726Decoder | null = null;
 

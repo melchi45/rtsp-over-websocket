@@ -1,7 +1,7 @@
 /**
  * Shared construction logic for this library's error hierarchy.
  *
- * Ported from the legacy player’s Exception/{RTSPOverWebSocketError,AuthError,RTCPError,RTSPError,SunapiError}.js,
+ * Ported from the legacy player’s Exception/{RTSPOverWebSocketError,AuthError,RTCPError,RTSPError,SunapiError},
  * which were five independently copy-pasted IIFEs implementing identical
  * `arguments`-based construction logic. The legacy constructors also support a
  * variadic `(messageTemplate, ...interpolationArgs)` calling form, but a

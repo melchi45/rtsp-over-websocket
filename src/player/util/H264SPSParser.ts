@@ -10,7 +10,6 @@ export interface SpsSizeInfo {
 
 type SpsValue = number | number[] | undefined;
 
-/** Ported from the legacy player’s Util/h264SPSParser.js. */
 export class H264SPSParser {
   private bitCount = 0;
   private spsMap = new RTSPOverWebSocketMap<SpsValue>();

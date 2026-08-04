@@ -1,7 +1,7 @@
 import { RtspClient } from './RtspClient';
 
 /**
- * Ported from the legacy player’s Network/RTSPoverWebsocket/rtspClientManager.js.
+ * Ported from the legacy player’s Network/RTSPoverWebsocket/rtspClientManager.
  *
  * NOTE: confirmed unused — no file anywhere in the legacy player references
  * `RtspClientManager`/`RtspClientMgr`; the custom element constructs

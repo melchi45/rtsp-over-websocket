@@ -6,7 +6,6 @@ const DQLNTAB = [-2048, 135, 273, 373, 373, 273, 135, -2048];
 const WITAB = [-128, 960, 4384, 18624, 18624, 4384, 960, -128];
 const FITAB = [0, 0x200, 0x400, 0xe00, 0xe00, 0x400, 0x200, 0];
 
-/** Ported from the legacy player’s Listen/Decoder/audioDecoderG726_24.js. */
 export class G726_24_AudioDecoder extends AudioDecoder {
   private readonly commonAudioUtil = new CommonAudioUtil();
   private state: G726State = this.commonAudioUtil.g726_init_state();

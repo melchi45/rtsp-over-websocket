@@ -38,7 +38,7 @@ const FRAGMENT_SHADER_SCRIPT: ShaderScript = createShaderScript(
 );
 
 /**
- * Ported from the legacy player’s Video/Player/Canvas/webglCanvas.js (YUVWebGLCanvas).
+ * Ported from the legacy player’s Video/Player/Canvas/webglCanvas (YUVWebGLCanvas).
  * Specializes WebGLCanvas for YUV420P planar frame data (3 planes bound as
  * separate textures, converted to RGB in the fragment shader).
  */

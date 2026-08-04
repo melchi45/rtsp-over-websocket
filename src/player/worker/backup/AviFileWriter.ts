@@ -3,7 +3,7 @@ import { VideoHeader, type VideoBackupFrame, type VideoBackupFileInfo } from './
 import { AudioHeader, type AudioBackupFrame, type AudioBackupFileInfo } from './AudioHeader';
 
 /**
- * Ported from the legacy player’s Worker/Backup/avi_file_writer.js — the top-level
+ * Ported from the legacy player’s Worker/Backup/avi_file_writer — the top-level
  * AVI writer backupWorker.ts drives directly, delegating per-stream-type
  * (video/audio) work to a VideoHeader/AudioHeader pair.
  *

@@ -139,7 +139,7 @@ function resolveStatus(statusCode: number | string): WebsocketStatus {
 }
 
 /**
- * Ported from the legacy player’s Network/websocketStatusCode.js.
+ * Ported from the legacy player’s Network/websocketStatusCode.
  *
  * NOTE: the legacy `case 1004:` branch reads `StatusCode.Reserved1004`
  * (missing underscore) — a dead key that resolves to `undefined`, so code

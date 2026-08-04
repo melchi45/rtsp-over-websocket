@@ -4,7 +4,6 @@ import { RTSPOverWebSocketError } from '../../exceptions';
 
 const SIZE_1_4K = Math.floor(1.4 * 1024);
 
-/** Ported from the legacy player’s MediaSession/TextSession/metaSession.js. */
 export class MetaSession extends RtpSession {
   private inputBuffer = new Uint8Array(SIZE_1_4K);
   private inputLength = 0;

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 /**
- * Ported from the legacy player’s Util/fishEye3D_multi.js — a cylindrical-panorama
+ * Ported from the legacy player’s Util/fishEye3D_multi — a cylindrical-panorama
  * variant of Fisheye3D.ts for a multi-camera stitched view, rendered into a
  * fixed `#mi-full-camera` DOM element.
  *

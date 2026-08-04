@@ -96,7 +96,7 @@ export interface BackupSendCallback {
 }
 
 /**
- * Ported from the legacy player’s Worker/Backup/backupWorker.js (`BackupSession`)
+ * Ported from the legacy player’s Worker/Backup/backupWorker (`BackupSession`)
  * — drives an AviFileWriter across incoming video/audio frames, streaming
  * out AVI body chunks via `sendMessage`, and handling max-size/duration
  * triggered file splits or session termination.

@@ -109,7 +109,7 @@ const BY_VALUE: Record<number, RtspStatus> = Object.fromEntries(
 );
 
 /**
- * Ported from the legacy player’s Network/rtspStatusCode.js.
+ * Ported from the legacy player’s Network/rtspStatusCode.
  *
  * The legacy implementation assigns `Constructor.prototype.status = ...`
  * rather than `this.status = ...`, but `Constructor` is a function declared

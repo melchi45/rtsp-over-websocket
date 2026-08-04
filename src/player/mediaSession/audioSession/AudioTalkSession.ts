@@ -10,7 +10,6 @@ function intToByteArrayHtoN(valueIn: number, len: number, bytearray: Uint8Array,
   }
 }
 
-/** Ported from the legacy player’s MediaSession/AudioSession/audioTalkSession.js. */
 export class AudioTalkSession extends RtpSession {
   private readonly rtpHeaderSize = 12;
   private readonly rtspHeaderSize = 4;

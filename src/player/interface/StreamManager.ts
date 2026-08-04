@@ -19,7 +19,7 @@ function computeId(info: StreamLookupInfo): unknown {
 }
 
 /**
- * Ported from the legacy player’s Interface/streamManager.js.
+ * Ported from the legacy player’s Interface/streamManager.
  *
  * Legacy builds `StreamManager` as `var StreamManager = (function () { ...
  * function Constructor() {}; Constructor.prototype = {...}; return
