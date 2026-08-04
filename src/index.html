@@ -1770,6 +1770,49 @@
           }
         }
 
+        // Populates the Video/Audio/Connection Info fields with the
+        // *running* session's actual settings, once per session id (not on
+        // every poll tick — pollSession() re-runs renderSessionStatus()
+        // every 1-3s while live, and re-fetching/re-populating that often
+        // would fight any edits made in between for preparing the *next*
+        // session). Resolution's options are probe-dependent (unlike the
+        // fixed video/audio codec <select>s), so this re-probes the running
+        // session's own URL to rebuild that dropdown correctly before
+        // setting its value — same request a manual Probe click would make.
+        var reflectedSessionId = null;
+        function reflectRunningSessionSettings(s) {
+          if (reflectedSessionId === s.id) return;
+          reflectedSessionId = s.id;
+
+          ytUrlInput.value = s.request.youtubeUrl;
+          document.getElementById('yt-channel').value = String(s.channel + 1);
+          ytUsernameInput.value = s.request.username;
+          form.username.value = s.request.username;
+          videoCodecSelect.value = s.request.videoCodec;
+          audioCodecSelect.value = s.request.audioCodec;
+          updateAudioBitrateOptions();
+          audioBitrateSelect.value = String(s.request.audioBitrateKbps);
+
+          probeResultEl.textContent = "Loading the running session's resolution options...";
+          apiFetch('/api/youtube/probe?url=' + encodeURIComponent(s.request.youtubeUrl))
+            .then(function (probe) {
+              lastProbe = probe;
+              probeResultEl.textContent = '"' + probe.title + '" · duration ' + formatDuration(probe.durationSec) + ' · max resolution ' + probe.maxHeight + 'p';
+              resolutionSelect.innerHTML = '';
+              probe.availableResolutions.forEach(function (r) {
+                var opt = document.createElement('option');
+                opt.value = String(r.height);
+                opt.textContent = r.label + ' (' + r.width + 'x' + r.height + ')';
+                resolutionSelect.appendChild(opt);
+              });
+              resolutionSelect.value = String(s.request.resolutionHeight);
+              updateTranscodingSettingsAvailability();
+            })
+            .catch(function (err) {
+              console.warn('[server-panel] failed to reflect running session settings:', err.message);
+            });
+        }
+
         function renderSessionStatus() {
           if (!currentSession) {
             sessionStatusEl.innerHTML = 'No session';
@@ -1778,6 +1821,7 @@
             btnRestartSession.disabled = true;
             btnUseInPlayer.disabled = true;
             currentTranscodingUrlEl.hidden = true;
+            reflectedSessionId = null;
             updateTranscodingSettingsAvailability();
             return;
           }
@@ -1791,6 +1835,9 @@
           currentTranscodingUrlEl.hidden = !running;
           if (running) {
             currentTranscodingUrlEl.textContent = 'Currently transcoding: ' + s.request.youtubeUrl + ' (channel ' + (s.channel + 1) + ', ' + s.status + ')';
+            reflectRunningSessionSettings(s);
+          } else {
+            reflectedSessionId = null;
           }
           var parts =
             '<span class="badge ' +
