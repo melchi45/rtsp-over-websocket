@@ -179,7 +179,14 @@ export const STATISTICS_SPAN_STYLE =
   '.statistics .accent-amber{ color: #FFB454; }\r\n' +
   '.statistics .accent-blue{ color: #6EA8FF; }\r\n' +
   '.statistics .accent-pink{ color: #FF6FB5; }\r\n' +
-  '.statistics .accent-slate{ color: #9AA7B4; }';
+  '.statistics .accent-slate{ color: #9AA7B4; }\r\n' +
+  '.statistics .stat-values-sm{\r\n' +
+  'font-size: 9px;\r\n' +
+  'color: #9AA7B4;\r\n' +
+  '}\r\n' +
+  '.statistics .stat-values-sm .stat-value:last-child{\r\n' +
+  'font-size: 9px;\r\n' +
+  '}';
 
 /** Rolling-history "intensity graph" (bar chart, e.g. received bitrate) and
  * "line chart" (e.g. buffer/latency) mini-visualizations added to the
@@ -217,6 +224,14 @@ export const STATISTICS_GRAPH_STYLE =
   'stroke-linecap: round;\r\n' +
   '}\r\n' +
   '.statistics .stat-chart.chart-mint polyline{ stroke: #5FDE9A; }\r\n' +
+  '.statistics .stat-chart.chart-amber polyline{ stroke: #FFB454; }\r\n' +
+  '.statistics .stat-graph-column{\r\n' +
+  'display: flex;\r\n' +
+  'flex-direction: column;\r\n' +
+  'row-gap: 2px;\r\n' +
+  'overflow: visible;\r\n' +
+  'white-space: normal;\r\n' +
+  '}\r\n' +
   '.statistics .network-dot{\r\n' +
   'width: 8px;\r\n' +
   'height: 8px;\r\n' +

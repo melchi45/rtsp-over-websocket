@@ -162,7 +162,7 @@ export class RTSPOverWebSocket extends HTMLElement {
   bufferGraphElement?: HTMLElement | null;
   videoRtpGraphElement?: HTMLElement | null;
   audioRtpGraphElement?: HTMLElement | null;
-  rateGraphElement?: HTMLElement | null;
+  rateChartElement?: SVGPolylineElement | null;
   dropsGraphElement?: HTMLElement | null;
   private readonly fpsHistory: number[] = [];
   private readonly bufferHistory: number[] = [];
@@ -2373,23 +2373,36 @@ export class RTSPOverWebSocket extends HTMLElement {
       framesElement.appendChild(framesLabelElement);
       framesElement.appendChild(framesSpanElement);
 
+      // avg/Total are small text stacked above a line chart of the same
+      // avg-bitrate history (renderLineChart(), like FPS's chart) rather
+      // than inline stat-values next to a bar graph like the other rows —
+      // requested explicitly, so this row's internal layout is a column
+      // (stat-graph-column), not the shared row flex the label/value
+      // pairs elsewhere use.
       const rateElement = document.createElement('div');
       const rateLabelElement = document.createElement('span');
       rateLabelElement.innerText = 'Rate';
       rateLabelElement.className = 'stat-label accent-amber';
+      const rateContentElement = document.createElement('span');
+      rateContentElement.className = 'stat-value stat-graph-column';
       const rateValuesElement = document.createElement('span');
-      rateValuesElement.className = 'stat-values';
+      rateValuesElement.className = 'stat-values stat-values-sm';
       const rateAvgSpanElement = document.createElement('span');
       rateAvgSpanElement.className = 'stat-value';
       const rateTotalSpanElement = document.createElement('span');
       rateTotalSpanElement.className = 'stat-value';
       rateValuesElement.appendChild(rateAvgSpanElement);
       rateValuesElement.appendChild(rateTotalSpanElement);
+      const rateChartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      rateChartSvg.setAttribute('class', 'stat-chart chart-amber');
+      rateChartSvg.setAttribute('viewBox', '0 0 100 20');
+      rateChartSvg.setAttribute('preserveAspectRatio', 'none');
+      const rateChartPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      rateChartSvg.appendChild(rateChartPolyline);
+      rateContentElement.appendChild(rateValuesElement);
+      rateContentElement.appendChild(rateChartSvg);
       rateElement.appendChild(rateLabelElement);
-      rateElement.appendChild(rateValuesElement);
-      const rateGraphElement = document.createElement('span');
-      rateGraphElement.className = 'stat-graph';
-      rateElement.appendChild(rateGraphElement);
+      rateElement.appendChild(rateContentElement);
 
       const dropsElement = document.createElement('div');
       const dropsLabelElement = document.createElement('span');
@@ -2583,7 +2596,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.bufferGraphElement = bufferGraphElement;
       this.videoRtpGraphElement = videoRtpGraphElement;
       this.audioRtpGraphElement = audioRtpGraphElement;
-      this.rateGraphElement = rateGraphElement;
+      this.rateChartElement = rateChartPolyline;
       this.dropsGraphElement = dropsGraphElement;
       this.applyStatisticsNetworkState();
     } else {
@@ -3445,7 +3458,7 @@ export class RTSPOverWebSocket extends HTMLElement {
           }
           this.rateHistory.push(statistics.decodedBytesDecodedPerSec * 8);
           if (this.rateHistory.length > STATS_HISTORY_LENGTH) this.rateHistory.shift();
-          this.renderBarGraph(this.rateGraphElement, this.rateHistory);
+          this.renderLineChart(this.rateChartElement, this.rateHistory);
         }
         if (this.rateAvgElement !== null && this.rateAvgElement !== undefined && statistics.decodedBytesMean !== undefined) {
           this.rateAvgElement.textContent = formatBps(statistics.decodedBytesMean * 8) + ' avg';
