@@ -2345,24 +2345,30 @@ export class RTSPOverWebSocket extends HTMLElement {
       codecElement.appendChild(codecLabelElement);
       codecElement.appendChild(codecValuesElement);
 
+      // Text on top, line chart below — same position as Drops/Latency's
+      // graphs, just a line chart (fixed 0 baseline, see renderLineChart())
+      // instead of an intensity graph.
       const frameElement = document.createElement('div');
       const frameLabelElement = document.createElement('span');
       frameLabelElement.innerText = 'FPS';
       frameLabelElement.className = 'stat-label accent-mint';
+      const frameContentElement = document.createElement('span');
+      frameContentElement.className = 'stat-value stat-graph-column';
       const frameSpanElement = document.createElement('span');
       frameSpanElement.className = 'stat-value';
-      frameElement.appendChild(frameLabelElement);
-      frameElement.appendChild(frameSpanElement);
+      frameContentElement.appendChild(frameSpanElement);
       // Line chart of recent decoded-fps samples — see
       // onRTSPOverWebSocketStatistics()'s 'fps' case (pushes into
-      // fpsHistory) and renderFpsChart().
+      // fpsHistory) and renderLineChart().
       const fpsChartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      fpsChartSvg.setAttribute('class', 'stat-chart chart-mint');
+      fpsChartSvg.setAttribute('class', 'stat-chart chart-mint stat-chart-sm');
       fpsChartSvg.setAttribute('viewBox', '0 0 100 20');
       fpsChartSvg.setAttribute('preserveAspectRatio', 'none');
       const fpsChartPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
       fpsChartSvg.appendChild(fpsChartPolyline);
-      frameElement.appendChild(fpsChartSvg);
+      frameContentElement.appendChild(fpsChartSvg);
+      frameElement.appendChild(frameLabelElement);
+      frameElement.appendChild(frameContentElement);
 
       const framesElement = document.createElement('div');
       const framesLabelElement = document.createElement('span');

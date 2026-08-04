@@ -52,12 +52,12 @@ export const STATISTICS_STYLE =
   'border-radius: 10px;\r\n' +
   'box-shadow: 0 4px 16px rgba(0,0,0,0.35);\r\n' +
   'color: #E8EAED;\r\n' +
-  'padding: 10px 14px;\r\n' +
+  'padding: 6px 10px;\r\n' +
   'font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;\r\n' +
-  'font-size: 11px;\r\n' +
-  'line-height: 1.7;\r\n' +
-  'min-width: 22em;\r\n' +
-  'max-width: 34em;\r\n' +
+  'font-size: 10px;\r\n' +
+  'line-height: 1.3;\r\n' +
+  'min-width: 18em;\r\n' +
+  'max-width: 26em;\r\n' +
   '}';
 
 export const STATISTICS_DIV_STYLE =
@@ -65,7 +65,7 @@ export const STATISTICS_DIV_STYLE =
   'border: 0px;\r\n' +
   'border-bottom: 1px solid rgba(255,255,255,0.06);\r\n' +
   'margin: 0px;\r\n' +
-  'padding: 3px 0px;\r\n' +
+  'padding: 2px 0px;\r\n' +
   'background: transparent;\r\n' +
   'font-family: inherit;\r\n' +
   'border-radius: 0px;\r\n' +
@@ -73,9 +73,9 @@ export const STATISTICS_DIV_STYLE =
   'z-index: auto;\r\n' +
   'display: flex;\r\n' +
   'align-items: center;\r\n' +
-  'column-gap: 14px;\r\n' +
+  'column-gap: 10px;\r\n' +
   'min-width: 0;\r\n' +
-  'min-height: 22px;\r\n' +
+  'min-height: 16px;\r\n' +
   '}\r\n' +
   '.statistics div:last-child{\r\n' +
   'border-bottom: none;\r\n' +
@@ -92,11 +92,11 @@ export const STATISTICS_DATA_STYLE =
   'border-radius: 10px;\r\n' +
   'box-shadow: 0 4px 16px rgba(0,0,0,0.35);\r\n' +
   'color: #E8EAED;\r\n' +
-  'padding: 6px 14px;\r\n' +
+  'padding: 4px 10px;\r\n' +
   'font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;\r\n' +
-  'font-size: 11px;\r\n' +
-  'min-width: 22em;\r\n' +
-  'max-width: 34em;\r\n' +
+  'font-size: 10px;\r\n' +
+  'min-width: 18em;\r\n' +
+  'max-width: 26em;\r\n' +
   '}\r\n' +
   '.statistics-data .statistics-data-toggle{\r\n' +
   'display: flex;\r\n' +
@@ -128,7 +128,7 @@ export const STATISTICS_SPAN_STYLE =
   'margin: 0px;\r\n' +
   'padding: 0px;\r\n' +
   'background: transparent;\r\n' +
-  'font-size: 11px;\r\n' +
+  'font-size: 10px;\r\n' +
   'font-family: inherit;\r\n' +
   'text-align: right;\r\n' +
   'border-radius: 0px;\r\n' +
@@ -140,7 +140,7 @@ export const STATISTICS_SPAN_STYLE =
   '}\r\n' +
   '.statistics .stat-label{\r\n' +
   'flex: 0 0 auto;\r\n' +
-  'min-width: 70px;\r\n' +
+  'min-width: 60px;\r\n' +
   'text-align: left;\r\n' +
   'font-weight: 600;\r\n' +
   'letter-spacing: 0.2px;\r\n' +
@@ -199,7 +199,7 @@ export const STATISTICS_GRAPH_STYLE =
   'display: flex;\r\n' +
   'align-items: stretch;\r\n' +
   'flex: 1 1 auto;\r\n' +
-  'height: 20px;\r\n' +
+  'height: 14px;\r\n' +
   'gap: 0;\r\n' +
   '}\r\n' +
   // Intensity graph: every cell is the same full-height rectangle — value
@@ -216,10 +216,11 @@ export const STATISTICS_GRAPH_STYLE =
   '}\r\n' +
   '.statistics .stat-chart{\r\n' +
   'flex: 1 1 auto;\r\n' +
-  'height: 20px;\r\n' +
+  'height: 14px;\r\n' +
   'display: block;\r\n' +
   'overflow: visible;\r\n' +
   '}\r\n' +
+  '.statistics .stat-chart.stat-chart-sm{ height: 10px; }\r\n' +
   '.statistics .stat-chart polyline{\r\n' +
   'fill: none;\r\n' +
   'stroke: #FF6FB5;\r\n' +
@@ -240,7 +241,7 @@ export const STATISTICS_GRAPH_STYLE =
   // Smaller intensity graph for rows where the graph sits below the text
   // rather than being the row's primary content (Drops/Latency, per
   // explicit request) — same cells/rendering, just a shorter strip.
-  '.statistics .stat-graph-sm{ height: 8px; }\r\n' +
+  '.statistics .stat-graph-sm{ height: 6px; }\r\n' +
   '.statistics .network-dot{\r\n' +
   'width: 8px;\r\n' +
   'height: 8px;\r\n' +
