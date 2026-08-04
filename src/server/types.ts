@@ -78,4 +78,10 @@ export interface Session {
 
 export interface PublicSession extends Omit<Session, 'request'> {
   request: Omit<CreateSessionRequest, 'password'>;
+  /** Whether this session's ffmpeg child process is actually alive right
+   * now (transcodeSession.ts's isRunning()) — distinct from `status`:
+   * 'starting' covers the async yt-dlp-resolve-then-spawn window before
+   * ffmpeg exists yet, and 'live'/'failed' can both lag behind an ffmpeg
+   * process exiting until the next status poll notices. */
+  isRunning: boolean;
 }

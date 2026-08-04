@@ -2,7 +2,7 @@ import { Router } from 'express';
 import * as sessionStore from '../services/sessionStore';
 import { getAudioEncoder, getVideoEncoder } from '../services/codecCapabilities';
 import { probeYoutubeVideo } from '../services/youtubeProbe';
-import { startTranscode, stopTranscode } from '../services/transcodeSession';
+import { startTranscode, stopTranscode, isRunning } from '../services/transcodeSession';
 import { RESOLUTION_LADDER } from '../types';
 import type { AudioCodec, CreateSessionRequest, VideoCodec } from '../types';
 
@@ -101,7 +101,9 @@ export function buildSessionRouter(): Router {
     }
 
     const session = sessionStore.createSession(request, probe, channel);
-    res.status(201).json(sessionStore.toPublicSession(session));
+    // startTranscode() below hasn't run yet at this point (fire-and-forget,
+    // after the response is sent) — ffmpeg can't be running yet either way.
+    res.status(201).json(sessionStore.toPublicSession(session, false));
 
     startTranscode(session).catch((error: unknown) => {
       sessionStore.updateStatus(session.id, 'failed', error instanceof Error ? error.message : String(error));
@@ -109,7 +111,7 @@ export function buildSessionRouter(): Router {
   });
 
   router.get('/', (_req, res) => {
-    res.json(sessionStore.listSessions().map(sessionStore.toPublicSession));
+    res.json(sessionStore.listSessions().map((session) => sessionStore.toPublicSession(session, isRunning(session.id))));
   });
 
   router.get('/:id', (req, res) => {
@@ -118,7 +120,7 @@ export function buildSessionRouter(): Router {
       res.status(404).json({ error: 'session not found' });
       return;
     }
-    res.json(sessionStore.toPublicSession(session));
+    res.json(sessionStore.toPublicSession(session, isRunning(session.id)));
   });
 
   router.delete('/:id', (req, res) => {

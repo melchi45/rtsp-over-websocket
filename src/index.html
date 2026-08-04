@@ -1616,15 +1616,48 @@
           }
         }
 
+        // Transcoding settings are only meaningful to edit when BOTH: (1)
+        // this server can actually transcode at all (ffmpeg has a usable
+        // encoder for at least one video and one audio codec — see
+        // /api/capabilities), and (2) no session's ffmpeg is currently
+        // starting/running (see checkExistingSession()/renderSessionStatus()
+        // — editing settings for the fieldset while a transcode is already
+        // live wouldn't apply until a Restart anyway, and just invites
+        // confusion). A successful probe (see below) is still required too,
+        // for its resolution ladder — this only adds the other two gates on
+        // top of that existing one.
+        var lastCapabilities = null;
+        function serverSupportsTranscoding() {
+          if (!lastCapabilities) return false;
+          var hasVideo = lastCapabilities.video.some(function (c) {
+            return c.available;
+          });
+          var hasAudio = lastCapabilities.audio.some(function (c) {
+            return c.available;
+          });
+          return hasVideo && hasAudio;
+        }
+        function sessionIsRunning() {
+          if (!currentSession) return false;
+          return currentSession.status === 'starting' || currentSession.status === 'live' || currentSession.isRunning === true;
+        }
+        function updateTranscodingSettingsAvailability() {
+          transcodingSettingsFieldset.disabled = !lastProbe || !serverSupportsTranscoding() || sessionIsRunning();
+        }
+
         function loadCapabilities() {
           return apiFetch('/api/capabilities')
             .then(function (caps) {
+              lastCapabilities = caps;
               applyAvailability(videoCodecSelect, caps.video);
               applyAvailability(audioCodecSelect, caps.audio);
               updateAudioBitrateOptions();
+              updateTranscodingSettingsAvailability();
             })
             .catch(function (err) {
               console.warn('[server-panel] capabilities load failed:', err.message);
+              lastCapabilities = null;
+              updateTranscodingSettingsAvailability();
             });
         }
         document.getElementById('btn-load-capabilities').addEventListener('click', loadCapabilities);
@@ -1683,7 +1716,8 @@
           // they stay disabled for the duration of every probe attempt (including
           // a re-probe after one already succeeded) until a probe completes
           // successfully below.
-          transcodingSettingsFieldset.disabled = true;
+          lastProbe = null;
+          updateTranscodingSettingsAvailability();
           probeResultEl.textContent = 'Looking up... (yt-dlp may take a few seconds to fetch the real format list)';
           apiFetch('/api/youtube/probe?url=' + encodeURIComponent(url))
             .then(function (probe) {
@@ -1705,10 +1739,11 @@
                 maxHeight: probe.maxHeight,
                 availableResolutions: probe.availableResolutions
               });
-              transcodingSettingsFieldset.disabled = false;
+              updateTranscodingSettingsAvailability();
             })
             .catch(function (err) {
               lastProbe = null;
+              updateTranscodingSettingsAvailability();
               probeResultEl.textContent = 'Probe failed: ' + err.message;
             });
         });
@@ -1737,6 +1772,7 @@
             btnStopSession.disabled = true;
             btnRestartSession.disabled = true;
             btnUseInPlayer.disabled = true;
+            updateTranscodingSettingsAvailability();
             return;
           }
           var s = currentSession;
@@ -1768,6 +1804,7 @@
           // the Player tab with a channel that isn't streaming yet wouldn't
           // connect to anything.
           btnUseInPlayer.disabled = s.status !== 'live';
+          updateTranscodingSettingsAvailability();
         }
 
         function pollSession() {

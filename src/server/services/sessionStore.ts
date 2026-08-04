@@ -11,9 +11,9 @@ const sessions = new Map<string, Session>();
 // segment directly with no adjustment.
 let nextChannel = 0;
 
-export function toPublicSession(session: Session): PublicSession {
+export function toPublicSession(session: Session, isRunning: boolean): PublicSession {
   const { password: _password, ...requestWithoutPassword } = session.request;
-  return { ...session, request: requestWithoutPassword };
+  return { ...session, request: requestWithoutPassword, isRunning };
 }
 
 /** requestedChannel, if given, is the 0-based wire value (see the `channel`
