@@ -1864,6 +1864,15 @@ export class VideoTagPlayer extends VideoPlayer {
           this.mediaSource.endOfStream();
         }
       }
+      // Previously left dangling after the removeSourceBuffer() above — a
+      // stale reference to a SourceBuffer no longer attached to any
+      // MediaSource, which throws "This SourceBuffer has been removed from
+      // the parent media source" the next time anything (e.g. a reconnect
+      // reusing this same VideoTagPlayer instance) tries to append to it.
+      this.sourceBuffer = null;
+      this.sourceBufferAudioIsOpus = false;
+      this.realAacActive = false;
+      this.opusActive = false;
 
       this.videoCodecInfo = null;
       this.audioCodecInfo = { codecType: 0, bitrate: 0 };
