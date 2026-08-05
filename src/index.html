@@ -386,6 +386,7 @@
           <button type="button" id="tab-btn-server" data-panel="server"><span class="icon">⚙</span> Server</button>
           <button type="button" id="tab-btn-test" data-panel="test"><span class="icon">✓</span> Test</button>
           <button type="button" id="tab-btn-react" data-panel="react"><span class="icon">⚛</span> React</button>
+          <button type="button" id="tab-btn-srcurl" data-panel="srcurl"><span class="icon">🔗</span> RTSP URL</button>
         </nav>
 
         <div class="content">
@@ -650,6 +651,85 @@
             </section>
 
             <div id="react-player-host"></div>
+          </div>
+
+          <!-- ================= RTSP URL PANEL (tests the `src` attribute) ================= -->
+          <div class="panel" id="panel-srcurl">
+            <section class="card">
+              <p class="subtitle" style="margin-bottom: 8px">
+                Tests <code>&lt;rtsp-over-websocket&gt;</code>'s <code>src</code> attribute: paste a full RTSP URL
+                and <strong>Set src</strong> assigns it directly (<code>playerEl.src = ...</code>) instead of
+                setting hostname/username/password/channel/profile/device/etc. one by one — the element parses the
+                URL into all of those itself (<code>RTSPOverWebSocket.ts</code>'s <code>applySrcAttribute()</code>)
+                and connects automatically. Setting it again while already connected reconnects with the new URL.
+              </p>
+            </section>
+
+            <section class="card">
+              <div class="grid-form">
+                <label style="grid-column: 1 / -1"
+                  >RTSP URL
+                  <span class="field-note">(e.g. rtsp://user:pass@host:port/{channel}/{profile}/media.smp?device=camera&amp;statistics&amp;controls)</span>
+                  <input
+                    id="srcurl-input"
+                    placeholder="rtsp://user:pass@host:port/1/profile1/media.smp?device=camera&statistics&controls"
+                  />
+                </label>
+                <div class="actions">
+                  <button id="btn-srcurl-set" type="button">Set src</button>
+                  <button id="btn-srcurl-stop" type="button" disabled>Stop</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="player-status">
+              <span>State: <strong id="status-srcurl-state">STOPPED</strong></span>
+              <span id="status-srcurl-error" class="error" hidden></span>
+            </section>
+
+            <section class="card">
+              <h2 class="card-title">Parsed back from the element after src was applied</h2>
+              <p class="hint" id="srcurl-parsed" style="margin-top: 0">Set src to see what applySrcAttribute() derived.</p>
+              <p class="hint" id="srcurl-resolved" style="margin-top: 0" hidden></p>
+            </section>
+
+            <!-- Shown on the proper RTSP auth flow: a src URL with no
+                 user:pass@ still attempts to connect (play() no longer
+                 requires credentials up front); if the server then actually
+                 challenges with 401 and there's no password/sunapi client to
+                 answer it, RtspClient.ts's formDigestAuthHeader() reports
+                 error code 0x0403, caught in srcurlHandleError() below.
+                 Collects credentials here. By default just sets username/
+                 password and reconnects — formDigestAuthHeader() answers the
+                 401 with plain RTSP digest auth directly once `_password` is
+                 non-empty, no SUNAPI involved. "Connect via SUNAPI Manager"
+                 is opt-in (checkbox) for cases that specifically need the
+                 SUNAPI-authenticated session (updateSunapiManager()) instead
+                 — the same one connectedCallback already establishes
+                 automatically when username/password are known up front. -->
+            <section class="card" id="srcurl-credentials" hidden>
+              <h2 class="card-title">Credentials required</h2>
+              <p class="hint" style="margin-top: 0">The src URL didn't include a username/password. Enter them and reconnect.</p>
+              <div class="grid-form">
+                <label
+                  >Username
+                  <input id="srcurl-username" value="admin" />
+                </label>
+                <label
+                  >Password
+                  <input id="srcurl-password" type="password" />
+                </label>
+                <label class="checkbox-field">
+                  <input id="srcurl-use-sunapi" type="checkbox" />
+                  Connect via SUNAPI Manager
+                </label>
+                <div class="actions">
+                  <button id="btn-srcurl-credentials-connect" type="button">Connect</button>
+                </div>
+              </div>
+            </section>
+
+            <div id="srcurl-player-host"></div>
           </div>
         </div>
       </div>
@@ -1341,18 +1421,181 @@
 
     <script>
       (function () {
+        // ================= RTSP URL panel (tests the `src` attribute) =================
+        var srcurlInput = document.getElementById('srcurl-input');
+        var btnSrcurlSet = document.getElementById('btn-srcurl-set');
+        var btnSrcurlStop = document.getElementById('btn-srcurl-stop');
+        var srcurlStatusState = document.getElementById('status-srcurl-state');
+        var srcurlStatusError = document.getElementById('status-srcurl-error');
+        var srcurlParsed = document.getElementById('srcurl-parsed');
+        var srcurlResolved = document.getElementById('srcurl-resolved');
+        var srcurlPlayerHost = document.getElementById('srcurl-player-host');
+        var srcurlCredentials = document.getElementById('srcurl-credentials');
+        var srcurlUsernameInput = document.getElementById('srcurl-username');
+        var srcurlPasswordInput = document.getElementById('srcurl-password');
+        var srcurlUseSunapiCheckbox = document.getElementById('srcurl-use-sunapi');
+        var btnSrcurlCredentialsConnect = document.getElementById('btn-srcurl-credentials-connect');
+
+        var srcurlPlayerEl = null;
+
+        var SRCURL_READY_STATE_PLAYING = 1;
+
+        function srcurlHandleStateChange(event) {
+          var detail = event.detail || {};
+          if (typeof detail.readyState === 'number') {
+            srcurlStatusState.textContent = ['STOPPED', 'PLAYING', 'PAUSED', 'STEP'][detail.readyState] || String(detail.readyState);
+            if (detail.readyState === SRCURL_READY_STATE_PLAYING) {
+              srcurlCredentials.hidden = true;
+            }
+          }
+        }
+
+        // 0x0403 — RtspClient.ts's formDigestAuthHeader(), reached when the
+        // server responds 401 Unauthorized and there's no password/sunapi
+        // client on hand to answer the challenge with. play() no longer
+        // requires username/password up front (the proper RTSP flow is to
+        // try first and only ask if actually challenged), so this is the
+        // real, authoritative "credentials needed" signal — not just "the
+        // src URL happened not to include any".
+        var SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE = 0x0403;
+        // 0x0206 — RtspClient.ts's RtspResponseHandler() gives up after 3
+        // straight 401s (credentials were supplied but the server still
+        // rejects them — a wrong password, not a missing one). Distinct
+        // from 0x0403: this means what was typed in is wrong, so clear it
+        // rather than leave the same bad value sitting in the field for a
+        // retry that would just fail the same way again.
+        var WRONG_CREDENTIALS_ERROR_CODE = 0x0206;
+
+        function srcurlHandleError(event) {
+          var detail = event.detail || {};
+          srcurlStatusError.hidden = false;
+          srcurlStatusError.textContent = 'Error: ' + (detail.message || detail.error || 'Unknown player error');
+          if (detail.error === SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE) {
+            srcurlCredentials.hidden = false;
+          } else if (detail.error === WRONG_CREDENTIALS_ERROR_CODE) {
+            srcurlPasswordInput.value = '';
+            srcurlCredentials.hidden = false;
+            srcurlPasswordInput.focus();
+          }
+        }
+
+        // 'generatertspurl' fires every time the element (re)builds its RTSP
+        // request URL (play/resume/pause/seek/...) — see RTSPOverWebSocket.ts's
+        // generateRTSPURL(), which also reflects this same value back onto the
+        // element's own `src` attribute (guarded against re-parsing itself).
+        function srcurlHandleGeneratedUrl(event) {
+          var detail = event.detail || {};
+          srcurlResolved.hidden = false;
+          srcurlResolved.textContent = 'Resolved connection URL (generateRTSPURL(), reflected onto src): ' + detail.url;
+        }
+
+        function srcurlShowParsedAttributes(el) {
+          var fields = ['hostname', 'port', 'username', 'channel', 'profile', 'profile_number', 'device', 'mode', 'statistics', 'controls', 'network', 'multicast'];
+          var parts = fields
+            .map(function (name) {
+              var value = el.getAttribute(name);
+              return value === null ? null : name + '=' + JSON.stringify(value);
+            })
+            .filter(function (part) {
+              return part !== null;
+            });
+          srcurlParsed.textContent = parts.length ? parts.join(', ') : '(no attributes derived from src yet)';
+        }
+
+        btnSrcurlSet.addEventListener('click', function () {
+          var url = srcurlInput.value.trim();
+          if (!url) return;
+          srcurlStatusError.hidden = true;
+          srcurlCredentials.hidden = true;
+
+          if (!srcurlPlayerEl) {
+            srcurlPlayerEl = document.createElement('rtsp-over-websocket');
+            srcurlPlayerEl.setAttribute('id', 'rtsp-over-websocket-srcurl-demo');
+            srcurlPlayerEl.setAttribute('width', '800');
+            srcurlPlayerEl.setAttribute('height', '480');
+            // Matches the Player tab's own 'grunt' usage — this page is
+            // served separately from the camera, not from its embedded web
+            // server (see RTSPOverWebSocket.ts's 'grunt' attribute).
+            srcurlPlayerEl.setAttribute('grunt', '');
+            srcurlPlayerEl.addEventListener('statechange', srcurlHandleStateChange);
+            srcurlPlayerEl.addEventListener('error', srcurlHandleError);
+            srcurlPlayerEl.addEventListener('generatertspurl', srcurlHandleGeneratedUrl);
+            srcurlPlayerHost.appendChild(srcurlPlayerEl);
+            btnSrcurlStop.disabled = false;
+          }
+
+          // The one call this whole panel exists to exercise: applying `src`
+          // parses it into hostname/username/password/channel/profile/
+          // device/statistics/controls/... and connects (or reconnects, if
+          // already playing) automatically — see applySrcAttribute() in
+          // RTSPOverWebSocket.ts.
+          srcurlPlayerEl.src = url;
+
+          srcurlShowParsedAttributes(srcurlPlayerEl);
+        });
+
+        btnSrcurlStop.addEventListener('click', function () {
+          if (!srcurlPlayerEl) return;
+          try {
+            srcurlPlayerEl.stop();
+          } catch (error) {
+            srcurlHandleError({ detail: { message: error && error.message } });
+          }
+        });
+
+        btnSrcurlCredentialsConnect.addEventListener('click', function () {
+          if (!srcurlPlayerEl) return;
+          var username = srcurlUsernameInput.value.trim();
+          var password = srcurlPasswordInput.value;
+          if (!username || !password) return;
+          srcurlStatusError.hidden = true;
+
+          srcurlPlayerEl.username = username;
+          srcurlPlayerEl.password = password;
+          srcurlShowParsedAttributes(srcurlPlayerEl);
+
+          // Default: just reconnect with the credentials now set.
+          // formDigestAuthHeader() answers the next 401 with plain RTSP
+          // digest auth directly once `_password` is non-empty — no SUNAPI
+          // session needed. Only go through SunapiManager
+          // (updateSunapiManager(), the same digest-auth session
+          // establishment connectedCallback already runs automatically when
+          // username/password are known up front — made callable here since
+          // that already happened, with nothing set yet, before src was
+          // ever applied) when the checkbox opts into it.
+          if (srcurlUseSunapiCheckbox.checked) {
+            try {
+              srcurlPlayerEl.updateSunapiManager();
+            } catch (error) {
+              srcurlHandleError({ detail: { message: error && error.message } });
+              return;
+            }
+          }
+          try {
+            srcurlPlayerEl.play();
+          } catch (error) {
+            srcurlHandleError({ detail: { message: error && error.message } });
+          }
+        });
+      })();
+    </script>
+
+    <script>
+      (function () {
         // ================= tab switching =================
         var tabButtons = [
           document.getElementById('tab-btn-player'),
           document.getElementById('tab-btn-server'),
           document.getElementById('tab-btn-test'),
-          document.getElementById('tab-btn-react')
+          document.getElementById('tab-btn-react'),
+          document.getElementById('tab-btn-srcurl')
         ];
         var panels = {
           player: document.getElementById('panel-player'),
           server: document.getElementById('panel-server'),
           test: document.getElementById('panel-test'),
-          react: document.getElementById('panel-react')
+          react: document.getElementById('panel-react'),
+          srcurl: document.getElementById('panel-srcurl')
         };
         tabButtons.forEach(function (btn) {
           btn.addEventListener('click', function () {
