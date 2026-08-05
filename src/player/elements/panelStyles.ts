@@ -545,7 +545,7 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   'box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);\r\n' +
   'transition: left 0.15s ease-out;\r\n' +
   '}\r\n' +
-  '.menu .audio-toggle-switch.on .audio-toggle-track{ background: #3B9BF0; }\r\n' +
+  '.menu .audio-toggle-switch.on .audio-toggle-track{ background: #3B82F6; }\r\n' +
   '.menu .audio-toggle-switch.on .audio-toggle-thumb{ left: 16px; }\r\n' +
   // No audio RTP session on the current stream (see applyAudioMenuState())
   // — not "muted", nothing to unmute, so this reads as inert rather than
@@ -567,42 +567,48 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   'background: #6B7280;\r\n' +
   'transition: background-color 0.15s ease-out;\r\n' +
   '}\r\n' +
-  '.menu .audio-toggle-switch.on .audio-toggle-state-dot{ background: #3B9BF0; }\r\n' +
-  // Pill-shaped track behind the dots — same rounded-oval container look
-  // as .audio-toggle-track above it, not bare floating dots.
+  '.menu .audio-toggle-switch.on .audio-toggle-state-dot{ background: #3B82F6; }\r\n' +
+  // Pill-shaped track behind the dots, matching loitering_tracking's
+  // client StreamingModeSelector (client/src/components/
+  // StreamingModeSelector.tsx: `bg-gray-900 border border-gray-600
+  // rounded-full`) — a solid dark fill plus a visible border, not just a
+  // translucent tint.
   '.menu .audio-volume-levels{\r\n' +
   'display: flex;\r\n' +
   'align-items: center;\r\n' +
-  'column-gap: 6px;\r\n' +
-  'padding: 4px 10px;\r\n' +
+  'column-gap: 10px;\r\n' +
+  'padding: 4px 12px;\r\n' +
   'border-radius: 999px;\r\n' +
-  'background: rgba(255, 255, 255, 0.12);\r\n' +
+  'background: #111827;\r\n' +
+  'border: 1px solid #4B5563;\r\n' +
   '}\r\n' +
-  // Dot-style level indicator (1-5), same visual language as the toggle
-  // switch above: plain gray dots up to the current level turn solid blue
-  // ("filled" — reached), and the current level itself is emphasized as a
-  // larger white dot with a blue ring, mirroring the switch's white knob
-  // on a blue track — not numbered buttons.
+  // Dot-style level indicator (1-5) — same StreamingModeSelector reference:
+  // small gray dots (`w-1.5 h-1.5 bg-gray-600`) by default, the selected
+  // one enlarged and solid blue with a soft ring glow
+  // (`w-2 h-2 bg-blue-500 ring-2 ring-blue-500/25`). Not numbered buttons.
+  // `.filled` (reached but not the current level) is this control's own
+  // addition on top of that reference — StreamingModeSelector picks one of
+  // several unordered *modes*, so it never needed a "filled up to here"
+  // state, but volume is an ordered magnitude where that reads naturally.
   '.menu .audio-volume-level{\r\n' +
-  'width: 10px;\r\n' +
-  'height: 10px;\r\n' +
+  'width: 6px;\r\n' +
+  'height: 6px;\r\n' +
   'border-radius: 50%;\r\n' +
-  'background: #6B7280;\r\n' +
+  'background: #4B5563;\r\n' +
   'cursor: pointer;\r\n' +
-  'transition: background-color 0.12s ease-out, width 0.12s ease-out, height 0.12s ease-out;\r\n' +
+  'transition: background-color 0.12s ease-out, width 0.12s ease-out, height 0.12s ease-out, box-shadow 0.12s ease-out;\r\n' +
   '}\r\n' +
   '.menu .audio-volume-level:hover{\r\n' +
-  'background: rgba(255, 255, 255, 0.5);\r\n' +
+  'background: #9CA3AF;\r\n' +
   '}\r\n' +
   '.menu .audio-volume-level.filled{\r\n' +
-  'background: #3B9BF0;\r\n' +
+  'background: #3B82F6;\r\n' +
   '}\r\n' +
   '.menu .audio-volume-level.active{\r\n' +
-  'width: 14px;\r\n' +
-  'height: 14px;\r\n' +
-  'background: #FFFFFF;\r\n' +
-  'border: 3px solid #3B9BF0;\r\n' +
-  'box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);\r\n' +
+  'width: 8px;\r\n' +
+  'height: 8px;\r\n' +
+  'background: #3B82F6;\r\n' +
+  'box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);\r\n' +
   '}';
 
 export const VIDEO_CONTAINER_STYLE = '.video-container {\r\n' + 'position: absolute;\r\n' + 'overflow: hidden;\r\n' + 'width: 100%;\r\n' + 'height: 100%;\r\n' + '}';
