@@ -191,6 +191,7 @@ export class RTSPOverWebSocket extends HTMLElement {
   forwardSpanElement?: HTMLElement;
   rtspOverWebSocketWrapperElement?: HTMLElement;
   minimapElement?: Element | null;
+  videoContainerElement?: HTMLElement;
 
   zoom_point?: { x: number; y: number };
   zoom_target?: { x: number; y: number };
@@ -447,6 +448,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (this.video !== undefined && this.video !== null) {
           (this.video as unknown as { controls: boolean }).controls = this._controls;
         }
+        this.applyVideoContainerVisibility();
         break;
       }
       case 'multicast': {
@@ -2233,6 +2235,8 @@ export class RTSPOverWebSocket extends HTMLElement {
     videoContainerElement.appendChild(videoForwardNotifyElement);
     const rtspOverWebSocketWrapperElement = this.ensureRTSPOverWebSocketWrapper();
     rtspOverWebSocketWrapperElement.appendChild(videoContainerElement);
+    this.videoContainerElement = videoContainerElement;
+    this.applyVideoContainerVisibility();
 
     if (this.video !== undefined && this.video !== null) {
       rtspOverWebSocketWrapperElement.appendChild(this.video);
@@ -2684,6 +2688,19 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
+  /** `.video-container` (VIDEO_CONTAINER_STYLE) is a `position: absolute`,
+   * full-size sibling of `this.video` in the DOM, added for the rewind/
+   * forward tap-notification overlays — but a positioned element paints
+   * above a plain-flow (`position: static`) sibling regardless of DOM
+   * order, so it always sits on top of the video's own native `controls`
+   * bar, hiding it, whenever controls are on. Hide the container while
+   * controls are showing (nothing else currently needs it visible at the
+   * same time as controls) and restore it once controls are off again. */
+  private applyVideoContainerVisibility(): void {
+    if (this.videoContainerElement === undefined || this.videoContainerElement === null) return;
+    this.videoContainerElement.style.display = this._controls ? 'none' : '';
+  }
+
   /** Generic rolling-history line-chart renderer, normalized against the
    * history's own local min/max (not against 0) so it reads as an actual
    * "intensity" chart — subtle relative variation stays visible — rather
@@ -2856,6 +2873,7 @@ export class RTSPOverWebSocket extends HTMLElement {
           if (this.player !== null) {
             this.player.toogleControls(this._controls);
           }
+          this.applyVideoContainerVisibility();
         }
 
         if (label === 'statistics') {
