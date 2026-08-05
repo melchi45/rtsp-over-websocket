@@ -2711,29 +2711,41 @@ export class RTSPOverWebSocket extends HTMLElement {
    * through some other path since it was last opened — a direct
    * .mute()/.unmute()/.volume call, or nothing having connected yet at
    * build time), and right after a click on either control for immediate
-   * feedback. `ismute`/getAudioVolume() throw when `this.player` is null
-   * (nothing connected) — treated here as muted/no volume row rather than
-   * letting that exception surface from a routine menu refresh. */
+   * feedback.
+   *
+   * `ismute` throws in two genuinely different cases that both need
+   * handling here: `this.player` being null (nothing connected yet), and —
+   * confirmed live, this is the common one — StreamPlayer.isMute() itself
+   * throwing "The current profile is not support audio in" whenever the
+   * connected stream has no negotiated audio RTP session at all (a
+   * video-only profile/source). That second case isn't "muted", it's
+   * "nothing to unmute" — rendered as a disabled toggle (`.disabled`, "N/A")
+   * rather than a normal actionable Off a click could turn on, so it stops
+   * looking like the toggle silently failed to do anything. */
   private applyAudioMenuState(): void {
     if (this.audioToggleSwitchElement === undefined || this.audioToggleSwitchElement === null) return;
     let muted = true;
-    try {
-      muted = this.player !== undefined && this.player !== null ? this.ismute : true;
-    } catch {
-      muted = true;
+    let available = this.player !== undefined && this.player !== null;
+    if (available) {
+      try {
+        muted = this.ismute;
+      } catch {
+        available = false;
+      }
     }
-    this.audioToggleSwitchElement.classList.toggle('on', !muted);
+    this.audioToggleSwitchElement.classList.toggle('on', available && !muted);
+    this.audioToggleSwitchElement.classList.toggle('disabled', !available);
     if (this.audioToggleStateElement !== undefined && this.audioToggleStateElement !== null) {
-      this.audioToggleStateElement.textContent = muted ? 'Off' : 'On';
+      this.audioToggleStateElement.textContent = !available ? 'N/A' : muted ? 'Off' : 'On';
     }
     if (this.audioVolumeRowElement !== undefined && this.audioVolumeRowElement !== null) {
-      this.audioVolumeRowElement.style.display = muted ? 'none' : 'flex';
+      this.audioVolumeRowElement.style.display = available && !muted ? 'flex' : 'none';
     }
     if (this.audioVolumeButtons !== undefined && this.audioVolumeButtons !== null) {
       let currentVolume = -1;
-      if (!muted) {
+      if (available && !muted) {
         try {
-          currentVolume = this.player !== undefined && this.player !== null ? this.getAudioVolume() : -1;
+          currentVolume = this.getAudioVolume();
         } catch {
           currentVolume = -1;
         }
@@ -3002,16 +3014,24 @@ export class RTSPOverWebSocket extends HTMLElement {
         // matched via closest()/data-* rather than the flat innerHTML
         // label matching above.
         if (target.closest('[data-action="toggle-mute"]') !== null) {
-          try {
-            if (this.player !== undefined && this.player !== null) {
-              if (this.ismute) {
-                this.unmute();
-              } else {
-                this.mute();
+          // Skip the actual toggle while disabled (no audio RTP session on
+          // the current stream — see applyAudioMenuState()) rather than
+          // attempting it and relying on the try/catch below: `this.ismute`
+          // throwing there is what *sets* `.disabled` in the first place,
+          // so this check just avoids a pointless repeat of that failure
+          // on every click.
+          if (this.audioToggleSwitchElement?.classList.contains('disabled') !== true) {
+            try {
+              if (this.player !== undefined && this.player !== null) {
+                if (this.ismute) {
+                  this.unmute();
+                } else {
+                  this.mute();
+                }
               }
+            } catch (error) {
+              console.error(error);
             }
-          } catch (error) {
-            console.error(error);
           }
           this.applyAudioMenuState();
         }

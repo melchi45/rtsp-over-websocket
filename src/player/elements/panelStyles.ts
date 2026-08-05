@@ -528,8 +528,15 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   '}\r\n' +
   '.menu .audio-toggle-switch.on .audio-toggle-track{ background: #5FDE9A; }\r\n' +
   '.menu .audio-toggle-switch.on .audio-toggle-thumb{ left: 16px; background: #14251C; }\r\n' +
+  // No audio RTP session on the current stream (see applyAudioMenuState())
+  // — not "muted", nothing to unmute, so this reads as inert rather than
+  // a normal actionable Off a click could turn on.
+  '.menu .audio-toggle-switch.disabled{\r\n' +
+  'cursor: not-allowed;\r\n' +
+  'opacity: 0.45;\r\n' +
+  '}\r\n' +
   '.menu .audio-toggle-state{\r\n' +
-  'min-width: 22px;\r\n' +
+  'min-width: 26px;\r\n' +
   'font-size: 11px;\r\n' +
   'color: #9AA7B4;\r\n' +
   'text-align: right;\r\n' +
