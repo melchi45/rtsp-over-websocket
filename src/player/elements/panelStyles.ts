@@ -489,6 +489,18 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   'margin: 6px 4px;\r\n' +
   'background: rgba(255, 255, 255, 0.08);\r\n' +
   '}\r\n' +
+  // Groups the Audio toggle + Volume rows into one visually distinct block
+  // (subtle background/rounding) instead of two loose rows that happen to
+  // sit next to each other — sets them apart from the plain label buttons
+  // above as a single "Audio" section.
+  '.menu .audio-group{\r\n' +
+  'display: flex;\r\n' +
+  'flex-direction: column;\r\n' +
+  'row-gap: 2px;\r\n' +
+  'padding: 4px;\r\n' +
+  'border-radius: 8px;\r\n' +
+  'background: rgba(255, 255, 255, 0.05);\r\n' +
+  '}\r\n' +
   '.menu .menu-options .audio-toggle-row,\r\n' +
   '.menu .menu-options .audio-volume-row{\r\n' +
   'display: flex;\r\n' +

@@ -2925,6 +2925,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       audioSeparatorElement.setAttribute('class', 'menu-separator');
       this.menuOptionElement.appendChild(audioSeparatorElement);
 
+      const audioGroupElement = document.createElement('div');
+      audioGroupElement.setAttribute('class', 'audio-group');
+
       const audioToggleRowElement = document.createElement('div');
       audioToggleRowElement.setAttribute('class', 'menu-option audio-toggle-row');
       const audioToggleLabelElement = document.createElement('span');
@@ -2944,7 +2947,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       audioToggleSwitchElement.appendChild(audioToggleStateElement);
       audioToggleRowElement.appendChild(audioToggleLabelElement);
       audioToggleRowElement.appendChild(audioToggleSwitchElement);
-      this.menuOptionElement.appendChild(audioToggleRowElement);
+      audioGroupElement.appendChild(audioToggleRowElement);
 
       const audioVolumeRowElement = document.createElement('div');
       audioVolumeRowElement.setAttribute('class', 'menu-option audio-volume-row');
@@ -2964,7 +2967,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
       audioVolumeRowElement.appendChild(audioVolumeLabelElement);
       audioVolumeRowElement.appendChild(audioVolumeLevelsElement);
-      this.menuOptionElement.appendChild(audioVolumeRowElement);
+      audioGroupElement.appendChild(audioVolumeRowElement);
+
+      this.menuOptionElement.appendChild(audioGroupElement);
 
       this.audioToggleSwitchElement = audioToggleSwitchElement;
       this.audioToggleStateElement = audioToggleStateElement;
