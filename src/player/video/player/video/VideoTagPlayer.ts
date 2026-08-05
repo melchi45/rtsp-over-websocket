@@ -505,7 +505,14 @@ export class VideoTagPlayer extends VideoPlayer {
   private elementSetting(): void {
     if (this.videoElement) {
       const videoElement = this.videoElement;
-      videoElement.controls = false;
+      // Not forced to `false` here (unlike preload/autoplay/muted/volume
+      // below, which really are fresh-element defaults this app always
+      // wants): RTSPOverWebSocket.ts already applies the `controls`
+      // attribute/property to this exact element before init() runs (see
+      // its connectedCallback and onRTSPOverWebSocketVideoMode) — forcing
+      // it off here silently discarded that, so a `controls` attribute set
+      // up front (or toggled via the context menu right before the first
+      // video frame landed) never actually showed native controls.
       videoElement.preload = 'auto';
       videoElement.autoplay = false;
       videoElement.muted = this.audio ? false : true;
