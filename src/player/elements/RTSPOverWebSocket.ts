@@ -153,6 +153,7 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   networkStatDotElement?: HTMLElement | null;
   networkStatTextElement?: HTMLElement | null;
+  networkVarianceChartElement?: SVGPolylineElement | null;
   framesElement?: HTMLElement | null;
   rateAvgElement?: HTMLElement | null;
   rateTotalElement?: HTMLElement | null;
@@ -170,6 +171,7 @@ export class RTSPOverWebSocket extends HTMLElement {
   private readonly audioFpsHistory: number[] = [];
   private readonly rateHistory: number[] = [];
   private readonly dropsHistory: number[] = [];
+  private readonly networkVarianceHistory: number[] = [];
   private totalDecodedBytes = 0;
   /** Latest video 'rtp' statistics.receviedPacket — reused by the 'fps'
    * case's Frames row (see onRTSPOverWebSocketStatistics()) rather than
@@ -2568,15 +2570,33 @@ export class RTSPOverWebSocket extends HTMLElement {
       const networkLabelElement = document.createElement('span');
       networkLabelElement.innerText = 'Network';
       networkLabelElement.className = 'stat-label accent-cyan';
+      const networkContentElement = document.createElement('span');
+      networkContentElement.className = 'stat-value stat-graph-column';
       const networkRowElement = document.createElement('span');
-      networkRowElement.className = 'stat-value network-label-row';
+      networkRowElement.className = 'network-label-row';
       const networkDotElement = document.createElement('span');
       networkDotElement.className = 'network-dot';
       const networkTextElement = document.createElement('span');
       networkRowElement.appendChild(networkDotElement);
       networkRowElement.appendChild(networkTextElement);
+      networkContentElement.appendChild(networkRowElement);
+      // Line chart of recent rfps-variance samples (VideoPlayer.ts's `set
+      // rfps` computes it, parsed back out of the 0x1005 error's
+      // `description` — see onRTSPOverWebSocketError()'s '0x1005' case).
+      // Colored to match the current network-state dot (state-poor/fair/
+      // good/very_good/excellent, see applyStatisticsNetworkState() and
+      // panelStyles.STATISTICS_GRAPH_STYLE's `.stat-chart polyline.state-*`
+      // rules) rather than one of the fixed per-row accent colors the other
+      // charts use, since this one's color is itself the signal.
+      const networkChartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      networkChartSvg.setAttribute('class', 'stat-chart stat-chart-sm');
+      networkChartSvg.setAttribute('viewBox', '0 0 100 20');
+      networkChartSvg.setAttribute('preserveAspectRatio', 'none');
+      const networkChartPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      networkChartSvg.appendChild(networkChartPolyline);
+      networkContentElement.appendChild(networkChartSvg);
       networkElement.appendChild(networkLabelElement);
-      networkElement.appendChild(networkRowElement);
+      networkElement.appendChild(networkContentElement);
 
       this.statisticsElement.appendChild(networkElement);
       this.statisticsElement.appendChild(resolutionElement);
@@ -2625,6 +2645,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.dataElement = dataContentElement;
       this.networkStatDotElement = networkDotElement;
       this.networkStatTextElement = networkTextElement;
+      this.networkVarianceChartElement = networkChartPolyline;
       this.fpsChartElement = fpsChartPolyline;
       this.bufferGraphElement = bufferGraphElement;
       this.videoRtpChartElement = videoRtpChartPolyline;
@@ -2657,6 +2678,9 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.networkStatDotElement.setAttribute('class', 'network-dot state-' + this._networkState);
     if (this.networkStatTextElement !== undefined && this.networkStatTextElement !== null) {
       this.networkStatTextElement.textContent = this._networkState.replace('_', ' ');
+    }
+    if (this.networkVarianceChartElement !== undefined && this.networkVarianceChartElement !== null) {
+      this.networkVarianceChartElement.setAttribute('class', 'state-' + this._networkState);
     }
   }
 
@@ -3310,6 +3334,21 @@ export class RTSPOverWebSocket extends HTMLElement {
         const state = (error as unknown as { state?: string }).state;
         if (state !== undefined && state !== null) {
           this._networkState = state;
+
+          // VideoPlayer.ts's `set rfps` embeds the raw fps-variance sample
+          // as `description: 'network state (${variance})'` — state alone
+          // only tells you the current bucket, not the trend inside it, so
+          // pull the number back out for the panel's line chart.
+          const varianceMatch = typeof error.description === 'string' ? /\(([-0-9.]+)\)/.exec(error.description) : null;
+          if (varianceMatch !== null) {
+            const variance = Number(varianceMatch[1]);
+            if (!Number.isNaN(variance)) {
+              this.networkVarianceHistory.push(variance);
+              if (this.networkVarianceHistory.length > STATS_HISTORY_LENGTH) this.networkVarianceHistory.shift();
+              this.renderLineChart(this.networkVarianceChartElement, this.networkVarianceHistory);
+            }
+          }
+
           if (this._network) {
             this.networkstateDiv();
           } else if (!this._network && typeof this.networkStateElement !== 'undefined' && this.networkStateElement !== null) {

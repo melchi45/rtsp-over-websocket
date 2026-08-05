@@ -231,6 +231,14 @@ export const STATISTICS_GRAPH_STYLE =
   '.statistics .stat-chart.chart-mint polyline{ stroke: #5FDE9A; }\r\n' +
   '.statistics .stat-chart.chart-amber polyline{ stroke: #FFB454; }\r\n' +
   '.statistics .stat-chart.chart-blue polyline{ stroke: #6EA8FF; }\r\n' +
+  // Network variance chart: colored dynamically per current network state
+  // (same 5-color mapping as .network-dot.state-* below) instead of one of
+  // the fixed accent colors above.
+  '.statistics .stat-chart polyline.state-poor{ stroke: #FF5A5A; }\r\n' +
+  '.statistics .stat-chart polyline.state-fair{ stroke: #FFB454; }\r\n' +
+  '.statistics .stat-chart polyline.state-good{ stroke: #F5D76E; }\r\n' +
+  '.statistics .stat-chart polyline.state-very_good{ stroke: #9ACD32; }\r\n' +
+  '.statistics .stat-chart polyline.state-excellent{ stroke: #5FDE9A; }\r\n' +
   '.statistics .stat-graph-column{\r\n' +
   'display: flex;\r\n' +
   'flex-direction: column;\r\n' +
