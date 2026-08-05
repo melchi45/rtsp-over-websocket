@@ -556,10 +556,15 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   'transition: background-color 0.15s ease-out;\r\n' +
   '}\r\n' +
   '.menu .audio-toggle-switch.on .audio-toggle-state-dot{ background: #3B9BF0; }\r\n' +
+  // Pill-shaped track behind the dots — same rounded-oval container look
+  // as .audio-toggle-track above it, not bare floating dots.
   '.menu .audio-volume-levels{\r\n' +
   'display: flex;\r\n' +
   'align-items: center;\r\n' +
   'column-gap: 6px;\r\n' +
+  'padding: 4px 10px;\r\n' +
+  'border-radius: 999px;\r\n' +
+  'background: rgba(255, 255, 255, 0.12);\r\n' +
   '}\r\n' +
   // Dot-style level indicator (1-5), same visual language as the toggle
   // switch above: plain gray dots up to the current level turn solid blue
