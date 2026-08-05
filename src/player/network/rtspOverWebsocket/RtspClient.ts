@@ -297,6 +297,19 @@ export class RtspClient {
   private checkRtspAlive = false;
   private isGetParameterRequest = false;
   private unahtuorizedCount = 0;
+  // Set right before clearTransport() when giving up after 3 straight
+  // 401s (wrong credentials — see RtspResponseHandler()). connectionCbFunc()
+  // checks this before treating the resulting transport close/error as
+  // something worth auto-retrying: without it, that intentional Disconnect()
+  // itself surfaces as an abnormal close (a non-1000 status code, or an
+  // indexOfTransport mismatch — confirmed live), which the 'close'/'error'
+  // handlers below fire 0x0005 ("retry connect") for *unconditionally* on
+  // that path (unlike the 'error' branch's autoconnection check, the
+  // 'close' branch's does not check it at all) — reaching
+  // RTSPOverWebSocket.ts's _retryFlag-driven auto stop()+play(), which just
+  // reopens a fresh WebSocket with the same (still wrong) password and
+  // repeats forever. Reset once a fresh connection attempt actually starts.
+  private givingUpAfterAuthFailure = false;
   private _controlType: ControlType = RtspControlType.NONE;
 
   private rtspQueue: { method: string; requestURL: string | null | undefined; extHeader: string | null | undefined }[] = [];
@@ -931,10 +944,20 @@ export class RtspClient {
         true
       );
     } else {
-      throw new RTSPOverWebSocketError({
+      // Reported through the normal error callback, not thrown — this runs
+      // from inside the async response callback passed to
+      // transport.SendRtspCommand() (see RtspResponseHandler()'s 401
+      // handler, which calls this), well outside any try/catch a caller of
+      // play()/etc. could wrap around their own call. A throw here would
+      // just become an unhandled rejection nobody could react to; this way
+      // it reaches callers the same way every other connection error does,
+      // via the existing `error` event — the proper hook for a caller to
+      // detect "the stream needs credentials" and prompt for them, now
+      // that play() no longer requires username/password up front.
+      this.errorCallbackFunc({
         channelId: this.channelId,
         errorCode: fromHex('0x0403'),
-        place: 'RtspClient.ts:404',
+        place: 'RtspClient.ts:formDigestAuthHeader',
         message:
           'The sunapi client & password is not exist. If you want to connect deivce, you have to put the user password or sunapi client for device connect'
       });
@@ -1209,9 +1232,19 @@ export class RtspClient {
     if (rtspResponseMsg.ResponseCode === 401) {
       this.unahtuorizedCount++;
       this.wwwAuthenticate = stringMessage.slice(stringMessage.search('WWW-Authenticate'), stringMessage.length);
-      this.formDigestAuthHeader(this.rtspUrl!);
 
       if (this.unahtuorizedCount > 2) {
+        // Bug fix: formDigestAuthHeader() used to run unconditionally here,
+        // *before* this check — meaning even on the 3rd (giving-up) 401 it
+        // still sent one more retry over the wire. clearTransport() below
+        // isn't necessarily synchronous/immediate (this transport is itself
+        // a WebSocket bridge, not a plain socket), so that extra in-flight
+        // retry could get its own 401 back before teardown finished,
+        // re-entering this same handler, incrementing the count again (now
+        // already >2, so this branch every time), and sending yet another
+        // retry — a self-sustaining loop with a wrong password that never
+        // actually stopped, confirmed live. Skip the retry entirely once
+        // giving up instead of only skipping the *next* one.
         status = new RtspStatusCode(rtspResponseMsg.ResponseCode);
         this.errorCallbackFunc({
           errorCode: fromHex('0x0206'),
@@ -1224,8 +1257,11 @@ export class RtspClient {
           channelId: this.channelId
         });
         if (this.transport) {
+          this.givingUpAfterAuthFailure = true;
           this.clearTransport();
         }
+      } else {
+        this.formDigestAuthHeader(this.rtspUrl!);
       }
       return;
     } else if (rtspResponseMsg.ResponseCode === 200) {
@@ -1694,12 +1730,25 @@ export class RtspClient {
 
   connectionCbFunc(type: TransportConnectionStatus, statusObject: unknown): void {
     try {
+      if (type !== 'open' && this.givingUpAfterAuthFailure) {
+        // Already reported via 0x0206 in RtspResponseHandler() — this
+        // 'error'/'close' is just this element's own clearTransport()/
+        // Disconnect() unwinding after that, not a new failure worth
+        // surfacing. In particular, skips the 'close' branch below firing
+        // 0x0005 ("retry connect") for it regardless of autoconnection
+        // (unlike the 'error' branch, it doesn't check that flag at all)
+        // — reaching RTSPOverWebSocket.ts's auto stop()+play() and
+        // reopening a fresh WebSocket with the same still-wrong password,
+        // forever. See givingUpAfterAuthFailure's own field comment.
+        return;
+      }
       const status = statusObject as { getStatusCode(): number | string; getName(): string; getDescription(): string; getObject?: () => unknown };
       if (type === 'open') {
         this.CSeq = 1;
         this.clearRTSPQueue();
         this.currentState = 'Options';
         this.nextState = 'Describe';
+        this.givingUpAfterAuthFailure = false;
         if (typeof this.transport !== 'undefined' && this.transport !== null) {
           this._request('OPTIONS', null, null);
         } else {
