@@ -2903,6 +2903,19 @@ export class RTSPOverWebSocket extends HTMLElement {
       el.style.left = `${e.offsetX}px`;
       el.style.top = `${e.offsetY}px`;
       toggleMenu('show');
+
+      // Clamp so a right-click near the container's right/bottom edge
+      // doesn't push the menu outside it. `.menu`'s containing block is
+      // this host element itself (`this.style.position = 'relative'`, set
+      // once elsewhere for all the absolute-positioned overlay panels —
+      // statistics/minimap/contextmenu), so measure against `this`'s own
+      // box rather than the viewport. Requires the menu to already be
+      // `display: block` (toggleMenu('show') above) to get a real
+      // offsetWidth/offsetHeight.
+      const maxLeft = Math.max(0, this.clientWidth - el.offsetWidth);
+      const maxTop = Math.max(0, this.clientHeight - el.offsetHeight);
+      if (e.offsetX > maxLeft) el.style.left = `${maxLeft}px`;
+      if (e.offsetY > maxTop) el.style.top = `${maxTop}px`;
     }
 
     // legacy: `window.event.returnValue = false;` — relies on the deprecated
