@@ -508,26 +508,33 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   'column-gap: 6px;\r\n' +
   'cursor: pointer;\r\n' +
   '}\r\n' +
+  // iOS/Fluent-style pill switch: a neutral-gray track that turns solid
+  // blue when on, with a white knob that stays white in both states (only
+  // the track recolors) and overflows the track edge slightly (a knob
+  // taller than the track, not inset flush inside it) for the usual
+  // toggle-switch depth/shadow look.
   '.menu .audio-toggle-track{\r\n' +
   'position: relative;\r\n' +
-  'width: 30px;\r\n' +
-  'height: 16px;\r\n' +
-  'border-radius: 8px;\r\n' +
-  'background: rgba(255, 255, 255, 0.16);\r\n' +
+  'width: 34px;\r\n' +
+  'height: 18px;\r\n' +
+  'border-radius: 9px;\r\n' +
+  'background: rgba(255, 255, 255, 0.22);\r\n' +
   'transition: background-color 0.15s ease-out;\r\n' +
   '}\r\n' +
   '.menu .audio-toggle-thumb{\r\n' +
   'position: absolute;\r\n' +
-  'top: 2px;\r\n' +
+  'top: 50%;\r\n' +
   'left: 2px;\r\n' +
-  'width: 12px;\r\n' +
-  'height: 12px;\r\n' +
+  'transform: translateY(-50%);\r\n' +
+  'width: 16px;\r\n' +
+  'height: 16px;\r\n' +
   'border-radius: 50%;\r\n' +
-  'background: #E8E8EA;\r\n' +
+  'background: #FFFFFF;\r\n' +
+  'box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);\r\n' +
   'transition: left 0.15s ease-out;\r\n' +
   '}\r\n' +
-  '.menu .audio-toggle-switch.on .audio-toggle-track{ background: #5FDE9A; }\r\n' +
-  '.menu .audio-toggle-switch.on .audio-toggle-thumb{ left: 16px; background: #14251C; }\r\n' +
+  '.menu .audio-toggle-switch.on .audio-toggle-track{ background: #3B9BF0; }\r\n' +
+  '.menu .audio-toggle-switch.on .audio-toggle-thumb{ left: 16px; }\r\n' +
   // No audio RTP session on the current stream (see applyAudioMenuState())
   // — not "muted", nothing to unmute, so this reads as inert rather than
   // a normal actionable Off a click could turn on.
@@ -535,12 +542,20 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   'cursor: not-allowed;\r\n' +
   'opacity: 0.45;\r\n' +
   '}\r\n' +
-  '.menu .audio-toggle-state{\r\n' +
-  'min-width: 26px;\r\n' +
-  'font-size: 11px;\r\n' +
-  'color: #9AA7B4;\r\n' +
-  'text-align: right;\r\n' +
+  // Status dot trailing the switch — same dot+state convention as the
+  // Network row's .network-dot, rather than a text label: the switch's own
+  // knob position already reads as on/off, so this only needs to carry the
+  // one extra bit text can't compactly show inline (no audio available at
+  // all), full word still reachable via its `title` tooltip.
+  '.menu .audio-toggle-state-dot{\r\n' +
+  'width: 8px;\r\n' +
+  'height: 8px;\r\n' +
+  'border-radius: 50%;\r\n' +
+  'flex: 0 0 auto;\r\n' +
+  'background: #6B7280;\r\n' +
+  'transition: background-color 0.15s ease-out;\r\n' +
   '}\r\n' +
+  '.menu .audio-toggle-switch.on .audio-toggle-state-dot{ background: #3B9BF0; }\r\n' +
   '.menu .audio-volume-levels{\r\n' +
   'display: flex;\r\n' +
   'column-gap: 4px;\r\n' +

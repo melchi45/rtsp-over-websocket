@@ -2736,7 +2736,12 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.audioToggleSwitchElement.classList.toggle('on', available && !muted);
     this.audioToggleSwitchElement.classList.toggle('disabled', !available);
     if (this.audioToggleStateElement !== undefined && this.audioToggleStateElement !== null) {
-      this.audioToggleStateElement.textContent = !available ? 'N/A' : muted ? 'Off' : 'On';
+      // A status dot (matches the Network row's dot+state convention)
+      // rather than text — the switch's own position already reads as On/
+      // Off; the dot's color carries the "no audio available" case text
+      // can't compactly show inline, with the full word still reachable
+      // as a tooltip.
+      this.audioToggleStateElement.setAttribute('title', !available ? 'N/A' : muted ? 'Off' : 'On');
     }
     if (this.audioVolumeRowElement !== undefined && this.audioVolumeRowElement !== null) {
       this.audioVolumeRowElement.style.display = available && !muted ? 'flex' : 'none';
@@ -2932,7 +2937,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       audioToggleThumbElement.setAttribute('class', 'audio-toggle-thumb');
       audioToggleTrackElement.appendChild(audioToggleThumbElement);
       const audioToggleStateElement = document.createElement('span');
-      audioToggleStateElement.setAttribute('class', 'audio-toggle-state');
+      audioToggleStateElement.setAttribute('class', 'audio-toggle-state-dot');
       audioToggleSwitchElement.appendChild(audioToggleTrackElement);
       audioToggleSwitchElement.appendChild(audioToggleStateElement);
       audioToggleRowElement.appendChild(audioToggleLabelElement);
