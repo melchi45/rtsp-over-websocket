@@ -2756,7 +2756,9 @@ export class RTSPOverWebSocket extends HTMLElement {
         }
       }
       for (const button of this.audioVolumeButtons) {
-        button.classList.toggle('active', Number(button.getAttribute('data-volume')) === currentVolume);
+        const level = Number(button.getAttribute('data-volume'));
+        button.classList.toggle('filled', level <= currentVolume);
+        button.classList.toggle('active', level === currentVolume);
       }
     }
   }
@@ -2956,7 +2958,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         const audioVolumeLevelElement = document.createElement('span');
         audioVolumeLevelElement.setAttribute('class', 'audio-volume-level');
         audioVolumeLevelElement.setAttribute('data-volume', String(level));
-        audioVolumeLevelElement.innerText = String(level);
+        audioVolumeLevelElement.setAttribute('title', 'Volume ' + level);
         audioVolumeLevelsElement.appendChild(audioVolumeLevelElement);
         audioVolumeButtons.push(audioVolumeLevelElement);
       }

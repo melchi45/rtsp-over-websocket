@@ -558,28 +558,34 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   '.menu .audio-toggle-switch.on .audio-toggle-state-dot{ background: #3B9BF0; }\r\n' +
   '.menu .audio-volume-levels{\r\n' +
   'display: flex;\r\n' +
-  'column-gap: 4px;\r\n' +
-  '}\r\n' +
-  '.menu .audio-volume-level{\r\n' +
-  'display: flex;\r\n' +
   'align-items: center;\r\n' +
-  'justify-content: center;\r\n' +
-  'width: 20px;\r\n' +
-  'height: 20px;\r\n' +
-  'border-radius: 5px;\r\n' +
-  'font-size: 11px;\r\n' +
-  'color: #9AA7B4;\r\n' +
-  'background: rgba(255, 255, 255, 0.08);\r\n' +
+  'column-gap: 6px;\r\n' +
+  '}\r\n' +
+  // Dot-style level indicator (1-5), same visual language as the toggle
+  // switch above: plain gray dots up to the current level turn solid blue
+  // ("filled" — reached), and the current level itself is emphasized as a
+  // larger white dot with a blue ring, mirroring the switch's white knob
+  // on a blue track — not numbered buttons.
+  '.menu .audio-volume-level{\r\n' +
+  'width: 10px;\r\n' +
+  'height: 10px;\r\n' +
+  'border-radius: 50%;\r\n' +
+  'background: #6B7280;\r\n' +
   'cursor: pointer;\r\n' +
-  'transition: background-color 0.12s ease-out, color 0.12s ease-out;\r\n' +
+  'transition: background-color 0.12s ease-out, width 0.12s ease-out, height 0.12s ease-out;\r\n' +
   '}\r\n' +
   '.menu .audio-volume-level:hover{\r\n' +
-  'background: rgba(255, 255, 255, 0.16);\r\n' +
-  'color: #FFFFFF;\r\n' +
+  'background: rgba(255, 255, 255, 0.5);\r\n' +
+  '}\r\n' +
+  '.menu .audio-volume-level.filled{\r\n' +
+  'background: #3B9BF0;\r\n' +
   '}\r\n' +
   '.menu .audio-volume-level.active{\r\n' +
-  'background: #5FDE9A;\r\n' +
-  'color: #14251C;\r\n' +
+  'width: 14px;\r\n' +
+  'height: 14px;\r\n' +
+  'background: #FFFFFF;\r\n' +
+  'border: 3px solid #3B9BF0;\r\n' +
+  'box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);\r\n' +
   '}';
 
 export const VIDEO_CONTAINER_STYLE = '.video-container {\r\n' + 'position: absolute;\r\n' + 'overflow: hidden;\r\n' + 'width: 100%;\r\n' + 'height: 100%;\r\n' + '}';
