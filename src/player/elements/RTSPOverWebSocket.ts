@@ -184,6 +184,10 @@ export class RTSPOverWebSocket extends HTMLElement {
   contextmenuElement?: HTMLElement | null;
   menuOptionElement?: HTMLElement | null;
   menuVisible?: boolean;
+  audioToggleSwitchElement?: HTMLElement | null;
+  audioToggleStateElement?: HTMLElement | null;
+  audioVolumeRowElement?: HTMLElement | null;
+  audioVolumeButtons?: HTMLElement[] | null;
 
   rewindElement?: HTMLElement;
   forwardElement?: HTMLElement;
@@ -2701,6 +2705,45 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.videoContainerElement.style.display = this._controls ? 'none' : '';
   }
 
+  /** Refreshes the context menu's Audio group (mute toggle switch + 1-5
+   * volume-level picker) from the player's actual state — called when the
+   * menu is (re)built, every time it's shown (state may have changed
+   * through some other path since it was last opened — a direct
+   * .mute()/.unmute()/.volume call, or nothing having connected yet at
+   * build time), and right after a click on either control for immediate
+   * feedback. `ismute`/getAudioVolume() throw when `this.player` is null
+   * (nothing connected) — treated here as muted/no volume row rather than
+   * letting that exception surface from a routine menu refresh. */
+  private applyAudioMenuState(): void {
+    if (this.audioToggleSwitchElement === undefined || this.audioToggleSwitchElement === null) return;
+    let muted = true;
+    try {
+      muted = this.player !== undefined && this.player !== null ? this.ismute : true;
+    } catch {
+      muted = true;
+    }
+    this.audioToggleSwitchElement.classList.toggle('on', !muted);
+    if (this.audioToggleStateElement !== undefined && this.audioToggleStateElement !== null) {
+      this.audioToggleStateElement.textContent = muted ? 'Off' : 'On';
+    }
+    if (this.audioVolumeRowElement !== undefined && this.audioVolumeRowElement !== null) {
+      this.audioVolumeRowElement.style.display = muted ? 'none' : 'flex';
+    }
+    if (this.audioVolumeButtons !== undefined && this.audioVolumeButtons !== null) {
+      let currentVolume = -1;
+      if (!muted) {
+        try {
+          currentVolume = this.player !== undefined && this.player !== null ? this.getAudioVolume() : -1;
+        } catch {
+          currentVolume = -1;
+        }
+      }
+      for (const button of this.audioVolumeButtons) {
+        button.classList.toggle('active', Number(button.getAttribute('data-volume')) === currentVolume);
+      }
+    }
+  }
+
   /** Generic rolling-history line-chart renderer, normalized against the
    * history's own local min/max (not against 0) so it reads as an actual
    * "intensity" chart — subtle relative variation stays visible — rather
@@ -2829,6 +2872,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.appendStyle(panelStyles.CONTEXT_MENU_OPTION_STYLE);
       this.appendStyle(panelStyles.CONTEXT_MENU_OPTION_HOVER_STYLE);
       this.appendStyle(panelStyles.CONTEXT_MENU_BUTTON_STYLE);
+      this.appendStyle(panelStyles.CONTEXT_MENU_AUDIO_STYLE);
     }
 
     const toggleMenu = (command: 'show' | 'hide'): void => {
@@ -2851,6 +2895,62 @@ export class RTSPOverWebSocket extends HTMLElement {
         subMenuOptionElement.innerHTML = label;
         this.menuOptionElement.appendChild(subMenuOptionElement);
       }
+
+      // Audio group: independent of the `Controls` item above (native
+      // <video> controls also expose their own volume UI, but this works
+      // whether or not those are on) — a mute/unmute toggle switch mirroring
+      // `ismute`, plus a 1-5 level picker (setAudioVolume()'s valid range)
+      // that only shows while unmuted. See applyAudioMenuState() for how
+      // this stays in sync with actual player state.
+      const audioSeparatorElement = document.createElement('div');
+      audioSeparatorElement.setAttribute('class', 'menu-separator');
+      this.menuOptionElement.appendChild(audioSeparatorElement);
+
+      const audioToggleRowElement = document.createElement('div');
+      audioToggleRowElement.setAttribute('class', 'menu-option audio-toggle-row');
+      const audioToggleLabelElement = document.createElement('span');
+      audioToggleLabelElement.setAttribute('class', 'audio-toggle-label');
+      audioToggleLabelElement.innerText = 'Audio';
+      const audioToggleSwitchElement = document.createElement('span');
+      audioToggleSwitchElement.setAttribute('class', 'audio-toggle-switch');
+      audioToggleSwitchElement.setAttribute('data-action', 'toggle-mute');
+      const audioToggleTrackElement = document.createElement('span');
+      audioToggleTrackElement.setAttribute('class', 'audio-toggle-track');
+      const audioToggleThumbElement = document.createElement('span');
+      audioToggleThumbElement.setAttribute('class', 'audio-toggle-thumb');
+      audioToggleTrackElement.appendChild(audioToggleThumbElement);
+      const audioToggleStateElement = document.createElement('span');
+      audioToggleStateElement.setAttribute('class', 'audio-toggle-state');
+      audioToggleSwitchElement.appendChild(audioToggleTrackElement);
+      audioToggleSwitchElement.appendChild(audioToggleStateElement);
+      audioToggleRowElement.appendChild(audioToggleLabelElement);
+      audioToggleRowElement.appendChild(audioToggleSwitchElement);
+      this.menuOptionElement.appendChild(audioToggleRowElement);
+
+      const audioVolumeRowElement = document.createElement('div');
+      audioVolumeRowElement.setAttribute('class', 'menu-option audio-volume-row');
+      const audioVolumeLabelElement = document.createElement('span');
+      audioVolumeLabelElement.setAttribute('class', 'audio-volume-label');
+      audioVolumeLabelElement.innerText = 'Volume';
+      const audioVolumeLevelsElement = document.createElement('span');
+      audioVolumeLevelsElement.setAttribute('class', 'audio-volume-levels');
+      const audioVolumeButtons: HTMLElement[] = [];
+      for (let level = 1; level <= 5; level++) {
+        const audioVolumeLevelElement = document.createElement('span');
+        audioVolumeLevelElement.setAttribute('class', 'audio-volume-level');
+        audioVolumeLevelElement.setAttribute('data-volume', String(level));
+        audioVolumeLevelElement.innerText = String(level);
+        audioVolumeLevelsElement.appendChild(audioVolumeLevelElement);
+        audioVolumeButtons.push(audioVolumeLevelElement);
+      }
+      audioVolumeRowElement.appendChild(audioVolumeLabelElement);
+      audioVolumeRowElement.appendChild(audioVolumeLevelsElement);
+      this.menuOptionElement.appendChild(audioVolumeRowElement);
+
+      this.audioToggleSwitchElement = audioToggleSwitchElement;
+      this.audioToggleStateElement = audioToggleStateElement;
+      this.audioVolumeRowElement = audioVolumeRowElement;
+      this.audioVolumeButtons = audioVolumeButtons;
 
       this.contextmenuElement.appendChild(this.menuOptionElement);
       this.ensureRTSPOverWebSocketWrapper().appendChild(this.contextmenuElement);
@@ -2896,6 +2996,38 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (label === 'fullscreen') {
           this.toggleFullScreen(this);
         }
+
+        // Toggle switch/level buttons are nested elements (track+thumb,
+        // per-level spans), so the click target is never the row itself —
+        // matched via closest()/data-* rather than the flat innerHTML
+        // label matching above.
+        if (target.closest('[data-action="toggle-mute"]') !== null) {
+          try {
+            if (this.player !== undefined && this.player !== null) {
+              if (this.ismute) {
+                this.unmute();
+              } else {
+                this.mute();
+              }
+            }
+          } catch (error) {
+            console.error(error);
+          }
+          this.applyAudioMenuState();
+        }
+
+        const volumeLevelTarget = target.closest('[data-volume]');
+        if (volumeLevelTarget !== null) {
+          const level = Number(volumeLevelTarget.getAttribute('data-volume'));
+          try {
+            if (this.player !== undefined && this.player !== null) {
+              this.setAudioVolume(level);
+            }
+          } catch (error) {
+            console.error(error);
+          }
+          this.applyAudioMenuState();
+        }
       });
     }
 
@@ -2921,6 +3053,10 @@ export class RTSPOverWebSocket extends HTMLElement {
       el.style.left = `${e.offsetX}px`;
       el.style.top = `${e.offsetY}px`;
       toggleMenu('show');
+      // Refresh the Audio group before measuring below — showing/hiding
+      // the volume row changes the menu's actual height, which the
+      // boundary clamp needs to already account for.
+      this.applyAudioMenuState();
 
       // Clamp so a right-click near the container's right/bottom edge
       // doesn't push the menu outside it. `.menu`'s containing block is

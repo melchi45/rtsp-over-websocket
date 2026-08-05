@@ -478,6 +478,88 @@ export const CONTEXT_MENU_BUTTON_STYLE =
   'background: rgba(255, 255, 255, 0.18);\r\n' +
   '}';
 
+// Audio group (mute toggle + 1-5 volume picker) appended below the plain
+// label buttons above — see contextmenuDiv()'s Audio-group construction
+// and applyAudioMenuState(). Reuses .menu-option's row padding/hover from
+// CONTEXT_MENU_OPTION_STYLE/CONTEXT_MENU_OPTION_HOVER_STYLE; everything
+// here is just the toggle-switch/level-picker internals.
+export const CONTEXT_MENU_AUDIO_STYLE =
+  '.menu .menu-separator{\r\n' +
+  'height: 1px;\r\n' +
+  'margin: 6px 4px;\r\n' +
+  'background: rgba(255, 255, 255, 0.08);\r\n' +
+  '}\r\n' +
+  '.menu .menu-options .audio-toggle-row,\r\n' +
+  '.menu .menu-options .audio-volume-row{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: center;\r\n' +
+  'justify-content: space-between;\r\n' +
+  '}\r\n' +
+  '.menu .menu-options .audio-volume-row{\r\n' +
+  'display: none;\r\n' +
+  '}\r\n' +
+  '.menu .audio-toggle-label,\r\n' +
+  '.menu .audio-volume-label{\r\n' +
+  'color: #E8E8EA;\r\n' +
+  '}\r\n' +
+  '.menu .audio-toggle-switch{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: center;\r\n' +
+  'column-gap: 6px;\r\n' +
+  'cursor: pointer;\r\n' +
+  '}\r\n' +
+  '.menu .audio-toggle-track{\r\n' +
+  'position: relative;\r\n' +
+  'width: 30px;\r\n' +
+  'height: 16px;\r\n' +
+  'border-radius: 8px;\r\n' +
+  'background: rgba(255, 255, 255, 0.16);\r\n' +
+  'transition: background-color 0.15s ease-out;\r\n' +
+  '}\r\n' +
+  '.menu .audio-toggle-thumb{\r\n' +
+  'position: absolute;\r\n' +
+  'top: 2px;\r\n' +
+  'left: 2px;\r\n' +
+  'width: 12px;\r\n' +
+  'height: 12px;\r\n' +
+  'border-radius: 50%;\r\n' +
+  'background: #E8E8EA;\r\n' +
+  'transition: left 0.15s ease-out;\r\n' +
+  '}\r\n' +
+  '.menu .audio-toggle-switch.on .audio-toggle-track{ background: #5FDE9A; }\r\n' +
+  '.menu .audio-toggle-switch.on .audio-toggle-thumb{ left: 16px; background: #14251C; }\r\n' +
+  '.menu .audio-toggle-state{\r\n' +
+  'min-width: 22px;\r\n' +
+  'font-size: 11px;\r\n' +
+  'color: #9AA7B4;\r\n' +
+  'text-align: right;\r\n' +
+  '}\r\n' +
+  '.menu .audio-volume-levels{\r\n' +
+  'display: flex;\r\n' +
+  'column-gap: 4px;\r\n' +
+  '}\r\n' +
+  '.menu .audio-volume-level{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: center;\r\n' +
+  'justify-content: center;\r\n' +
+  'width: 20px;\r\n' +
+  'height: 20px;\r\n' +
+  'border-radius: 5px;\r\n' +
+  'font-size: 11px;\r\n' +
+  'color: #9AA7B4;\r\n' +
+  'background: rgba(255, 255, 255, 0.08);\r\n' +
+  'cursor: pointer;\r\n' +
+  'transition: background-color 0.12s ease-out, color 0.12s ease-out;\r\n' +
+  '}\r\n' +
+  '.menu .audio-volume-level:hover{\r\n' +
+  'background: rgba(255, 255, 255, 0.16);\r\n' +
+  'color: #FFFFFF;\r\n' +
+  '}\r\n' +
+  '.menu .audio-volume-level.active{\r\n' +
+  'background: #5FDE9A;\r\n' +
+  'color: #14251C;\r\n' +
+  '}';
+
 export const VIDEO_CONTAINER_STYLE = '.video-container {\r\n' + 'position: absolute;\r\n' + 'overflow: hidden;\r\n' + 'width: 100%;\r\n' + 'height: 100%;\r\n' + '}';
 
 export const VIDEO_FORWARD_NOTIFY_STYLE =
