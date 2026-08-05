@@ -49,6 +49,17 @@ interface VideoContainerElement extends HTMLElement {
 }
 
 export class RTSPOverWebSocket extends HTMLElement {
+  // Guards the 'src' case in attributeChangedCallback while
+  // generateRTSPURL() is reflecting the just-built URL back onto this
+  // element's own `src` attribute (see buildAbsoluteRTSPURL()'s call
+  // site) — without this, that setAttribute() call would loop straight
+  // back into applySrcAttribute(), re-running every derived
+  // setAttribute()/property assignment (and re-dispatching every
+  // 'change*' event) each time a URL is generated, which happens on every
+  // play()/resume()/pause()/seek()/etc, not just on real external changes
+  // to `src`.
+  private _reflectingSrc = false;
+
   // ---- attribute-backed state (constructor-initialized, matches legacy 1:1) ----
   private _hostname: string | null = null;
   private _channel: number | null = null;
@@ -302,6 +313,7 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   static get observedAttributes(): string[] {
     return [
+      'src',
       'hostname',
       'channel',
       'profile',
@@ -338,6 +350,10 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   attributeChangedCallback(name: string, _oldValue: string | null, newValue: string | null): void {
     switch (name.toLowerCase()) {
+      case 'src': {
+        if (newValue !== null && !this._reflectingSrc) this.applySrcAttribute(newValue);
+        break;
+      }
       case 'autoplay': {
         this._autoplay = true;
         break;
@@ -1637,11 +1653,26 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.setAttribute('https', String(v));
   }
 
+  /** Reflects the `src` *attribute* (applySrcAttribute()'s parsing, and
+   * generateRTSPURL()'s reflection of the resolved connection URL back
+   * onto it) rather than the `_source` field this pair used to read/write
+   * directly. `_source` was otherwise never actually written anywhere in
+   * this class except by this setter — and nothing ever called this
+   * setter before `src` existed as a real feature — so every
+   * `if (this._source === null) { ...generateRTSPURL()... }` gate
+   * elsewhere (play()/stop()/pause()/etc.) always evaluated true and
+   * always regenerated the URL normally; leaving `_source` untouched here
+   * keeps that exactly as it already was for every existing caller.
+   * Deliberately does NOT also set `_source` — doing so would make those
+   * gates permanently skip generateRTSPURL() for the rest of the
+   * element's life after any `src` assignment, leaving
+   * `info.media.requestInfo.url` never populated at all (nothing else
+   * ever assigns it from `_source`), silently breaking play()/stop()/etc. */
   get src(): string | null {
-    return this._source;
+    return this.getAttribute('src');
   }
   set src(v: string) {
-    this._source = v;
+    this.setAttribute('src', v);
   }
 
   get useIsoTimeFormat(): boolean | null {
@@ -2049,7 +2080,14 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   // ================= internal update / DOM-builder methods =================
 
-  private updateSunapiManager(): void {
+  /** Not private: callers that supply username/password *after* this
+   * element has already connected (e.g. a `src` URL with no credentials
+   * in its authority, prompting the caller to collect them separately and
+   * fall back to a SUNAPI-authenticated connection) need to (re-)run this
+   * themselves — connectedCallback only ever calls it once, at initial
+   * setup, using whatever hostname/username/password/deviceType were
+   * already present at that moment. */
+  updateSunapiManager(): void {
     try {
       if (this._hostname !== null && this._username !== null && this._password !== null && this._deviceType !== null) {
         this.info.device.cameraIp = this._hostname;
@@ -4017,25 +4055,19 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.info.callback.status = (...args: unknown[]) => this.onRTSPOverWebSocketStatus(args[0]);
     this.info.callback.vmode = (...args: unknown[]) => this.onRTSPOverWebSocketVideoMode(args[0] as RTSPOverWebSocketVideoModeEvent);
 
-    if (this._username === null || this._username === undefined) {
-      throw new AuthError({
-        channelId: this.channel,
-        elementId: this.getAttribute('id') ?? undefined,
-        errorCode: fromHex('0x0402'),
-        place: 'RTSPOverWebSocket.ts:play',
-        message: 'username attribute is empty'
-      });
-    }
-
-    if ((this._password === null || this._password === undefined) && (this._sunapiMng.getSunapiClient() === null || this._sunapiMng.getSunapiClient() === undefined)) {
-      throw new AuthError({
-        channelId: this.channel,
-        elementId: this.getAttribute('id') ?? undefined,
-        errorCode: fromHex('0x0402'),
-        place: 'RTSPOverWebSocket.ts:play',
-        message: 'password attribute is empty or sunapi client property is null'
-      });
-    }
+    // Not a precondition failure anymore: username/password missing up
+    // front no longer blocks play() from even attempting to connect. The
+    // proper RTSP flow is to try first and only ask for credentials if the
+    // server actually challenges for them — RtspClient.ts's
+    // formDigestAuthHeader() (invoked from its 401 handler) already throws
+    // its own clean error (0x0403, "The sunapi client & password is not
+    // exist...") at exactly that point when it has no password *and* no
+    // sunapi client to answer the challenge with, which reaches callers the
+    // same way as any other connection error, via the existing `error`
+    // event — a caller can catch that specific case there and prompt for
+    // credentials (see updateSunapiManager(), now public, for reconnecting
+    // once they're supplied) instead of this method rejecting up front on
+    // streams that might not even require auth at all.
 
     if (this._source === null || this._source === undefined) {
       this.info.media.requestInfo.url = this.generateRTSPURL();
@@ -4083,6 +4115,146 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
 
       this.player.control(this.info);
+    }
+  }
+
+  /** `src` is a convenience attribute bundling everything that would
+   * otherwise need to be set as separate attributes: username/password/
+   * hostname/port via the URL's authority component, channel/profile (and,
+   * for nvr, just channel) via its path, and every other flag/value
+   * attribute via a standard `?query=string` — e.g.
+   * `rtsp://user:pass@host:port/{channel}/{profile}/media.smp?device=camera&statistics&controls`.
+   * Parsed here into ordinary setAttribute() calls (plus a few direct
+   * property assignments for the handful of RTSP session settings that
+   * were never attributes to begin with — sessionKey/startTime/endTime/
+   * overlappedId), so every existing attributeChangedCallback branch does
+   * the actual work exactly as if each piece had been set by hand.
+   *
+   * This is deliberately NOT a parser for generateRTSPURL()'s own output:
+   * that format is one-directional and server-bound, and for nvr/
+   * playback/backup it isn't a real URL at all (it concatenates
+   * `&key=value` straight onto the path string with no leading `?`, and
+   * packs start/end timestamps into a compact, lossy digit-only format
+   * meant to be generated, not read back). `src` defines its own clean,
+   * standard-URL convention instead — start/end/session/overlap all go in
+   * the query string as plain values (e.g. `?mode=playback&start=2026-01-01T00:00:00Z&end=...`)
+   * rather than trying to reverse-engineer that internal format. */
+  private applySrcAttribute(srcValue: string): void {
+    let url: URL;
+    try {
+      url = new URL(srcValue);
+    } catch (error) {
+      console.error('RTSPOverWebSocket: invalid src URL "' + srcValue + '"', error);
+      return;
+    }
+
+    if (url.username !== '') this.setAttribute('username', decodeURIComponent(url.username));
+    if (url.password !== '') this.setAttribute('password', decodeURIComponent(url.password));
+    if (url.hostname !== '') this.setAttribute('hostname', url.hostname);
+    if (url.port !== '') this.setAttribute('port', url.port);
+
+    // Generic passthrough for every other flag/value attribute — reuses
+    // every existing attributeChangedCallback branch (device, mode,
+    // statistics, controls, network, multicast, iframe, gmt, grunt,
+    // bestshotfilter, usesubstream, client, camchannel, profileusage,
+    // codec, limitwidth, limitheight, android, autoplay, secure, https,
+    // proxy, profile, profile_number, ...) instead of re-implementing each
+    // one here. Bare flags (`?statistics&controls`, no `=value`) come
+    // through as an empty string, matching the existing
+    // `getAttribute(x) !== null` boolean-attribute convention already used
+    // throughout this class. A few RTSP session settings were never
+    // attributes to begin with (only plain get/set properties) and are
+    // special-cased onto those instead of setAttribute().
+    const knownAttributes = new Set(RTSPOverWebSocket.observedAttributes);
+    for (const [key, value] of url.searchParams) {
+      const paramName = key.toLowerCase();
+      switch (paramName) {
+        case 'session':
+          this.sessionKey = value;
+          break;
+        case 'start':
+          this.startTime = value;
+          break;
+        case 'end':
+          this.endTime = value;
+          break;
+        case 'overlap':
+        case 'overlappedid':
+          this.overlappedId = value;
+          break;
+        default:
+          if (knownAttributes.has(paramName)) this.setAttribute(paramName, value);
+          break;
+      }
+    }
+
+    // Path carries only the stream-identifying pieces — channel, and for
+    // camera devices, profile — everything else above is a query param.
+    // `device` decides which shape to expect (already applied above via
+    // the generic passthrough if `src` included it; read fresh here just
+    // to decide *how to parse the path*, independent of that). A trailing
+    // `*.smp` filename segment (media.smp/play.smp/backup.smp — whatever
+    // generateRTSPURL() would itself produce on the way out) is purely
+    // decorative in a `src` URL and discarded rather than parsed for
+    // meaning; `mode` (also just a normal query param, already handled
+    // above) is what actually selects live/playback/backup.
+    const deviceType = (url.searchParams.get('device') ?? this.getAttribute('device') ?? 'camera').toLowerCase();
+    const segments = url.pathname.split('/').filter((segment) => segment.length > 0);
+    if (segments.length > 0 && /\.smp$/i.test(segments[segments.length - 1])) {
+      segments.pop();
+    }
+    if (segments[0] === 'multicast') {
+      this.setAttribute('multicast', '');
+      segments.shift();
+    }
+
+    const channelSegment = segments[0];
+    if (channelSegment !== undefined) {
+      // The path's channel is the 0-based wire value generateRTSPURL()
+      // embeds (see RtspClient.ts's device="nvr" URI-builder comment) —
+      // the `channel` *attribute* is 1-based, so convert back.
+      const channelWire = Number(channelSegment);
+      if (!Number.isNaN(channelWire)) this.setAttribute('channel', String(channelWire + 1));
+    }
+
+    if (deviceType === 'camera') {
+      const profileSegment = segments[1];
+      if (profileSegment !== undefined) {
+        const profileNumberMatch = /^profile(\d+)$/i.exec(profileSegment);
+        if (profileNumberMatch !== null) {
+          this.setAttribute('profile_number', profileNumberMatch[1]);
+        } else {
+          this.setAttribute('profile', profileSegment);
+        }
+      }
+    }
+
+    // Setting `src` — in markup or dynamically — is an explicit request to
+    // connect to that stream, not just a bundle of attributes to sit there
+    // unused. Two cases:
+    // - Not connected to the DOM yet (e.g. `src` was on the initial tag,
+    //   so this can fire *before* connectedCallback has even run — this
+    //   method can't safely call play() itself yet here, since play()
+    //   depends on DOM state connectedCallback sets up). Setting
+    //   `_autoplay` reuses updateRendering()'s existing autoplay gate,
+    //   which runs later in connectedCallback once everything's ready.
+    // - Already connected (a live `src` swap — reconnecting to a
+    //   different camera/channel): reconnect immediately. stop() throws
+    //   if nothing's playing yet, so only call it when there's actually a
+    //   player to stop; both calls are try/caught since a mid-parse src
+    //   (e.g. missing password, no matching video codec) shouldn't throw
+    //   out of an attribute reaction — see the errors this can throw at
+    //   play()'s own precondition checks.
+    this._autoplay = true;
+    if (this.isConnected) {
+      try {
+        if (this.player !== undefined && this.player !== null) {
+          this.stop();
+        }
+        this.play();
+      } catch (error) {
+        console.error('RTSPOverWebSocket: failed to connect after src change', error);
+      }
     }
   }
 
@@ -4354,7 +4526,49 @@ export class RTSPOverWebSocket extends HTMLElement {
       });
     }
 
+    // Reflect the just-built URL back onto this element's own `src`
+    // attribute, so `element.src`/`getAttribute('src')` always shows the
+    // currently-active connection URL — guarded by `_reflectingSrc` so
+    // this doesn't loop back through attributeChangedCallback's 'src' case
+    // into applySrcAttribute() and re-run every derived setAttribute()
+    // call (and re-dispatch every 'change*' event) each time a URL is
+    // generated, which happens on every play()/resume()/pause()/seek()/
+    // etc, not just on real external changes to `src`. Also dispatched as
+    // its own event for callers who'd rather not set up a MutationObserver
+    // just to react to it.
+    const fullUrl = this.buildAbsoluteRTSPURL(strRtspURL);
+    this._reflectingSrc = true;
+    try {
+      this.setAttribute('src', fullUrl);
+    } finally {
+      this._reflectingSrc = false;
+    }
+    this.dispatch('generatertspurl', { url: fullUrl });
+
     return strRtspURL;
+  }
+
+  /** Assembles the absolute `rtsp://[user[:pass]@]host[:port]/{path}` URL
+   * for display/observation (see generateRTSPURL()'s 'generatertspurl'
+   * dispatch) from the path generateRTSPURL() itself returns plus this
+   * element's own connection attributes — generateRTSPURL() only ever
+   * returns the path portion (it's handed to the underlying RTSP-over-
+   * WebSocket client separately from host/port/credentials), so this is
+   * the only place those get joined back into one full URL string. */
+  private buildAbsoluteRTSPURL(pathPart: string): string {
+    let authority = '';
+    if (this.username !== null && this.username !== '') {
+      authority += encodeURIComponent(this.username);
+      if (this.password !== null && this.password !== '') {
+        authority += ':' + encodeURIComponent(this.password);
+      }
+      authority += '@';
+    }
+    authority += this.hostname ?? '';
+    if (this.port !== null && this.port !== '') {
+      authority += ':' + this.port;
+    }
+    return 'rtsp://' + authority + '/' + pathPart;
   }
 
   stop(): void {
