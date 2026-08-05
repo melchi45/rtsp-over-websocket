@@ -417,62 +417,57 @@ export const DARK_BALL_ANIMATION_STYLES: Record<'darkred' | 'red' | 'yellow' | '
 
 export const CONTEXT_MENU_STYLE =
   '.menu {\r\n' +
-  'width: 150px;\r\n' +
-  'margin:0px;\r\n' +
-  'margin-top:1px;\r\n' +
-  'padding-left:1px;\r\n' +
-  'padding-right:1px;\r\n' +
-  'padding-bottom:1px;\r\n' +
+  'min-width: 190px;\r\n' +
+  'margin: 0;\r\n' +
+  'padding: 6px;\r\n' +
+  'box-sizing: border-box;\r\n' +
   'z-index: 1000;\r\n' +
-  'box-shadow: 0 4px 5px 3px rgba(0, 0, 0, 0.2);\r\n' +
   'position: absolute;\r\n' +
   'display: none;\r\n' +
-  'transition: 0.2s display ease-in;\r\n' +
+  'background: rgba(28, 28, 32, 0.92);\r\n' +
+  'backdrop-filter: blur(8px);\r\n' +
+  '-webkit-backdrop-filter: blur(8px);\r\n' +
+  'border: 1px solid rgba(255, 255, 255, 0.08);\r\n' +
+  'border-radius: 10px;\r\n' +
+  'box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.25);\r\n' +
+  'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;\r\n' +
   '}';
 
-export const CONTEXT_MENU_OPTIONS_STYLE = '.menu .menu-options {\r\n' + '  list-style: none;\r\n' + '  padding: 10px 1px 1px 1px;\r\n' + '  z-index: 1000;\r\n' + '}';
+export const CONTEXT_MENU_OPTIONS_STYLE =
+  '.menu .menu-options {\r\n' +
+  '  list-style: none;\r\n' +
+  '  margin: 0;\r\n' +
+  '  padding: 0;\r\n' +
+  '  display: flex;\r\n' +
+  '  flex-direction: column;\r\n' +
+  '  row-gap: 2px;\r\n' +
+  '  z-index: 1000;\r\n' +
+  '}';
 
 export const CONTEXT_MENU_OPTION_STYLE =
   '.menu .menu-options .menu-option {\r\n' +
-  '    color: #F0F0F0;\r\n' +
+  '    color: #E8E8EA;\r\n' +
   '    z-index: 10000;\r\n' +
-  '    font-size: 12px;\r\n' +
-  '    padding: 5px 20px 5px 10px;\r\n' +
+  '    font-size: 13px;\r\n' +
+  '    line-height: 1.4;\r\n' +
+  '    padding: 8px 12px;\r\n' +
+  '    border-radius: 6px;\r\n' +
   '    cursor: pointer;\r\n' +
   '    font-style: normal;\r\n' +
-  '    font-family: verdana;\r\n' +
-  '    font-color: white;\r\n' +
+  '    user-select: none;\r\n' +
+  '    transition: background-color 0.12s ease-out, color 0.12s ease-out;\r\n' +
   '}';
 
-export const CONTEXT_MENU_OPTION_HOVER_STYLE = '.menu .menu-options .menu-option:hover{\r\n' + '    color: #303030;\r\n' + 'background: rgba(0, 0, 0, 0.2);\r\n' + '}';
+export const CONTEXT_MENU_OPTION_HOVER_STYLE =
+  '.menu .menu-options .menu-option:hover{\r\n' + '    color: #FFFFFF;\r\n' + '    background: rgba(255, 255, 255, 0.12);\r\n' + '}';
 
 export const CONTEXT_MENU_BUTTON_STYLE =
   '.menu .menu-options .button {\r\n' +
-  'background: grey;\r\n' +
+  'background: transparent;\r\n' +
   'border: none;\r\n' +
-  '.next{\r\n' +
-  '  color:green;\r\n' +
   '}\r\n' +
-  '&[disabled="false"]:hover{\r\n' +
-  '  .next{\r\n' +
-  '    color: red;\r\n' +
-  '    animation: move 0.5s;\r\n' +
-  '    animation-iteration-count: 2;\r\n' +
-  '  }\r\n' +
-  '}\r\n' +
-  '}';
-
-export const CONTEXT_MENU_MOVE_KEYFRAMES =
-  '@keyframes move {\r\n' +
-  'from{\r\n' +
-  '  transform: translate(0%);\r\n' +
-  '}\r\n' +
-  '50%{\r\n' +
-  '  transform: translate(-40%);\r\n' +
-  '}\r\n' +
-  'to{\r\n' +
-  '  transform: transform(0%);\r\n' +
-  '}\r\n' +
+  '.menu .menu-options .button:active {\r\n' +
+  'background: rgba(255, 255, 255, 0.18);\r\n' +
   '}';
 
 export const VIDEO_CONTAINER_STYLE = '.video-container {\r\n' + 'position: absolute;\r\n' + 'overflow: hidden;\r\n' + 'width: 100%;\r\n' + 'height: 100%;\r\n' + '}';

@@ -2788,7 +2788,6 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.appendStyle(panelStyles.CONTEXT_MENU_OPTION_STYLE);
       this.appendStyle(panelStyles.CONTEXT_MENU_OPTION_HOVER_STYLE);
       this.appendStyle(panelStyles.CONTEXT_MENU_BUTTON_STYLE);
-      this.appendStyle(panelStyles.CONTEXT_MENU_MOVE_KEYFRAMES);
     }
 
     const toggleMenu = (command: 'show' | 'hide'): void => {
@@ -2879,7 +2878,6 @@ export class RTSPOverWebSocket extends HTMLElement {
       el.style.position = 'absolute';
       el.style.left = `${e.offsetX}px`;
       el.style.top = `${e.offsetY}px`;
-      el.style.background = 'white';
       toggleMenu('show');
     }
 
