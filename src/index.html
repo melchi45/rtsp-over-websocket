@@ -695,21 +695,27 @@
 
             <!-- Shown on the proper RTSP auth flow: a src URL with no
                  user:pass@ still attempts to connect (play() no longer
-                 requires credentials up front); if the server then actually
-                 challenges with 401 and there's no password/sunapi client to
-                 answer it, RtspClient.ts's formDigestAuthHeader() reports
-                 error code 0x0403, caught in srcurlHandleError() below.
-                 Collects credentials here. By default just sets username/
-                 password and reconnects — formDigestAuthHeader() answers the
-                 401 with plain RTSP digest auth directly once `_password` is
-                 non-empty, no SUNAPI involved. "Connect via SUNAPI Manager"
-                 is opt-in (checkbox) for cases that specifically need the
-                 SUNAPI-authenticated session (updateSunapiManager()) instead
+                 requires credentials up front); the server then challenges
+                 with 401 — RtspClient.ts's RtspResponseHandler() answers
+                 that once automatically (normal digest-auth round trip), and
+                 if there's still no password/sunapi client to answer a
+                 second 401 with, or a second 401 comes back anyway (wrong
+                 credentials), reports 0x0403 / 0x0206 respectively, both
+                 caught in srcurlHandleError() below. Collects credentials
+                 here. By default, re-answers that same cached challenge over
+                 the *same* still-open connection (retryAuthentication() /
+                 RtspClient.ts's retryWithCredentials()) — no reconnect, no
+                 new WebSocket, and no risk of repeatedly tripping the
+                 camera's own account-lockout threshold the way tearing down
+                 and reopening the connection on every attempt would.
+                 "Connect via SUNAPI Manager" is opt-in (checkbox) for cases
+                 that specifically need the heavier SUNAPI-authenticated
+                 session (updateSunapiManager(), which does reconnect) instead
                  — the same one connectedCallback already establishes
                  automatically when username/password are known up front. -->
             <section class="card" id="srcurl-credentials" hidden>
               <h2 class="card-title">Credentials required</h2>
-              <p class="hint" style="margin-top: 0">The src URL didn't include a username/password. Enter them and reconnect.</p>
+              <p class="hint" style="margin-top: 0">The src URL didn't include a valid username/password. Enter them to answer the server's challenge.</p>
               <div class="grid-form">
                 <label
                   >Username
@@ -1550,32 +1556,39 @@
           if (!username || !password) return;
           srcurlStatusError.hidden = true;
 
-          srcurlPlayerEl.username = username;
-          srcurlPlayerEl.password = password;
-          srcurlShowParsedAttributes(srcurlPlayerEl);
-
-          // Default: just reconnect with the credentials now set.
-          // formDigestAuthHeader() answers the next 401 with plain RTSP
-          // digest auth directly once `_password` is non-empty — no SUNAPI
-          // session needed. Only go through SunapiManager
-          // (updateSunapiManager(), the same digest-auth session
-          // establishment connectedCallback already runs automatically when
-          // username/password are known up front — made callable here since
-          // that already happened, with nothing set yet, before src was
-          // ever applied) when the checkbox opts into it.
           if (srcurlUseSunapiCheckbox.checked) {
+            // Opt-in, heavier path: establishes a fresh SUNAPI HTTP
+            // digest-auth session and reconnects through it (a new
+            // WebSocket), rather than just re-answering the RTSP-level
+            // challenge in place.
+            srcurlPlayerEl.username = username;
+            srcurlPlayerEl.password = password;
+            srcurlShowParsedAttributes(srcurlPlayerEl);
             try {
               srcurlPlayerEl.updateSunapiManager();
             } catch (error) {
               srcurlHandleError({ detail: { message: error && error.message } });
               return;
             }
+            try {
+              srcurlPlayerEl.play();
+            } catch (error) {
+              srcurlHandleError({ detail: { message: error && error.message } });
+            }
+            return;
           }
+
+          // Default: re-answer the cached 401 challenge with the new
+          // credentials over this *same* still-open connection — no
+          // reconnect, no new WebSocket. See RTSPOverWebSocket.ts's
+          // retryAuthentication() / RtspClient.ts's retryWithCredentials().
           try {
-            srcurlPlayerEl.play();
+            srcurlPlayerEl.retryAuthentication(username, password);
           } catch (error) {
             srcurlHandleError({ detail: { message: error && error.message } });
+            return;
           }
+          srcurlShowParsedAttributes(srcurlPlayerEl);
         });
       })();
     </script>
