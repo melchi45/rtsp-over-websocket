@@ -915,4 +915,10 @@ export class StreamPlayer {
   toogleControls(flags: unknown): void {
     this.mediaRouter.toogleControls(flags);
   }
+
+  /** See RtspClient.ts's retryWithCredentials() — re-answers a cached 401
+   * challenge with new credentials over the same still-open connection. */
+  retryAuthentication(username: string, password: string): void {
+    this.rtspClient.retryWithCredentials(username, password);
+  }
 }

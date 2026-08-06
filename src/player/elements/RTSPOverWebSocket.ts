@@ -2190,6 +2190,26 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
+  /** Re-answers a cached 401 challenge with new credentials over the same
+   * still-open connection — no reconnect (see RtspClient.ts's
+   * retryWithCredentials()). The counterpart to play() no longer throwing
+   * up front when username/password are missing: a caller collecting a
+   * password from a user in response to a 0x0206 ("credentials rejected")
+   * or 0x0403 ("no credentials to answer the challenge with") error calls
+   * this once it has one, instead of calling stop()+play() again — which
+   * would tear the connection down and reopen a brand new one for no
+   * protocol reason. Also updates the `username`/`password` attributes
+   * (so this.info.device and future connections reflect it) via the same
+   * setAttribute() path every other credential change already goes
+   * through. */
+  retryAuthentication(username: string, password: string): void {
+    this.setAttribute('username', username);
+    this.setAttribute('password', password);
+    if (this.player !== undefined && this.player !== null) {
+      this.player.retryAuthentication(username, password);
+    }
+  }
+
   // channel_div, statistics, video-container and contextmenu all render as
   // overlay panels for one player instance, so they belong under one shared
   // `#rtsp-over-websocket-wrapper-<id>` container instead of as flat siblings directly under

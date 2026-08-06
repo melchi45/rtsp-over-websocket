@@ -297,19 +297,6 @@ export class RtspClient {
   private checkRtspAlive = false;
   private isGetParameterRequest = false;
   private unahtuorizedCount = 0;
-  // Set right before clearTransport() when giving up after 3 straight
-  // 401s (wrong credentials — see RtspResponseHandler()). connectionCbFunc()
-  // checks this before treating the resulting transport close/error as
-  // something worth auto-retrying: without it, that intentional Disconnect()
-  // itself surfaces as an abnormal close (a non-1000 status code, or an
-  // indexOfTransport mismatch — confirmed live), which the 'close'/'error'
-  // handlers below fire 0x0005 ("retry connect") for *unconditionally* on
-  // that path (unlike the 'error' branch's autoconnection check, the
-  // 'close' branch's does not check it at all) — reaching
-  // RTSPOverWebSocket.ts's _retryFlag-driven auto stop()+play(), which just
-  // reopens a fresh WebSocket with the same (still wrong) password and
-  // repeats forever. Reset once a fresh connection attempt actually starts.
-  private givingUpAfterAuthFailure = false;
   private _controlType: ControlType = RtspControlType.NONE;
 
   private rtspQueue: { method: string; requestURL: string | null | undefined; extHeader: string | null | undefined }[] = [];
@@ -879,6 +866,26 @@ export class RtspClient {
     return parserData;
   }
 
+  /** Re-answers the last-received 401 challenge with new credentials over
+   * this *same* still-open connection — no reconnect. RtspResponseHandler()'s
+   * 401 handler tries whatever credentials are current exactly once
+   * automatically (the RTSP digest-auth protocol's own normal "you can't
+   * know the realm/nonce until challenged" round trip) and, if that's
+   * still rejected, reports 0x0206 and waits rather than blindly retrying
+   * the same rejected credentials or tearing the connection down — a
+   * caller collecting a fresh password from a user calls this once it has
+   * one. Reuses `wwwAuthenticate` (cached from that same last 401) to
+   * compute the new Authorization header; if the server actually needed a
+   * fresh nonce rather than just correct credentials, the resulting
+   * request gets its own fresh 401 and this cycle repeats normally rather
+   * than erroring out. */
+  retryWithCredentials(username: string, password: string): void {
+    this.id = username;
+    this.pw = password;
+    this.unahtuorizedCount = 0;
+    this.formDigestAuthHeader(this.rtspUrl!);
+  }
+
   private formDigestAuthHeader(uri: string): void {
     const digestInfo = this.digestGenerator.getDigestInfoInWwwAuthenticate(this.wwwAuthenticate!);
     const data: AuthenticateData & { Nc?: string; Cnonce?: string } = {
@@ -1233,18 +1240,25 @@ export class RtspClient {
       this.unahtuorizedCount++;
       this.wwwAuthenticate = stringMessage.slice(stringMessage.search('WWW-Authenticate'), stringMessage.length);
 
-      if (this.unahtuorizedCount > 2) {
-        // Bug fix: formDigestAuthHeader() used to run unconditionally here,
-        // *before* this check — meaning even on the 3rd (giving-up) 401 it
-        // still sent one more retry over the wire. clearTransport() below
-        // isn't necessarily synchronous/immediate (this transport is itself
-        // a WebSocket bridge, not a plain socket), so that extra in-flight
-        // retry could get its own 401 back before teardown finished,
-        // re-entering this same handler, incrementing the count again (now
-        // already >2, so this branch every time), and sending yet another
-        // retry — a self-sustaining loop with a wrong password that never
-        // actually stopped, confirmed live. Skip the retry entirely once
-        // giving up instead of only skipping the *next* one.
+      if (this.unahtuorizedCount > 1) {
+        // Already answered this exact challenge once with whatever
+        // credentials were current at the time (the very first 401 on a
+        // connection is always expected — the client can't know the
+        // server's realm/nonce until challenged — so that one auto-retry
+        // via formDigestAuthHeader() below is normal, not a guess). A
+        // *second* 401 for the same challenge means those credentials
+        // were actually wrong, not a protocol quirk — reported here
+        // (0x0206) and left waiting rather than either (a) blindly
+        // retrying the identical rejected credentials again (each retry
+        // is a real attempt the camera counts toward its own account-
+        // lockout threshold — confirmed live, repeated wrong-password
+        // cycles reached "490 Account block"), or (b) tearing the
+        // connection down: RTSP digest auth is designed to answer a fresh
+        // Authorization header over the *same* still-open connection, no
+        // reconnect needed. A caller that collects a new password (e.g.
+        // from a user prompt) calls retryWithCredentials() once it has
+        // one, which re-answers this same cached challenge without
+        // reopening the transport.
         status = new RtspStatusCode(rtspResponseMsg.ResponseCode);
         this.errorCallbackFunc({
           errorCode: fromHex('0x0206'),
@@ -1256,10 +1270,6 @@ export class RtspClient {
           place: 'RtspClient.ts:RtspResponseHandler',
           channelId: this.channelId
         });
-        if (this.transport) {
-          this.givingUpAfterAuthFailure = true;
-          this.clearTransport();
-        }
       } else {
         this.formDigestAuthHeader(this.rtspUrl!);
       }
@@ -1730,25 +1740,21 @@ export class RtspClient {
 
   connectionCbFunc(type: TransportConnectionStatus, statusObject: unknown): void {
     try {
-      if (type !== 'open' && this.givingUpAfterAuthFailure) {
-        // Already reported via 0x0206 in RtspResponseHandler() — this
-        // 'error'/'close' is just this element's own clearTransport()/
-        // Disconnect() unwinding after that, not a new failure worth
-        // surfacing. In particular, skips the 'close' branch below firing
-        // 0x0005 ("retry connect") for it regardless of autoconnection
-        // (unlike the 'error' branch, it doesn't check that flag at all)
-        // — reaching RTSPOverWebSocket.ts's auto stop()+play() and
-        // reopening a fresh WebSocket with the same still-wrong password,
-        // forever. See givingUpAfterAuthFailure's own field comment.
-        return;
-      }
       const status = statusObject as { getStatusCode(): number | string; getName(): string; getDescription(): string; getObject?: () => unknown };
       if (type === 'open') {
         this.CSeq = 1;
         this.clearRTSPQueue();
         this.currentState = 'Options';
         this.nextState = 'Describe';
-        this.givingUpAfterAuthFailure = false;
+        // A fresh connection deserves its own full auth attempt budget —
+        // without this, a stale count left over from a previous
+        // connection's failed auth (never reset by clearTransport(), only
+        // by a successful DESCRIBE or a full Disconnect()) would make
+        // RtspResponseHandler()'s 401 handler treat the very first,
+        // protocol-mandatory 401 on *this* connection as already-exhausted
+        // and report failure without ever trying the (possibly correct,
+        // freshly-supplied) credentials at all — confirmed live.
+        this.unahtuorizedCount = 0;
         if (typeof this.transport !== 'undefined' && this.transport !== null) {
           this._request('OPTIONS', null, null);
         } else {
