@@ -47,6 +47,39 @@ bug was also fixed: the demo page's session poller stopped polling once a sessio
 its Stop button state) could go stale forever if the session later finished/failed on its own — it now keeps
 polling (at a slower interval) through `live` too.
 
+## `src` attribute + interactive-auth redesign (fixed)
+
+`<rtsp-over-websocket>` grew a `src` attribute (`RTSPOverWebSocket.ts`'s `applySrcAttribute()`) that
+parses a bundled RTSP URL (`rtsp://user:pass@host:port/{channel}/{profile}/media.smp?device=camera&statistics&controls`)
+into the equivalent individual attributes and auto-connects — a demo page can now offer a single
+URL field instead of one input per attribute. It's deliberately **not** a parser for
+`generateRTSPURL()`'s own output: that format is one-directional/server-bound and, for
+nvr/playback/backup, isn't a real URL at all (bare `&key=value` with no leading `?`, plus a lossy
+compact-digit timestamp encoding meant to be generated, not read back). `src` defines its own
+standard-URL convention instead. See the new "RTSP URL" tab in `src/index.html` for exercising this
+end to end, and `docs/SDD.md`'s `RTSPOverWebSocket` entry for the full parsing rules.
+
+Building that surfaced a real bug in the credentials flow: `RTSPOverWebSocket.play()` used to throw
+immediately if `username`/`password` were missing, before ever attempting a connection — but the
+correct RTSP behavior is to connect first and only ask for credentials if the server actually
+challenges with 401 (you can't know a stream needs auth, or what its realm/nonce even is, until
+challenged). That precondition was removed, and `RtspClient.ts`'s 401 handling was redesigned to
+match an interactive "ask a human for the password" flow: try the current credentials exactly once
+automatically (the protocol's own normal round trip), and if still rejected, report an error and
+**wait** — no more automatic retries with the same rejected credentials, and no closing/reopening
+the connection. A caller with a fresh password calls the new `RTSPOverWebSocket.retryAuthentication()`
+(→ `StreamPlayer.retryAuthentication()` → `RtspClient.retryWithCredentials()`), which re-answers the
+same cached 401 challenge over the *same* still-open connection.
+
+Getting there took three rounds of live testing against a real camera, each surfacing a distinct bug
+in the original "retry up to 3 times automatically, then give up and reconnect" design (documented in
+full in `docs/SDD.md`'s `RtspClient` entry): the retry-before-checking-the-strike-count send, the
+`'close'` handler's unconditional (autoconnection-blind) `0x0005` retry trigger on the intentional
+teardown, and — the one that actually explained the symptom ("keeps failing forever, eventually
+account-locks the camera") — `unahtuorizedCount` never resetting on a fresh connection, so *any*
+attempt after a single failure (even one with the *correct* password) died on its first,
+protocol-mandatory 401 without ever trying it.
+
 ## Environment gotchas hit during development
 
 - **Broken `node_modules/.bin/*` shims**: in this environment, several bin shims (`tsc`, `vite`, `vitest` all hit
