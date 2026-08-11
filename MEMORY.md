@@ -396,3 +396,33 @@ confirmed above) and switching the imports to explicit `?url` suffixes (`import 
 instead of `new URL(...)` — also still inlined (and doubled the chunk size, since it inlined *both* the `?url`
 import's copy and the original `new URL(...)` call's copy). Worth knowing if this class of Vite worker-asset
 behavior needs revisiting again in a future Vite version.
+
+## `<canvas>`/`<video>` stretched instead of keeping aspect ratio (fixed)
+
+`this.video`'s fit-to-host inline style (`width: 100%; height: 100%; display: block; margin: auto`) is written at
+three independent points — `updateRendering()` (initial attach), `onRTSPOverWebSocketVideoMode()` (live
+canvas↔video Renderer Type switch), `onRTSPOverWebSocketResize()` (every real resolution change from
+`MediaRouter`, first firing on the stream's very first keyframe — in practice the *last* writer before real
+playback, overwriting whatever the other two set) — and none of them included `object-fit`. `width/height: 100%`
+alone *stretches* the element to exactly fill the host's box, distorting the picture whenever the host box's own
+aspect ratio (from its CSS/attributes) doesn't match the decoded video's — reported by a real consumer using a
+640x320 host showing a 640x480 stream, confirmed in both tag modes (screenshots showed the picture stretched
+top-heavy in canvas mode, and — even after removing the consumer's own CSS class and clearing the element's
+inline style entirely to rule those out — still not vertically centered in either mode, since without an explicit
+CSS size at all a replaced element just renders at its intrinsic buffer size, top-left in its container, with no
+scaling or centering of its own).
+
+Fixed by adding `object-fit: contain` to all three style-writing points, unconditionally for both tag modes.
+`object-fit` is supported on `<canvas>` the same as `<video>` in every Chromium/Firefox/Safari version this
+player otherwise targets (both are CSS "replaced elements") — the element's own box still fills 100% of the
+wrapper (so it doesn't overflow the host), but the actual picture inside that box now scales down to the largest
+size that fits while preserving its real aspect ratio, and centers itself there by default (`object-position`'s
+default is `50% 50%`) — letterboxing/pillarboxing as needed instead of stretching, regardless of tag mode or host
+aspect ratio, and regardless of which of the three call sites last touched the style.
+
+While fixing `onRTSPOverWebSocketVideoMode()` also cleaned up an adjacent, previously-preserved legacy bug (it
+used to conditionally omit `width: 100%` via a comparison that actually compared a *function reference* to a
+string and was therefore always `true` — i.e. always applied `width: 100%` regardless of the condition's real
+intent — replaced with the unconditional style that bug always produced anyway, no behavior change beyond adding
+`object-fit`). See `docs/player/01-elements-interface-exceptions.md`'s `updateRendering()`/
+`onRTSPOverWebSocketVideoMode()`/`onRTSPOverWebSocketResize()` bullets for the full per-method writeup.

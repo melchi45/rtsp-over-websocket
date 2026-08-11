@@ -102,20 +102,31 @@ their exact location rather than fixed silently (file header comment,
   (conditionally) and unconditionally `updateRendering()`. Wrapped in try/catch that only
   `console.error`s (a lifecycle callback throwing would otherwise be an uncaught exception the
   browser can't usefully surface).
-- `updateRendering()` (private, `:2231-2327`) — builds the `.video-container` overlay (rewind/
+- `updateRendering()` (private, `:2231-2338`) — builds the `.video-container` overlay (rewind/
   forward tap-notification DOM + styles) if not already built, appends `this.video` into the
   shared wrapper, and — if `autoplay` plus a resolved profile/device are present — calls `play()`.
   Before appending, it sets an explicit `width: 100%; height: 100%; display: block;
-  margin-left/right: auto` inline style on `this.video` (`:2303-2311` area) so the canvas/video tag
-  always fits the `<rtsp-over-websocket>` host's own box. This matters because the canvas's
-  `width`/`height` *attributes* hold the decoded stream's intrinsic pixel buffer size (set to the
-  real resolution — e.g. 1920x1080 — by `CanvasRenderer`/`WebGLCanvas` once frames arrive), which
-  is unrelated to on-screen display size; without this CSS the canvas previously rendered at that
-  intrinsic size and overflowed a smaller host box (e.g. `width="800" height="480"`).
-  `onRTSPOverWebSocketVideoMode` (below) applies the same styling when it later swaps the tag on a
-  canvas↔video mode change, but that path only fires once `MediaRouter` selects a player and
-  depends on `id`/`rtsp-channel-mapped-id` matching — setting it here up front makes the fit
-  unconditional from initial attach.
+  margin-left/right: auto; object-fit: contain` inline style on `this.video` (`:2303-2327` area) so
+  the canvas/video tag always fits the `<rtsp-over-websocket>` host's own box. This matters because
+  the canvas's `width`/`height` *attributes* hold the decoded stream's intrinsic pixel buffer size
+  (set to the real resolution — e.g. 1920x1080 — by `CanvasRenderer`/`WebGLCanvas` once frames
+  arrive), which is unrelated to on-screen display size; without this CSS the canvas previously
+  rendered at that intrinsic size and overflowed a smaller host box (e.g. `width="800"
+  height="480"`). `onRTSPOverWebSocketVideoMode`/`onRTSPOverWebSocketResize` (below) apply the same
+  styling when they later touch the tag (mode switch / real resolution arriving) — setting it here
+  up front makes the fit unconditional from initial attach.
+  **`object-fit: contain` (fixed; was missing until a real consumer reported stretched/distorted
+  video)**: `width/height: 100%` alone stretches the element to *exactly* fill the host's box,
+  which distorts the picture whenever the host box's own aspect ratio (from its CSS/attributes)
+  doesn't match the decoded video's — e.g. a `640x320` (2:1) host showing a `640x480` (4:3) stream.
+  `object-fit: contain` is supported on `<canvas>` the same as `<video>` in every
+  Chromium/Firefox/Safari version this player otherwise targets (both are CSS "replaced elements"),
+  so it's applied unconditionally for both tag modes: the element's own box still fills 100% of the
+  wrapper, but the picture inside it now letterboxes/pillarboxes and centers (object-fit's default
+  `object-position` is `50% 50%`) instead of stretching — regardless of tag mode or host aspect
+  ratio. Same fix, same reasoning, applied identically at all three places that (re)write this
+  style: here, `onRTSPOverWebSocketVideoMode()`, and `onRTSPOverWebSocketResize()` (see below for
+  why all three needed it, not just this one).
 
 **`src` attribute / URL generation** (see "401 handling" below for the credential-retry piece)
 
@@ -221,15 +232,23 @@ their exact location rather than fixed silently (file header comment,
   `0x030A` — `stop()` then `play()` again if `_retryFlag` is set), network-quality state
   (`0x1005`, feeds the statistics panel's network dot + variance chart), and decoder-performance
   events (`0x090B`). Everything else dispatches a generic `'error'` event.
-- `onRTSPOverWebSocketVideoMode(event)` (`:3375-3435`) — swaps `this.video` between `<canvas>`
-  and `<video>` in the live DOM when `MediaRouter` decides the rendering mode should change.
-- `onRTSPOverWebSocketResize(event)` (`:3646-3663`) — re-dispatches a public `resize` event, updates
+- `onRTSPOverWebSocketVideoMode(event)` (`:3386-3446`) — swaps `this.video` between `<canvas>`
+  and `<video>` in the live DOM when `MediaRouter` decides the rendering mode should change (e.g. a
+  live Renderer Type switch). Rebuilds the new element's inline style from scratch
+  (`width/height: 100%; display: block; margin-left/right: auto; object-fit: contain` — the
+  `object-fit` **fixed**, was missing, same reasoning as `updateRendering()`'s above). Used to
+  conditionally omit `width: 100%` via a legacy bug (`event.mode.toLowerCase !== 'canvas'` compared
+  the *function reference* `toLowerCase`, never called, to the string `'canvas'` — always `true`,
+  so `width: 100%` was appended unconditionally regardless of `event.mode` anyway); written directly
+  as the unconditional style that bug always produced, since the conditional never did anything —
+  no behavior change there, only the added `object-fit`.
+- `onRTSPOverWebSocketResize(event)` (`:3662-3685`) — re-dispatches a public `resize` event, updates
   the statistics panel's resolution readout, and (re-)applies the fit-to-parent inline style
-  (`width/height: 100%; display: block; margin-left/right: auto`) onto whichever element
-  `event.tagmode`+`rtsp-channel-mapped-id` currently resolves to. Fires on every real resolution
-  change reported by `MediaRouter` (`VideoResizeInfo`, first fired on the stream's very first
-  keyframe), so in practice it's the *last* style write on the canvas/video tag before real
-  playback starts — it runs after, and overwrites, whatever `updateRendering()` set at initial
+  (`width/height: 100%; display: block; margin-left/right: auto; object-fit: contain`) onto
+  whichever element `event.tagmode`+`rtsp-channel-mapped-id` currently resolves to. Fires on every
+  real resolution change reported by `MediaRouter` (`VideoResizeInfo`, first fired on the stream's
+  very first keyframe), so in practice it's the *last* style write on the canvas/video tag before
+  real playback starts — it runs after, and overwrites, whatever `updateRendering()` set at initial
   attach. It used to omit `width: 100%` specifically when `event.tagmode === 'canvas'` (on the
   assumption a canvas would size itself off its own `width`/`height` attributes); those attributes
   hold the decoded stream's *intrinsic pixel buffer* size, not a display size, and a replaced
@@ -237,7 +256,13 @@ their exact location rather than fixed silently (file header comment,
   intrinsic aspect ratio — overflowing a host box whose aspect ratio is narrower than the video's
   (confirmed live: an 800x480 host, 5:3, with a 1920x1080/16:9 stream). Fixed to apply
   `width: 100%` unconditionally, matching `updateRendering()`'s and
-  `onRTSPOverWebSocketVideoMode()`'s styling.
+  `onRTSPOverWebSocketVideoMode()`'s styling. **`object-fit: contain` (fixed, separately, later)**:
+  since this handler's write is the *last* one before real playback (see above), it was the actual
+  reason a real consumer still saw stretched/distorted video even after `updateRendering()` and
+  `onRTSPOverWebSocketVideoMode()` had already been given `object-fit` — this handler overwrites
+  their style the moment the first keyframe's resolution is known, undoing it. All three writers of
+  this style now agree; see `updateRendering()`'s comment above for the full `object-fit`
+  reasoning.
 - `onRTSPOverWebSocketMeta`, `onRTSPOverWebSocketMetaImage`,
   `onRTSPOverWebSocketTimestamp`, `onRTSPOverWebSocketStatistics`, `onRTSPOverWebSocketStep`,
   `onRTSPOverWebSocketCapture`, `onRTSPOverWebSocketInstantPlayback`,

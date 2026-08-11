@@ -2307,11 +2307,24 @@ export class RTSPOverWebSocket extends HTMLElement {
       // is unrelated to how large it should be drawn on screen. Without an
       // explicit CSS size the canvas renders at that intrinsic size and
       // overflows the <rtsp-over-websocket> host's own box (e.g. 800x480).
-      // `onRTSPOverWebSocketVideoMode` applies this same
-      // width/height:100%+display:block styling when it replaces the tag on
-      // a canvas<->video mode change, but only if that later replacement
-      // actually fires; setting it here up front makes the fit unconditional.
-      this.video.setAttribute('style', 'width: 100%;\r\nheight: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto;');
+      // `onRTSPOverWebSocketVideoMode` applies this same styling when it
+      // replaces the tag on a canvas<->video mode change, but only if that
+      // later replacement actually fires; setting it here up front makes
+      // the fit unconditional.
+      //
+      // `object-fit: contain` (fixed; used to be missing) is what actually
+      // keeps the real aspect ratio: width/height:100% alone stretches the
+      // element to fill the host's box exactly, distorting the picture
+      // whenever the host's box ratio (from its own CSS/attributes) doesn't
+      // match the decoded video's — e.g. this element sized 640x320 (2:1)
+      // showing a 640x480 (4:3) stream. `object-fit: contain` is supported
+      // on <canvas> the same as <video> in every Chromium/Firefox/Safari
+      // version this player otherwise targets (both are CSS "replaced
+      // elements"), so this is unconditional for both tag modes — the
+      // element's own box still fills 100% of the wrapper, but the actual
+      // picture inside it now letterboxes/pillarboxes and centers instead
+      // of stretching, regardless of tag mode or host aspect ratio.
+      this.video.setAttribute('style', 'width: 100%;\r\nheight: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto;\r\nobject-fit: contain;');
       rtspOverWebSocketWrapperElement.appendChild(this.video);
 
       this.zoom_point = { x: 0, y: 0 };
@@ -3417,15 +3430,18 @@ export class RTSPOverWebSocket extends HTMLElement {
       newVideoElement.setAttribute('id', tagid);
       newVideoElement.setAttribute('rtsp-channel-id', rtspChannelId as string);
       newVideoElement.setAttribute('rtsp-channel-mapped-id', mappedId as string);
-      let styleText = '';
-      // Legacy bug preserved: `event.mode.toLowerCase !== 'canvas'` compares
-      // the FUNCTION REFERENCE `toLowerCase` (never called) to the string
-      // `'canvas'` — always true — so `width: 100%` is unconditionally
-      // appended even when `event.mode === 'canvas'`.
-      if ((event.mode.toLowerCase as unknown) !== 'canvas') {
-        styleText += 'width: 100%;\r\n';
-      }
-      styleText += 'height: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto\r\n';
+      // Was conditional on a legacy bug (`event.mode.toLowerCase !== 'canvas'`
+      // compared the FUNCTION REFERENCE `toLowerCase`, never called, to the
+      // string `'canvas'` — always true, so `width: 100%` was unconditionally
+      // appended regardless of `event.mode` anyway). Now written as the
+      // unconditional style that bug accidentally always produced — no
+      // actual behavior change there — plus `object-fit: contain` (fixed;
+      // previously missing here too, same as updateRendering()'s matching
+      // style string above — see its comment for the full reasoning): keeps
+      // the real aspect ratio instead of stretching to fill the host's box,
+      // for both tag modes, specifically across a live canvas<->video
+      // Renderer Type switch (what this method fires for).
+      const styleText = 'width: 100%;\r\nheight: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto;\r\nobject-fit: contain;\r\n';
       newVideoElement.setAttribute('style', styleText);
       if (this._playType === RTSPOverWebSocketPlayType.LIVE && classList !== null) {
         newVideoElement.setAttribute('class', classList);
@@ -3663,7 +3679,18 @@ export class RTSPOverWebSocket extends HTMLElement {
       // 800x480/5:3 host with a 16:9 video). Applying width:100% here for
       // every tagmode keeps the canvas fit to its parent, matching the
       // sizing already applied at initial attach (`updateRendering()`).
-      const styleText = 'width: 100%;\r\nheight: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto\r\n';
+      //
+      // `object-fit: contain` (fixed; was missing here too): this handler
+      // fires on every real resolution change reported by MediaRouter (first
+      // on the stream's very first keyframe), so during actual playback it's
+      // the *last* style write on the tag — it runs after, and overwrites,
+      // whatever updateRendering()/onRTSPOverWebSocketVideoMode() set
+      // earlier. Without object-fit here too, filling width/height:100%
+      // stretches the picture to the host's own box ratio the instant real
+      // video data starts arriving, undoing the aspect-ratio fix those two
+      // other call sites apply at attach/mode-switch time. See
+      // updateRendering()'s comment for the full object-fit reasoning.
+      const styleText = 'width: 100%;\r\nheight: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto;\r\nobject-fit: contain;\r\n';
       videoElement.setAttribute('style', styleText);
     }
   }
