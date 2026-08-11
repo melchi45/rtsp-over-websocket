@@ -597,3 +597,40 @@ user attached, and the actual "does Chrome now display B-frame H.265 smoothly" c
 still pending a live test on their end. See `docs/player/05-video-player-rendering.md`'s
 `VideoTagPlayer` section (replacing its former "Known gap: no B-frame reordering support" note)
 for the full per-method writeup.
+
+## VideoTagPlayer.createAudioSample() crash on undefined frameData — defended, root cause still open
+
+Reported live: `video`-tag playback with VP9 video + AAC audio (this repo's own YouTube
+transcoding demo) reached `State: PLAYING`, then died with `onAudioData from mediaRouter:
+errorcode [undefined], message [Cannot read properties of undefined (reading 'byteLength')]`,
+alongside a `RtspClient.ts` "device refuse the connection ... 50x/40x" message (almost certainly
+a downstream symptom — the RTSP/WebSocket session getting torn down after the uncaught crash,
+not an independent connection-establishment failure, given `State: PLAYING` had already been
+reached and both messages repeat with identical Requested/Actual connection info).
+
+Traced the crash to `VideoTagPlayer.createAudioSample()`'s `size: streamData.frameData.byteLength`
+— confirmed this is the only `.byteLength` read reachable from `MediaRouter.onAudioData`'s call
+into `player.onAudioData` (only `VideoTagPlayer` even defines `onAudioData`; `CanvasTagPlayer`
+routes audio through a completely separate `audioPlayer.BufferAudio()` path, so this is
+`video`-tag-mode-specific by construction). Also ruled out the WebCodecs-bridge tier as a factor:
+`onAudioData()`'s own `this.mediaSource !== null` guard means it no-ops entirely whenever bridge
+mode is active (audio is simply unhandled there — a separate, known limitation, not this crash) —
+for `createAudioSample` to run at all, real MSE must have been in use for this VP9 session
+(i.e. `MediaSource.isTypeSupported` accepted `vp09` on the browser this was tested on).
+
+**Not yet root-caused**: why `streamData.frameData` arrived undefined for an AAC audio sample
+specifically when the video codec was VP9 remains open. Checked `MediaRouter.ts`'s VP9-specific
+code (`buildVP9CodecString()` call for `videoInfo.codecInfo`, `:806-827`) and confirmed it's
+video-only, with no interaction with the audio session path (`handleAudioData`,
+`:857` onward) — didn't find a concrete coupling bug by static reading. Two live hypotheses,
+neither confirmed: an RTP depacketizing bug elsewhere for a specific packet shape (empty/marker-
+only), or ffmpeg's experimental VP9 RTSP muxer (`-strict experimental`, see `transcodeSession.ts`)
+producing a malformed AAC packet for the shared RTSP session. Needs a full browser console stack
+trace or a repro against VP9 video with a *non*-transcoded (real camera) AAC source to narrow
+further.
+
+Fixed defensively in the meantime, independent of root cause: `createAudioSample()` now returns
+early if `streamData.frameData` is falsy, skipping just that one sample rather than throwing and
+taking down the whole `MediaRouter` session (a missing single audio frame should never be able to
+kill video playback too). See `docs/player/05-video-player-rendering.md`'s `VideoTagPlayer`
+Method Analysis for the `createAudioSample` bullet.

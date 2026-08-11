@@ -727,6 +727,16 @@ flowchart TD
     `channelCount`/`samplingFrequencyIndex`; Opus uses a native-mux config with no
     `audioobjecttype`; G711/G726 keeps a fixed 8kHz-mono AAC-transcode target), and calls
     `createInitSegment()` again to re-declare the init segment with the new track config.
+  - `createAudioSample(streamData, audioinfo, chunkCodec)` — bails out defensively if
+    `streamData.frameData` is falsy, skipping just that sample instead of letting
+    `streamData.frameData.byteLength` throw and take the whole `MediaRouter` session down with it
+    (`MediaRouter.onAudioData`'s try/catch wraps and rethrows any error from here as
+    `RTSPOverWebSocketError 0x030B`, which was observed cascading into the RTSP/WebSocket
+    connection itself getting torn down). **Root cause not yet isolated** — reproduced once
+    against this repo's own VP9-video + AAC-audio transcoding demo; not yet confirmed whether the
+    empty/missing audio frame originates in RTP depacketizing upstream or is specific to ffmpeg's
+    experimental VP9 RTSP muxer sharing a session with the AAC audio track. This guard only stops
+    the crash — it doesn't explain why an audio sample would arrive without frame data.
 
 - **Call Stack.**
 

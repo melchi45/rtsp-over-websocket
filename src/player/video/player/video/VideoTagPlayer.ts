@@ -1294,6 +1294,17 @@ export class VideoTagPlayer extends VideoPlayer {
       return;
     }
 
+    // Defensive: a session was observed reaching here with streamData.frameData undefined
+    // (Cannot read properties of undefined (reading 'byteLength')), killing the whole
+    // MediaRouter session over one malformed/empty audio sample — root cause not yet
+    // isolated (only reproduced against this repo's own VP9-video + AAC-audio transcoding
+    // demo so far; unconfirmed whether upstream RTP depacketizing or ffmpeg's experimental
+    // VP9 RTSP muxer is what's actually producing it). Skip the sample rather than let it
+    // take down video playback too.
+    if (!streamData.frameData) {
+      return;
+    }
+
     if (!this.checkAudioTimestamp(streamData.timeStamp as TimestampData)) return;
 
     const sample: AudioSample = {
