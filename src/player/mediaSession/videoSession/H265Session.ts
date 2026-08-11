@@ -7,6 +7,7 @@ const HEVC_NAL = {
   SPS: 33,
   PPS: 34,
   AUD: 35,
+  AP: 48,
   UNSPEC49: 49
 } as const;
 
@@ -35,6 +36,36 @@ export class H265Session extends RtpSession {
     this.inputBuffer.set(chunk, this.inputLength);
     this.inputLength += chunk.length;
     return this.inputBuffer;
+  }
+
+  /** Buffers one already-unwrapped NAL unit (Annex-B prefixed) and, for
+   * VPS/SPS/PPS, stashes its payload — shared between a standalone
+   * single-NAL-unit RTP packet (the main `switch` below) and each NAL unit
+   * an Aggregation Packet unpacks into (see HEVC_NAL.AP below). */
+  private handleSingleNalUnit(nalType: number, nalUnit: Uint8Array): void {
+    switch (nalType) {
+      case HEVC_NAL.VPS:
+        this.setBuffer(PREFIX);
+        this.setBuffer(nalUnit);
+        this.vpsPayload = nalUnit;
+        break;
+      case HEVC_NAL.SPS:
+        this.setBuffer(PREFIX);
+        this.setBuffer(nalUnit);
+        this.spsPayload = nalUnit;
+        break;
+      case HEVC_NAL.PPS:
+        this.setBuffer(PREFIX);
+        this.setBuffer(nalUnit);
+        this.ppsPayload = nalUnit;
+        break;
+      case HEVC_NAL.AUD:
+        break;
+      default:
+        this.setBuffer(PREFIX);
+        this.setBuffer(nalUnit);
+        break;
+    }
   }
 
   override depacketize(rtspInterleaved: Uint8Array, rtpHeader: Uint8Array, rtpPayload: Uint8Array): void {
@@ -84,22 +115,47 @@ export class H265Session extends RtpSession {
 
     switch (nalType) {
       case HEVC_NAL.VPS:
-        this.setBuffer(PREFIX);
-        this.setBuffer(payload);
-        this.vpsPayload = payload;
-        break;
       case HEVC_NAL.SPS:
-        this.setBuffer(PREFIX);
-        this.setBuffer(payload);
-        this.spsPayload = payload;
-        break;
       case HEVC_NAL.PPS:
-        this.setBuffer(PREFIX);
-        this.setBuffer(payload);
-        this.ppsPayload = payload;
-        break;
       case HEVC_NAL.AUD:
+        this.handleSingleNalUnit(nalType, payload);
         break;
+      case HEVC_NAL.AP: {
+        // Aggregation Packet, RFC 7798 §4.4.2 — bundles multiple NAL units
+        // (typically VPS+SPS+PPS+IDR slice) into one RTP payload, instead of
+        // each arriving as its own single-NAL-unit packet (the cases above).
+        // Previously unhandled here (fell through to `default`, buffering
+        // the whole aggregate as one opaque blob) — meaning VPS/SPS/PPS sent
+        // this way were never captured into vpsPayload/spsPayload/ppsPayload
+        // at all, surfacing downstream as MediaRouter's "SPS payload is not
+        // available ... encoder may be sending SPS/PPS through an
+        // aggregation packet type that is not supported" error. Confirmed:
+        // real Hanwha devices send VPS/SPS/PPS as separate single-NAL-unit
+        // packets (works fine today), but at least ffmpeg's HEVC RTP
+        // payloader (this repo's own YouTube-to-RTSP transcoding demo
+        // server) uses APs instead — this was a real gap, not a
+        // camera-specific one.
+        //
+        // Format after the 2-byte PayloadHdr already consumed as `payload[0..1]`
+        // (its type is this AP marker, 48 — the *individual* NAL units inside
+        // carry their own real types, read from each unit's own first two
+        // bytes below): a sequence of `{ 2-byte NALU size (big-endian), that
+        // many bytes of NALU data }`, no DONL field, since DON isn't
+        // negotiated (`sprop-max-don-diff`) anywhere in this player.
+        let offset = 2;
+        while (offset + 2 <= payload.length) {
+          const nalUnitSize = (payload[offset] << 8) | payload[offset + 1];
+          offset += 2;
+          if (nalUnitSize <= 0 || offset + nalUnitSize > payload.length) {
+            break;
+          }
+          const nalUnit = payload.subarray(offset, offset + nalUnitSize);
+          offset += nalUnitSize;
+          const subNalType = (nalUnit[0] >> 1) & 0x3f;
+          this.handleSingleNalUnit(subNalType, nalUnit);
+        }
+        break;
+      }
       case HEVC_NAL.UNSPEC49: {
         // Fragmentation Unit, RFC 7798 §4.4.3.
         const startBit = (payload[2] & 0x80) === 0x80;

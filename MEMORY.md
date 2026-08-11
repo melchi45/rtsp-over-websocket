@@ -426,3 +426,34 @@ string and was therefore always `true` — i.e. always applied `width: 100%` reg
 intent — replaced with the unconditional style that bug always produced anyway, no behavior change beyond adding
 `object-fit`). See `docs/player/01-elements-interface-exceptions.md`'s `updateRendering()`/
 `onRTSPOverWebSocketVideoMode()`/`onRTSPOverWebSocketResize()` bullets for the full per-method writeup.
+
+## H265Session missing Aggregation Packet (AP) support — "SPS payload is not available" (fixed)
+
+`H265Session.ts` handled VPS(32)/SPS(33)/PPS(34)/AUD(35)/FU(49, Fragmentation Unit)/default, but not
+RFC 7798 §4.4.2's Aggregation Packet type (48) — a real, previously-*documented* gap (this doc set's
+own `03-mediaSession-core-video.md` already noted "unlike `H264Session`, there is no STAP-A-equivalent
+aggregation handling in this class"). An AP bundles multiple NAL units (typically VPS+SPS+PPS+IDR
+slice) into one RTP payload; falling into the `default` case buffered the whole thing as one opaque
+blob without ever extracting the individual VPS/SPS/PPS NAL units bundled inside it — so
+`vpsPayload`/`spsPayload`/`ppsPayload` were never populated, surfacing downstream as
+`MediaRouter.spsParse()`'s "SPS payload is not available for channel … The encoder may be sending
+SPS/PPS through an aggregation packet type that is not supported" — the exact failure mode that error
+message already anticipated by name.
+
+A real consumer hit this using this repo's own YouTube-to-RTSP transcoding demo server
+(`src/server`) with the codec set to H.265: playback reached `State: PLAYING` and then immediately
+threw that error. Real Hanwha devices apparently send VPS/SPS/PPS as separate single-NAL-unit
+packets (confirmed working, unaffected) — at least ffmpeg's HEVC RTP payloader uses APs instead, so
+this was purely a gap in the port for a *reachable* code path, not a camera-specific issue.
+
+Fixed by porting `H264Session`'s already-working STAP-A handling (RFC 6184 §5.7.1) to HEVC's AP
+format: after the AP's own 2-byte PayloadHdr, unpack a sequence of `{2-byte big-endian NALU size,
+that many bytes of NALU data}` (no DONL field — this player never negotiates
+`sprop-max-don-diff`), reading each individual NAL unit's own type from its own first two bytes.
+Factored the "buffer this NAL, and for VPS/SPS/PPS also stash its payload" dispatch into a new
+private `handleSingleNalUnit()`, shared between a standalone single-NAL-unit packet and each unit
+an AP unpacks into, rather than duplicating it. Verified the byte-offset math against a synthetic
+AP (VPS+SPS+PPS) in a throwaway script before considering it done, since no test harness exists for
+this class in this environment (see "Environment gotchas" above re: the missing `legacy-player`
+submodule). See `docs/player/03-mediaSession-core-video.md`'s `H265Session` section for the full
+per-method writeup.

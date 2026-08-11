@@ -762,9 +762,14 @@ classDiagram
 `H265Session extends RtpSession`, structurally parallel to `H264Session`: `inputBuffer`
 (`SIZE_1_4K`), `inputLength`, `playback`, plus **three** cached NAL payloads instead of two —
 `vpsPayload`, `spsPayload`, `ppsPayload` (HEVC has a VPS layer H.264 lacks). `HEVC_NAL`: `VPS=32,
-SPS=33, PPS=34, AUD=35, UNSPEC49=49` — matching RFC 7798 / H.265 NAL unit type numbers (`nal_unit_type`
-values 32-34 for parameter sets, 35 for AUD, 49 for the aggregation/fragmentation-unit type used
-here as FU).
+SPS=33, PPS=34, AUD=35, AP=48, UNSPEC49=49` — matching RFC 7798 / H.265 NAL unit type numbers
+(`nal_unit_type` values 32-34 for parameter sets, 35 for AUD, 48 for the Aggregation Packet type
+(fixed; see Method Analysis), 49 for the Fragmentation Unit type).
+
+`handleSingleNalUnit(nalType, nalUnit)` (private, added alongside the AP fix) factors out
+"buffer this one already-unwrapped NAL, and for VPS/SPS/PPS also stash its payload" — shared
+between a standalone single-NAL-unit RTP packet and each NAL unit an Aggregation Packet unpacks
+into, instead of duplicating that dispatch in two places.
 
 ### Method Analysis
 
@@ -777,14 +782,20 @@ here as FU).
   5. Extension handling and playback-timestamp sync: identical to H264Session (`extensionHeaderLen` computed the same way, same `syncPlaybackTimestampFromRtpExtension` call).
   6. `nalType = (payload[0] >> 1) & 0x3f` — the HEVC NAL header is **2 bytes**, and `nal_unit_type` is a **6-bit** field occupying bits 6-1 of the first byte (RFC 7798 §1.1.1 / H.265 §7.3.1.2), unlike H.264's 5-bit type in the low bits — hence the different shift/mask compared to `H264Session`.
   7. Dispatches on `nalType`:
-     - **VPS (32) / SPS (33) / PPS (34)**: writes `PREFIX + payload`, caches into `vpsPayload`/`spsPayload`/`ppsPayload` respectively.
-     - **AUD (35)**: dropped silently.
+     - **VPS (32) / SPS (33) / PPS (34) / AUD (35)**: delegates to `handleSingleNalUnit`, which writes `PREFIX + nalUnit` and, for VPS/SPS/PPS, caches into `vpsPayload`/`spsPayload`/`ppsPayload` (AUD is dropped silently).
+     - **AP (48) = Aggregation Packet — RFC 7798 §4.4.2 (fixed; previously unimplemented, see below)**: bundles multiple NAL units (typically VPS+SPS+PPS+IDR slice) into one RTP payload. After the 2-byte PayloadHdr already consumed as `nalType`, unpacks a sequence of `{2-byte big-endian NALU size, that many bytes of NALU data}` — no DONL field, since this player never negotiates `sprop-max-don-diff` — reading each individual NAL unit's own real type from its own first two bytes and dispatching each through the same `handleSingleNalUnit`. Mirrors `H264Session`'s STAP-A handling (RFC 6184 §5.7.1) almost exactly, just with HEVC's 2-byte NAL header/6-bit type instead of H.264's 1-byte/5-bit one.
      - **UNSPEC49 = Fragmentation Unit** — RFC 7798 §4.4.3: the FU header is the **third** payload byte (`payload[2]`), after the 2-byte HEVC NAL header (`payload[0]`, `payload[1]`) — `startBit = (payload[2] & 0x80)`, `endBit = (payload[2] & 0x40)`, `fuType = payload[2] & 0x3f` (6-bit original NAL type, S/E bits in the top 2 bits of the same byte). On the start fragment, reconstructs a full 2-byte HEVC NAL header: `[(payload[0] & 0x81) | (fuType << 1), payload[1]]` — preserving the forbidden-zero-bit and `nuh_layer_id`'s low bit from byte 0 (`0x81` mask keeps bit 7 and bit 0) while substituting the real `nal_unit_type` shifted into bits 6-1, and copying byte 1 (`nuh_layer_id`/`nuh_temporal_id_plus1`) unchanged. Writes `PREFIX + newHeader(2 bytes) + payload.subarray(3)`. Continuation/end fragments append `payload.subarray(3)` only.
      - **default**: writes `PREFIX + payload` verbatim (ordinary VCL NAL units, i.e. slice types 0-31 and other non-fragmented/non-aggregated types).
 
-     Note: unlike `H264Session`, there is **no STAP-A-equivalent aggregation handling** in this
-     class — HEVC's AP (Aggregation Packet, type 48) is not implemented; only VPS/SPS/PPS/AUD/FU
-     (49)/default are handled.
+     **AP handling fixed** (was a documented, intentional gap — "unlike `H264Session`, there is no
+     STAP-A-equivalent aggregation handling" — until a real consumer hit it): real Hanwha devices
+     send VPS/SPS/PPS as separate single-NAL-unit packets (works fine either way), but at least
+     ffmpeg's HEVC RTP payloader (this repo's own YouTube-to-RTSP transcoding demo server) uses APs
+     instead — meaning `vpsPayload`/`spsPayload`/`ppsPayload` were never populated for a
+     transcoded/ffmpeg-sourced H.265 stream at all (the whole AP fell into the `default` case,
+     buffered as one opaque blob), surfacing downstream as `MediaRouter.spsParse()`'s "SPS payload
+     is not available … encoder may be sending SPS/PPS through an aggregation packet type that is
+     not supported" error — the very failure mode that error message was already anticipating.
   8. On marker bit: same pattern as H264 — snapshot buffer, compute `rtpTimestamp`, reset
      `inputLength`, record start timestamp on first frame, increment counter. `frameType` is
      determined differently from H264: `inputBufferSub[4] === 0x40` — byte offset 4 is the first
@@ -806,10 +817,12 @@ H264SPSParser : H265SPSParser` branch).
 
 RFC 7798 (RTP Payload Format for HEVC): §1.1.1 NAL unit header (2 bytes: `forbidden_zero_bit(1)
 + nal_unit_type(6) + nuh_layer_id(6) + nuh_temporal_id_plus1(3)`, matching H.265 §7.3.1.2 exactly),
-§4.4.3 Fragmentation Units (FU header byte: `S(1) E(1) FuType(6)`, immediately following the
-2-byte payload header that carries the FU's own `LayerId`/`TID` but a placeholder `nal_unit_type`
-of 49). NAL type constants 32 (VPS)/33 (SPS)/34 (PPS)/35 (AUD)/49 (FU) match RFC 7798 Table 1 /
-H.265 Table 7-1.
+§4.4.2 Aggregation Packets (PayloadHdr's own `nal_unit_type` is 48; contents are a sequence of
+`{2-byte NALU size, NALU}` with no DONL field, since `sprop-max-don-diff` is never negotiated —
+fixed, see Method Analysis), §4.4.3 Fragmentation Units (FU header byte: `S(1) E(1) FuType(6)`,
+immediately following the 2-byte payload header that carries the FU's own `LayerId`/`TID` but a
+placeholder `nal_unit_type` of 49). NAL type constants 32 (VPS)/33 (SPS)/34 (PPS)/35 (AUD)/48
+(AP)/49 (FU) match RFC 7798 Table 1 / H.265 Table 7-1.
 
 ### Relations & Data Flow
 
