@@ -103,15 +103,19 @@ export class H265Session extends RtpSession {
     const payload = rtpPayload.subarray(extensionHeaderLen, rtpPayload.length - paddingSize);
     const rtpTimeStamp = this.ntohl(rtpHeader.subarray(4, 8));
 
+    // Unlike H264Session's equivalent guard (H.264 NAL type 0 really is
+    // "Unspecified"/unused, RFC 6184 Table 7-1) — this used to also throw
+    // on `nalType === 0`, copied over from that same pattern without
+    // accounting for H.265 having an entirely different, wider NAL type
+    // numbering. H.265 type 0 is TRAIL_N (RFC 7798 Table 1 / H.265 Table
+    // 7-1): an ordinary, common non-reference trailing-picture slice, not
+    // reserved or invalid — falls through to the `default` case below like
+    // every other slice type (TRAIL_R=1, IDR_W_RADL=19, CRA_NUT=21, etc.,
+    // none of which have their own switch case either). Rejecting it broke
+    // any H.265 source whose encoder actually emits TRAIL_N — confirmed via
+    // this repo's own YouTube-to-RTSP transcoding demo server (ffmpeg does),
+    // while real Hanwha devices apparently don't hit it either way.
     const nalType = (payload[0] >> 1) & 0x3f;
-    if (nalType === 0) {
-      throw new RTSPOverWebSocketError({
-        channelId: this.channelId,
-        errorCode: 0x0101,
-        place: 'H265Session.ts:154',
-        message: `This NAL type does not support on this application. nal_type = ${nalType}`
-      });
-    }
 
     switch (nalType) {
       case HEVC_NAL.VPS:

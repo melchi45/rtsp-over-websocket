@@ -457,3 +457,24 @@ AP (VPS+SPS+PPS) in a throwaway script before considering it done, since no test
 this class in this environment (see "Environment gotchas" above re: the missing `legacy-player`
 submodule). See `docs/player/03-mediaSession-core-video.md`'s `H265Session` section for the full
 per-method writeup.
+
+## H265Session rejected NAL type 0 (TRAIL_N) — a valid H.264-guard copy-pasted without adjusting for H.265 (fixed)
+
+Immediately after fixing the AP gap above, the same consumer hit a second, distinct `H265Session`
+bug on the very next thing the fixed AP-carried stream sent: `depacketize()` unconditionally threw
+`0x0101` ("This NAL type does not support on this application. nal_type = 0") whenever
+`nalType === 0`. `H264Session` has the identical-looking guard, and there it's correct — H.264 NAL
+type 0 really is unused/reserved (RFC 6184 Table 7-1). But H.265 has an entirely different, wider
+NAL type space (6 bits vs. H.264's 5), and type 0 there is `TRAIL_N` (RFC 7798 Table 1 / H.265
+Table 7-1): an ordinary, common non-reference trailing-picture slice — not reserved, not invalid.
+The guard was evidently copied from `H264Session` when `H265Session` was ported without adjusting
+for that difference, silently rejecting every non-reference slice an H.265 encoder happened to mark
+as `TRAIL_N`.
+
+Fixed by removing the guard entirely — type-0 slices now fall through to the `default` case like
+every other slice type already does (`TRAIL_R`=1, `IDR_W_RADL`=19, `CRA_NUT`=21, etc. never had
+their own `switch` case either, so `default` is already the correct, exercised path for them).
+Confirmed via the same YouTube-to-RTSP transcoding demo server as the AP fix (ffmpeg's H.265 output
+uses `TRAIL_N`); real Hanwha devices apparently don't hit this either way — both H265Session bugs
+were latent for real camera streams and only surfaced once ffmpeg-transcoded H.265 was actually
+exercised.

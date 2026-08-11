@@ -781,6 +781,17 @@ into, instead of duplicating that dispatch in two places.
   4. Padding: checks `(rtpHeader[0] & 0x20) === 0x20` directly (equivalent to `flags.padding`) and reads the trailing padding-length byte.
   5. Extension handling and playback-timestamp sync: identical to H264Session (`extensionHeaderLen` computed the same way, same `syncPlaybackTimestampFromRtpExtension` call).
   6. `nalType = (payload[0] >> 1) & 0x3f` — the HEVC NAL header is **2 bytes**, and `nal_unit_type` is a **6-bit** field occupying bits 6-1 of the first byte (RFC 7798 §1.1.1 / H.265 §7.3.1.2), unlike H.264's 5-bit type in the low bits — hence the different shift/mask compared to `H264Session`.
+     **Fixed: used to also throw `0x0101` ("This NAL type does not support…") when `nalType === 0`**,
+     copied from `H264Session`'s equivalent guard (there, correctly rejecting a genuinely
+     unused/reserved type, RFC 6184 Table 7-1) without accounting for H.265's entirely different,
+     wider NAL type numbering: H.265 type 0 is `TRAIL_N` (RFC 7798 Table 1 / H.265 Table 7-1) — an
+     ordinary, common non-reference trailing-picture slice, not reserved or invalid at all. Removed
+     the guard entirely; type-0 slices now fall through to the `default` case below like every
+     other slice type already does (`TRAIL_R`=1, `IDR_W_RADL`=19, `CRA_NUT`=21, etc. never had
+     their own case either). Broke any H.265 source whose encoder actually emits `TRAIL_N` —
+     confirmed via this repo's own YouTube-to-RTSP transcoding demo server (ffmpeg does); real
+     Hanwha devices apparently don't emit it (or the stream just never needed non-reference
+     pictures), so this went unnoticed against real cameras.
   7. Dispatches on `nalType`:
      - **VPS (32) / SPS (33) / PPS (34) / AUD (35)**: delegates to `handleSingleNalUnit`, which writes `PREFIX + nalUnit` and, for VPS/SPS/PPS, caches into `vpsPayload`/`spsPayload`/`ppsPayload` (AUD is dropped silently).
      - **AP (48) = Aggregation Packet — RFC 7798 §4.4.2 (fixed; previously unimplemented, see below)**: bundles multiple NAL units (typically VPS+SPS+PPS+IDR slice) into one RTP payload. After the 2-byte PayloadHdr already consumed as `nalType`, unpacks a sequence of `{2-byte big-endian NALU size, that many bytes of NALU data}` — no DONL field, since this player never negotiates `sprop-max-don-diff` — reading each individual NAL unit's own real type from its own first two bytes and dispatching each through the same `handleSingleNalUnit`. Mirrors `H264Session`'s STAP-A handling (RFC 6184 §5.7.1) almost exactly, just with HEVC's 2-byte NAL header/6-bit type instead of H.264's 1-byte/5-bit one.
