@@ -16,18 +16,25 @@ import { HTTP_STATUS_CODES } from './HttpStatusCode';
  * branch it guards is unreachable dead code and is dropped; `init()` always
  * constructs a `SunapiClient`.
  *
- * NOTE — confirmed real bug, preserved as-is: `SunapiClient` (sunapiClient)
- * has no `join()` method (its prototype is only get/post/setTimeout/getAuthInfo).
+ * NOTE — fixed, was a confirmed real bug: `SunapiClient` (sunapiClient) has
+ * no `join()` method (its prototype is only get/post/setTimeout/getAuthInfo).
  * Legacy's `getSessionKey`/`getStorageInfo`/`getRecordingSetup`/
  * `getSearchRecordingPeriod`/`getCalendarSearch`/`getOverlappedIdList`/
- * `getTimeline`/`getAITimeline` all call `sunapiClient.join()` right after
+ * `getTimeline`/`getAITimeline` all called `sunapiClient.join()` right after
  * `sunapiClient.get(...)` inside their own try/catch — since `useSunapiClient`
  * is always true, `_sunapiClient` is always a `SunapiClient`, so this call
- * always throws synchronously, is caught, and re-thrown as a `RTSPOverWebSocketError`
- * (0x0700) — which, because it happens inside the `new Promise(executor)`
- * callback, always rejects the returned promise immediately. These eight
- * methods are therefore functionally broken in the legacy library today;
- * this port reproduces that exact failure rather than silently fixing it.
+ * always threw synchronously, was caught, and re-thrown as a
+ * `RTSPOverWebSocketError` (0x0700) — which, because it happened inside the
+ * `new Promise(executor)` callback, always rejected the returned promise
+ * immediately, regardless of whether the underlying GET itself would have
+ * succeeded. Initially ported faithfully (these eight methods were
+ * functionally broken in the legacy library too), then actually fixed here
+ * — by removing the `join()` call and its `joinAfterGet` option entirely —
+ * once a real consumer hit it against a real device: `getOverlappedIdList`
+ * doing exactly what it should (device responds with valid
+ * `OverlappedIDList` JSON) but still surfacing as a failure to the caller,
+ * because the promise had already rejected before the GET's own
+ * resolve/reject callbacks ever had a chance to fire.
  */
 
 export interface SunapiManagerDeviceInfo extends SunapiClientDeviceInfo {
@@ -396,28 +403,21 @@ export class SunapiManager {
   }
 
   getSessionKey(): Promise<unknown> {
-    return this.request(() => `/stw-cgi/${CGI.MEDIA_CGI}?msubmenu=${SUBMENU.VIDEO_SESSION_KEY}&action=${ACTION.VIEW}`, 'getSessionKey', {
-      joinAfterGet: true
-    });
+    return this.request(() => `/stw-cgi/${CGI.MEDIA_CGI}?msubmenu=${SUBMENU.VIDEO_SESSION_KEY}&action=${ACTION.VIEW}`, 'getSessionKey');
   }
 
   getStorageInfo(): Promise<unknown> {
-    return this.request(() => `/stw-cgi/${CGI.SYSTEM_CGI}?msubmenu=${SUBMENU.RECORDING_STORAGE_INFO}&action=${ACTION.VIEW}`, 'getStorageInfo', {
-      joinAfterGet: true
-    });
+    return this.request(() => `/stw-cgi/${CGI.SYSTEM_CGI}?msubmenu=${SUBMENU.RECORDING_STORAGE_INFO}&action=${ACTION.VIEW}`, 'getStorageInfo');
   }
 
   getRecordingSetup(): Promise<unknown> {
-    return this.request(() => `/stw-cgi/${CGI.RECORDING_CGI}?msubmenu=${SUBMENU.RECORDING_SETUP}&action=${ACTION.VIEW}`, 'getRecordingSetup', {
-      joinAfterGet: true
-    });
+    return this.request(() => `/stw-cgi/${CGI.RECORDING_CGI}?msubmenu=${SUBMENU.RECORDING_SETUP}&action=${ACTION.VIEW}`, 'getRecordingSetup');
   }
 
   getSearchRecordingPeriod(): Promise<unknown> {
     return this.request(
       () => `/stw-cgi/${CGI.RECORDING_CGI}?msubmenu=${SUBMENU.RECORDING_SEARCH_PERIOD}&action=${ACTION.VIEW}`,
-      'getSearchRecordingPeriod',
-      { joinAfterGet: true }
+      'getSearchRecordingPeriod'
     );
   }
 
@@ -436,8 +436,7 @@ export class SunapiManager {
         }
         return sunapiURI;
       },
-      'getCalendarSearch',
-      { joinAfterGet: true }
+      'getCalendarSearch'
     );
   }
 
@@ -456,24 +455,21 @@ export class SunapiManager {
         }
         return sunapiURI;
       },
-      'getOverlappedIdList',
-      { joinAfterGet: true }
+      'getOverlappedIdList'
     );
   }
 
   getTimeline(fromDate: string, toDate: string, channelIdList?: string, overlappedId?: string, type?: string): Promise<unknown> {
     return this.request(
       () => this.buildTimelineUri(`/stw-cgi/${CGI.RECORDING_CGI}?msubmenu=${SUBMENU.RECORDING_TIMELINE}&action=${ACTION.VIEW}`, fromDate, toDate, channelIdList, overlappedId, type, 'Type', 'All'),
-      'getTimeline',
-      { joinAfterGet: true }
+      'getTimeline'
     );
   }
 
   getAITimeline(fromDate: string, toDate: string, channelIdList?: string, overlappedId?: string, type?: string): Promise<unknown> {
     return this.request(
       () => this.buildTimelineUri(`/stw-cgi/${CGI.AI_CGI}?msubmenu=${SUBMENU.RECORDING_AI_TIMELINE}&action=${ACTION.VIEW}`, fromDate, toDate, channelIdList, overlappedId, type, 'ClassType', 'Person'),
-      'getTimeline',
-      { joinAfterGet: true }
+      'getTimeline'
     );
   }
 
@@ -528,7 +524,7 @@ export class SunapiManager {
   private request<T = unknown>(
     buildUri: () => string,
     place: string,
-    opts: { extract?: (data: Record<string, unknown>) => T; joinAfterGet?: boolean; includeUriPlaceInCatch?: boolean } = {}
+    opts: { extract?: (data: Record<string, unknown>) => T; includeUriPlaceInCatch?: boolean } = {}
   ): Promise<T> {
     const sunapiClient = this._sunapiClient!;
     return new Promise<T>((resolve, reject) => {
@@ -549,10 +545,6 @@ export class SunapiManager {
           '',
           this.device.async ? true : false
         );
-        if (opts.joinAfterGet) {
-          // NOTE: confirmed real bug, intentionally reproduced — see class-level doc comment.
-          (sunapiClient as unknown as { join: () => void }).join();
-        }
       } catch (error) {
         // NOTE: legacy also sets a `uri` field on this RTSPOverWebSocketError's options in
         // getAttributes's catch block specifically — but RTSPOverWebSocketBaseError's

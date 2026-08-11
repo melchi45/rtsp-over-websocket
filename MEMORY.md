@@ -342,3 +342,25 @@ page's own location. `SunapiRestClient` is confirmed unreachable from the live a
 `docs/player/02-network.md`'s `SunapiManager`/`SunapiRestClient` sections), so its fix is a public-API-surface
 correctness fix rather than something that changes current runtime behavior. See those same doc sections for the
 full per-class writeup.
+
+## `SunapiManager`'s `joinAfterGet` bug (fixed — was intentionally-preserved, now a real problem)
+
+`getSessionKey()`/`getStorageInfo()`/`getRecordingSetup()`/`getSearchRecordingPeriod()`/`getCalendarSearch()`/
+`getOverlappedIdList()`/`getTimeline()`/`getAITimeline()` all called `sunapiClient.join()` right after
+`sunapiClient.get(...)` — but `SunapiClient` never had a `join()` method (only `get`/`post`/`setTimeout`/
+`getAuthInfo`), so that call always threw synchronously and rejected the promise via `request()`'s `try/catch`,
+**regardless of whether the underlying GET actually succeeded**. This was a real bug in the legacy library too,
+and was initially ported faithfully rather than silently fixed (per this codebase's general policy of preserving
+legacy quirks/bugs that might be load-bearing for parity tests) — see the git history of `SunapiManager.ts`'s
+class-level doc comment for how it used to read.
+
+Actually fixed once a real consumer hit it against a real device: `getOverlappedIdList()` sent a well-formed
+request, the camera responded with valid `OverlappedIDList`/`ChannelBasedOverlappedIDList` JSON, and the caller
+still saw a hard failure (`0x0700`, "o.join is not a function") — because the promise had already rejected via the
+`join()` throw before the GET's own `resolve`/`reject` callbacks ever got a chance to fire. Unlike the
+`getAudioVolume()` investigation above (where the "bug" turned out to be correct, load-bearing behavior and the
+real fix belonged in the *caller*), this one really was a bug in this library with no legitimate purpose — `join()`
+was presumably meant to work against whichever backing client was in use (`SunapiRestClient` has a real, safe-to-
+call `join()` — see its section in `docs/player/02-network.md`), but `SunapiManager` only ever constructs a
+`SunapiClient`, which never had one. Fixed by removing the `join()` call and the `joinAfterGet` option entirely
+from `SunapiManager.ts`; see `docs/player/02-network.md`'s `SunapiManager` section for the full per-method writeup.

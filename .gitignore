@@ -18,3 +18,6 @@ node_modules
 # machine-specific overrides, not meant to be checked in. .env.example
 # documents the available keys and stays tracked.
 /.env
+# Contains a GitHub Packages auth token for @melchi45 (write:packages, for
+# `npm publish`) — never commit this.
+/.npmrc

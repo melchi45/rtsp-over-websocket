@@ -819,27 +819,34 @@ over `SunapiClient`, exposing one method per SUNAPI endpoint.
   legacy bug: if the response's `data.size === 0` (or `data` is undefined), the promise is never
   resolved *or* rejected — it hangs unless some other timeout/error path fires.
 - `getSessionKey()`, `getStorageInfo()`, `getRecordingSetup()`, `getSearchRecordingPeriod()`,
-  `getCalendarSearch()`, `getOverlappedIdList()`, `getTimeline()`, `getAITimeline()` — all pass
-  `joinAfterGet: true` to `request()`, which (see below) is a **confirmed real bug**: these eight
-  methods are functionally broken today (always reject), preserved intentionally rather than
-  silently fixed.
+  `getCalendarSearch()`, `getOverlappedIdList()`, `getTimeline()`, `getAITimeline()` — plain
+  `request()` calls, same shape as every other method here. **Fixed** (was a confirmed real bug):
+  these eight used to also pass `joinAfterGet: true`, which (see below) made them functionally
+  broken — always rejecting regardless of whether the device actually responded successfully.
+  Initially ported faithfully (matching a real legacy bug), then actually fixed once a real
+  consumer hit it — `getOverlappedIdList` succeeding against a real device (valid
+  `OverlappedIDList` JSON back) but still surfacing as a failure — by removing the `join()` call
+  and the `joinAfterGet` option entirely; see `SunapiManager`'s class-level doc comment for the
+  full story.
 - `request<T>(buildUri, place, opts)` (private) — the shared executor: builds the URI *inside* the
   `Promise` executor (matching legacy — so a validation throw inside `buildUri`, e.g.
   `getOverlappedIdList`'s missing-date check, rejects the promise rather than throwing
-  synchronously to the caller), calls `sunapiClient.get(...)`, and — if `opts.joinAfterGet` — calls
-  `sunapiClient.join()` immediately after. **`SunapiClient` has no `join()` method** (its only
-  prototype methods are `get`/`post`/`setTimeout`/`getAuthInfo`), so this call always throws
-  synchronously, which the surrounding `try/catch` converts into a `RTSPOverWebSocketError`
-  (`0x0700`) rejection — meaning every `joinAfterGet: true` caller listed above always rejects,
-  regardless of whether the underlying `GET` would have succeeded. This is reproduced exactly as
-  in legacy, not fixed.
+  synchronously to the caller), then calls `sunapiClient.get(...)`. No longer has a
+  `joinAfterGet`-gated `sunapiClient.join()` call after it (see above) — `SunapiClient` never had a
+  `join()` method (its only prototype methods are `get`/`post`/`setTimeout`/`getAuthInfo`), so that
+  call always threw synchronously and rejected the promise via the surrounding `try/catch`'s
+  `RTSPOverWebSocketError` (`0x0700`), independent of whatever the in-flight `get()` call was
+  actually doing.
 - `buildTimelineUri(...)` (private) — shared URI builder for `getTimeline`/`getAITimeline`,
   including camera-specific date reformatting (`T`/`Z` stripped from ISO timestamps) and
   `Type`/`ClassType` query parameters.
 
 ### Call Stack
 
-**SUNAPI REST GET (a working, non-`joinAfterGet` call)**
+**SUNAPI REST GET** (every `request()`-backed method, including the previously-broken
+`getSessionKey()`/`getStorageInfo()`/`getRecordingSetup()`/`getSearchRecordingPeriod()`/
+`getCalendarSearch()`/`getOverlappedIdList()`/`getTimeline()`/`getAITimeline()` — see Method
+Analysis above for why those eight used to take a different, always-rejecting path)
 
 1. Caller (e.g. `<rtsp-over-websocket>`'s demo/device-info UI) calls `sunapiManager.getDeviceInfo()`.
 2. `getDeviceInfo()` → `request(() => '/stw-cgi/system.cgi?msubmenu=deviceinfo&action=view',
@@ -850,14 +857,6 @@ over `SunapiClient`, exposing one method per SUNAPI endpoint.
    (including any digest 401 retry — see `SunapiClient`'s Call Stack above) → `successFn(response)`.
 5. `request()`'s success wrapper calls `unwrapResponse(response)` (unwraps a `{data: ...}`
    envelope if present) and resolves the promise (optionally through `opts.extract`).
-
-**Broken `joinAfterGet` call (e.g. `getSessionKey()`)**
-
-1. Caller calls `sunapiManager.getSessionKey()`.
-2. `request()` calls `sunapiClient.get(...)` (which proceeds normally, asynchronously, and will
-   eventually call `successFn`/`failFn` whenever the XHR completes) and then, synchronously right
-   after, calls `sunapiClient.join()`.
-3. `sunapiClient.join` is `undefined` → calling it throws a `TypeError` synchronously.
 4. The surrounding `try/catch` in `request()`'s executor catches this and calls `reject(new
    RTSPOverWebSocketError({errorCode: 0x0700, ...}))` — the promise rejects immediately,
    regardless of what the in-flight `get()` call eventually does.
@@ -941,9 +940,10 @@ request to a dedicated Web Worker instead of an in-thread `XMLHttpRequest`.
   terminates the worker. `worker.onerror` is a silent no-op (legacy logged only).
 - `join()` — since `promiseMode` is always `true`, this always no-ops (the `if (!this.promiseMode)
   return` short-circuit before it ever matters); `Promise.resolve(this.promise)` is also a no-op
-  in effect (its result is discarded). Unlike `SunapiManager`'s `joinAfterGet` bug against
-  `SunapiClient` (which has *no* `join()` at all and throws), `SunapiRestClient.join()` exists and
-  is safe to call — but nothing in this class's own callers actually depends on it doing anything.
+  in effect (its result is discarded). Unlike `SunapiClient` (which has *no* `join()` at all —
+  `SunapiManager` used to call it anyway via a since-fixed `joinAfterGet` bug, see that section),
+  `SunapiRestClient.join()` exists and is safe to call — but nothing in this class's own callers
+  actually depends on it doing anything.
 - `toQueryString(json)` — public wrapper around the private `jsonToText` (same `&key=value`
   builder as `SunapiClient`), exposed for parity testing.
 - `setTimeout(timeout)` — sets `deviceConfig.timeout`.
