@@ -598,39 +598,49 @@ still pending a live test on their end. See `docs/player/05-video-player-renderi
 `VideoTagPlayer` section (replacing its former "Known gap: no B-frame reordering support" note)
 for the full per-method writeup.
 
-## VideoTagPlayer.createAudioSample() crash on undefined frameData — defended, root cause still open
+## VideoTagPlayer init-segment race: audio arriving before the first video I-frame — root-caused and fixed
 
-Reported live: `video`-tag playback with VP9 video + AAC audio (this repo's own YouTube
-transcoding demo) reached `State: PLAYING`, then died with `onAudioData from mediaRouter:
+Reported live: `video`-tag playback with VP9 (then also AV1) video + AAC audio (this repo's own
+YouTube transcoding demo) reached `State: PLAYING`, then died with `onAudioData from mediaRouter:
 errorcode [undefined], message [Cannot read properties of undefined (reading 'byteLength')]`,
-alongside a `RtspClient.ts` "device refuse the connection ... 50x/40x" message (almost certainly
-a downstream symptom — the RTSP/WebSocket session getting torn down after the uncaught crash,
-not an independent connection-establishment failure, given `State: PLAYING` had already been
-reached and both messages repeat with identical Requested/Actual connection info).
+alongside a `RtspClient.ts` "device refuse the connection ... 50x/40x" message and, after the
+first fix attempt below, a further `Uncaught InvalidStateError: Failed to set the 'duration'
+property on 'MediaSource'` — all part of one cascade, not independent bugs.
 
-Traced the crash to `VideoTagPlayer.createAudioSample()`'s `size: streamData.frameData.byteLength`
-— confirmed this is the only `.byteLength` read reachable from `MediaRouter.onAudioData`'s call
-into `player.onAudioData` (only `VideoTagPlayer` even defines `onAudioData`; `CanvasTagPlayer`
-routes audio through a completely separate `audioPlayer.BufferAudio()` path, so this is
-`video`-tag-mode-specific by construction). Also ruled out the WebCodecs-bridge tier as a factor:
-`onAudioData()`'s own `this.mediaSource !== null` guard means it no-ops entirely whenever bridge
-mode is active (audio is simply unhandled there — a separate, known limitation, not this crash) —
-for `createAudioSample` to run at all, real MSE must have been in use for this VP9 session
-(i.e. `MediaSource.isTypeSupported` accepted `vp09` on the browser this was tested on).
+**First fix attempt was incomplete**: initially traced the `.byteLength` crash to
+`VideoTagPlayer.createAudioSample()`'s `size: streamData.frameData.byteLength` and guarded it —
+this didn't actually stop the crash (same VP9 repro, then confirmed AV1 too), because it wasn't
+the real trigger. The real one is earlier in the same call chain: `onAudioData()` calls
+`setAudioInfo()` *before* `createAudioSample()` whenever the audio codec is first learned or
+changes, and `setAudioInfo()`'s codec-switch branch calls `createInitSegment()` — which
+unconditionally did `initSegment([this.videoInfoBox as Mp4VideoTrackInfo, this.audioInfo])`.
+`videoInfoBox` only gets set once, from `onVideoData()`'s first-I-frame block. If the first audio
+RTP packet reaches the player *before* the first video I-frame does, `setAudioInfo()`'s
+`createInitSegment()` call runs with `videoInfoBox` still `null`, force-cast past the type system
+— `mp4Generator.js`'s box-concatenation code then hits an `undefined` child box (from the video
+track's own never-actually-built config box) and throws exactly the reported `.byteLength` error,
+which `MediaRouter.onAudioData`'s try/catch wraps as `RTSPOverWebSocketError 0x030B` and — per the
+live report — cascades into tearing down the RTSP/WebSocket connection itself (the "device refuse
+the connection" message) and, during that teardown/reconnect churn, a stale/late-firing
+`'sourceopen'` event reaching `setSourceBuffer()` after the `MediaSource` had already moved on to
+`'closed'`/`'ended'` (the `InvalidStateError` on `.duration`).
 
-**Not yet root-caused**: why `streamData.frameData` arrived undefined for an AAC audio sample
-specifically when the video codec was VP9 remains open. Checked `MediaRouter.ts`'s VP9-specific
-code (`buildVP9CodecString()` call for `videoInfo.codecInfo`, `:806-827`) and confirmed it's
-video-only, with no interaction with the audio session path (`handleAudioData`,
-`:857` onward) — didn't find a concrete coupling bug by static reading. Two live hypotheses,
-neither confirmed: an RTP depacketizing bug elsewhere for a specific packet shape (empty/marker-
-only), or ffmpeg's experimental VP9 RTSP muxer (`-strict experimental`, see `transcodeSession.ts`)
-producing a malformed AAC packet for the shared RTSP session. Needs a full browser console stack
-trace or a repro against VP9 video with a *non*-transcoded (real camera) AAC source to narrow
-further.
+Not confirmed why audio-before-video-keyframe happens more readily for VP9/AV1 than H264/H265 in
+this demo specifically (plausibly GOP/keyframe-interval or muxer-negotiation timing differences —
+not chased further, since the fix doesn't depend on knowing why the race window opens, only that
+it can).
 
-Fixed defensively in the meantime, independent of root cause: `createAudioSample()` now returns
-early if `streamData.frameData` is falsy, skipping just that one sample rather than throwing and
-taking down the whole `MediaRouter` session (a missing single audio frame should never be able to
-kill video playback too). See `docs/player/05-video-player-rendering.md`'s `VideoTagPlayer`
-Method Analysis for the `createAudioSample` bullet.
+Fixed with three changes, in order of how directly each addresses the cascade:
+- `createInitSegment()` now returns early (no-op) if `this.videoInfoBox === null` — the actual
+  fix. Free to defer: `onVideoData()`'s own `createInitSegment()` call, once the first I-frame
+  does arrive, runs with whatever `this.audioInfo` is current by then anyway.
+- `createAudioSample()`'s `streamData.frameData` falsy-guard (the first, incomplete attempt) was
+  kept as defense-in-depth — a single bad/empty audio sample still shouldn't be able to kill video
+  playback, regardless of cause.
+- `setSourceBuffer()` now returns early unless `mediaSource.readyState === 'open'`, matching what
+  the MSE spec actually requires before setting `.duration` — guards the stale-event tail of the
+  cascade even if something else triggers session churn in the future.
+
+See `docs/player/05-video-player-rendering.md`'s `VideoTagPlayer` Method Analysis
+(`createInitSegment`/`createAudioSample`/`setSourceBuffer` bullets) for the full per-method
+writeup.

@@ -1347,7 +1347,23 @@ export class VideoTagPlayer extends VideoPlayer {
   }
 
   private createInitSegment(): void {
-    this.segmentArray.unshift(initSegment([this.videoInfoBox as Mp4VideoTrackInfo, this.audioInfo]));
+    // Guards a real race: setAudioInfo() also calls this (to re-declare the init segment
+    // whenever the real audio codec is first learned or changes), but audio RTP can arrive
+    // before the first video I-frame does — the only place videoInfoBox actually gets set
+    // (onVideoData(), right before its own createInitSegment() call). Building an init segment
+    // with a null video track previously reached mp4Generator.js's box-concatenation code with
+    // an undefined child box, throwing "Cannot read properties of undefined (reading
+    // 'byteLength')" and killing the whole MediaRouter session — observed live with VP9/AV1
+    // (this repo's own transcoding demo), where audio apparently reaches the player before the
+    // first keyframe more readily than it does for H264/H265. Deferring here is enough: once
+    // the first video I-frame does arrive, onVideoData()'s own createInitSegment() call runs
+    // with the already-current this.audioInfo, so nothing is lost — the audio codec info just
+    // gets declared a little later than in the (invalid) alternative of declaring it without a
+    // real video track at all.
+    if (this.videoInfoBox === null) {
+      return;
+    }
+    this.segmentArray.unshift(initSegment([this.videoInfoBox, this.audioInfo]));
     this.appendSegmentToSourceBuffer();
   }
 
@@ -1519,6 +1535,15 @@ export class VideoTagPlayer extends VideoPlayer {
 
   private setSourceBuffer(): void {
     const mediaSource = this.mediaSource as MediaSource;
+    // Guard against a real race, not just a defensive nicety: setting `duration` requires
+    // readyState === 'open' per the MSE spec, and this is only ever called from the
+    // 'sourceopen' listener — which should already guarantee that — but a late-firing/stale
+    // event (observed live, following session teardown/reconnect churn from an unrelated crash)
+    // can still reach here after the MediaSource has already moved on to 'closed'/'ended',
+    // throwing an uncaught InvalidStateError ("Failed to set the 'duration' property...").
+    if (mediaSource.readyState !== 'open') {
+      return;
+    }
     if (mediaSource.sourceBuffers.length === 0) {
       mediaSource.duration = 0;
 

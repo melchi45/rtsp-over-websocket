@@ -727,16 +727,32 @@ flowchart TD
     `channelCount`/`samplingFrequencyIndex`; Opus uses a native-mux config with no
     `audioobjecttype`; G711/G726 keeps a fixed 8kHz-mono AAC-transcode target), and calls
     `createInitSegment()` again to re-declare the init segment with the new track config.
-  - `createAudioSample(streamData, audioinfo, chunkCodec)` — bails out defensively if
-    `streamData.frameData` is falsy, skipping just that sample instead of letting
-    `streamData.frameData.byteLength` throw and take the whole `MediaRouter` session down with it
-    (`MediaRouter.onAudioData`'s try/catch wraps and rethrows any error from here as
-    `RTSPOverWebSocketError 0x030B`, which was observed cascading into the RTSP/WebSocket
-    connection itself getting torn down). **Root cause not yet isolated** — reproduced once
-    against this repo's own VP9-video + AAC-audio transcoding demo; not yet confirmed whether the
-    empty/missing audio frame originates in RTP depacketizing upstream or is specific to ffmpeg's
-    experimental VP9 RTSP muxer sharing a session with the AAC audio track. This guard only stops
-    the crash — it doesn't explain why an audio sample would arrive without frame data.
+  - `createInitSegment()` (`:1349-1367`) — **root-caused and fixed**: returns early (no-op) if
+    `this.videoInfoBox` is still `null`. Both `onVideoData()`'s first-I-frame block and
+    `setAudioInfo()`'s codec-switch block call this, but only the former ever sets
+    `videoInfoBox` first — if audio RTP reaches the player before the first video I-frame does
+    (observed live against this repo's own VP9/AV1 transcoding demo, apparently more easily than
+    for H264/H265), `setAudioInfo()` used to call `initSegment([null, this.audioInfo])`, which
+    reached `mp4Generator.js`'s box-concatenation code with an `undefined` child box from the
+    video track's own (never-actually-built) config box and threw `Cannot read properties of
+    undefined (reading 'byteLength')` — killing the whole `MediaRouter` session (surfaced through
+    `MediaRouter.onAudioData`'s try/catch as `RTSPOverWebSocketError 0x030B`, and observed
+    cascading further into the RTSP/WebSocket connection itself getting torn down). Deferring
+    costs nothing: once the first video I-frame does arrive, `onVideoData()`'s own
+    `createInitSegment()` call runs with the already-current `this.audioInfo` anyway.
+  - `createAudioSample(streamData, audioinfo, chunkCodec)` — also bails out defensively if
+    `streamData.frameData` is falsy, skipping just that one sample rather than letting the same
+    `.byteLength` throw take down the session. Belt-and-suspenders alongside the
+    `createInitSegment()` fix above (which was the fix for the *specific* crash reported) — kept
+    since a missing/empty frame from a different upstream cause is still plausible and a single
+    bad audio sample still shouldn't be able to kill video playback too.
+  - `setSourceBuffer()` (`:1536-`) — returns early unless `mediaSource.readyState === 'open'`,
+    guarding the immediately-following `mediaSource.duration = 0` (which the MSE spec requires
+    `readyState === 'open'` for). Only ever called from the `'sourceopen'` listener, which should
+    already guarantee that — but a stale/late-firing event during session teardown/reconnect
+    churn (observed live immediately following the crash above, before it was fixed) can still
+    reach here after the `MediaSource` has already moved on to `'closed'`/`'ended'`, throwing an
+    uncaught `InvalidStateError`.
 
 - **Call Stack.**
 
