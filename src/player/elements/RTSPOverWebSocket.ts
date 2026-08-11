@@ -849,6 +849,33 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
+  /**
+   * Was missing entirely — the element had no way to notice being removed
+   * from the DOM, so a caller that just detaches/discards it (e.g. this
+   * repo's own demo's Connect button: `disconnect()` does
+   * `playerHost.removeChild(playerEl)` with no `stop()`/`close()` call of
+   * its own, relying on this callback for cleanup) left the old instance's
+   * WebSocket connection, `MediaSource`/`SourceBuffer`, and RTP processing
+   * all still alive in the background — confirmed live as a real bug: a
+   * fresh Connect while switching codecs without pressing Stop first left
+   * two sessions running concurrently, and the *new* one's video appeared
+   * to freeze (RTP still arriving, decode/render not keeping up) once
+   * contending with the still-live old one for the same tab's resources.
+   * Mirrors the same `stop()`-throws-if-nothing-was-playing guard already
+   * used for the analogous case in the `src`-attribute reconnect path
+   * above (`stop()` only when there's actually a player to stop; errors
+   * caught rather than thrown out of a browser-invoked lifecycle callback).
+   */
+  disconnectedCallback(): void {
+    try {
+      if (this.player !== undefined && this.player !== null) {
+        this.stop();
+      }
+    } catch (error) {
+      console.error('RTSPOverWebSocket: failed to clean up on disconnectedCallback', error);
+    }
+  }
+
   // ================= private DOM/geometry helper methods =================
   // (legacy Symbol-keyed methods, ported as plain TS `private` methods)
 

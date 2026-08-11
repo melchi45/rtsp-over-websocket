@@ -38,9 +38,25 @@ their exact location rather than fixed silently (file header comment,
   `customElements.define('rtsp-over-websocket', RTSPOverWebSocket)` (`RTSPOverWebSocket.ts:5483`).
 - **Custom-element lifecycle callbacks implemented:** `static get observedAttributes()`
   (`:314-349`), `attributeChangedCallback(name, oldValue, newValue)` (`:351-671`),
-  `connectedCallback()` (`:673-850`). **`disconnectedCallback` is not implemented at all** — the
-  element does no cleanup (no `stop()`, no WebSocket teardown, no listener removal) when removed
-  from the DOM; a consumer must call `stop()` itself before discarding the element.
+  `connectedCallback()` (`:673-850`), **`disconnectedCallback()`** (added — was missing entirely,
+  see below).
+  - **`disconnectedCallback()` — fixed, real bug.** Previously not implemented at all: the element
+    did no cleanup (no `stop()`, no WebSocket teardown, no listener removal) when removed from the
+    DOM, so a consumer that just detached/discarded the element without explicitly calling `stop()`
+    first left the old instance's WebSocket connection, `MediaSource`/`SourceBuffer`, and RTP
+    processing all still running in the background. Confirmed live: this repo's own demo's Connect
+    button (`disconnect()` in `src/index.html`) does `playerHost.removeChild(playerEl)` with no
+    `stop()`/`close()` call of its own — switching codecs (e.g. AV1 → a real camera's H.264) without
+    pressing Stop first left two sessions running concurrently in the same tab, and the *new* one's
+    video appeared to freeze (RTP still arriving per its own statistics, decode/render not keeping
+    up) while contending with the still-live old one. Fixed with the same
+    `stop()`-throws-if-nothing-was-playing guard already used for the analogous case in the `src`
+    setter's own reconnect path (`stop()` only when `this.player` actually exists; errors caught
+    rather than thrown out of a browser-invoked lifecycle callback) — see Method Analysis below.
+    Calling `stop()` explicitly before discarding the element is still fine (redundant but
+    harmless, since `stop()` isn't itself unsafe to call once cleanup has already happened via this
+    callback... though in practice `disconnectedCallback` fires *after* removal, so an explicit
+    `stop()` beforehand remains the more deterministic choice when a consumer controls both).
 - **Attribute-backed private state:** ~35 `_xxx` fields (`_hostname`, `_channel`, `_profile`,
   `_username`, `_password`, `_width`/`_height`, `_secure`, `_playType`, `_playSpeed`,
   `_statistics`, `_network`, `_gmt`, `_bestshotFilter`, `_minimap`, `_usesubstream`,
@@ -102,6 +118,12 @@ their exact location rather than fixed silently (file header comment,
   (conditionally) and unconditionally `updateRendering()`. Wrapped in try/catch that only
   `console.error`s (a lifecycle callback throwing would otherwise be an uncaught exception the
   browser can't usefully surface).
+- `disconnectedCallback()` — added (was missing entirely, see the bullet above on the class-level
+  list of implemented callbacks for the full story). Calls `stop()` if `this.player` exists,
+  guarded the same way the `src`-attribute reconnect path already guards its own `stop()` call
+  (`stop()` throws if nothing was ever playing); wrapped in try/catch + `console.error`, matching
+  `connectedCallback`'s own pattern for the same reason (a lifecycle callback the browser invokes
+  directly shouldn't throw uncaught).
 - `updateRendering()` (private, `:2231-2338`) — builds the `.video-container` overlay (rewind/
   forward tap-notification DOM + styles) if not already built, appends `this.video` into the
   shared wrapper, and — if `autoplay` plus a resolved profile/device are present — calls `play()`.

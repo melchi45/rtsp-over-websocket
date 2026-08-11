@@ -782,3 +782,34 @@ size (confirmed by round-tripping the output through a generic OBU walker) and c
 section (the "OBU normalization" note) for the full writeup, including a correction to that
 section's own now-stale claim that fragment reassembly "needs no special logic beyond correct
 per-packet element splitting" — true for the raw bytes, not for their `obu_has_size_field` meaning.
+
+## RTSPOverWebSocket had no `disconnectedCallback` — reconnecting without Stop left the old session running
+
+Reported as what looked like three unrelated symptoms across this whole debugging arc: AV1→camera
+switching producing `dav1d_send_data` errors on H.264 data (nonsensical — dav1d is AV1-only), and
+a real camera's H.264/OPUS stream "freezing" (RTP still arriving, FPS dropping to 0). Both traced
+to the same cause once asked directly: none of it happened when the user pressed Stop before
+reconnecting with different settings; it only happened switching straight from one connection to
+another.
+
+Root cause: `RTSPOverWebSocket.ts` (the custom element) never implemented `disconnectedCallback` —
+already flagged as a real gap in `docs/player/01-elements-interface-exceptions.md` before this
+session touched it ("a consumer must call `stop()` itself before discarding the element"). This
+repo's own demo's Connect button doesn't: its `disconnect()` helper does
+`playerHost.removeChild(playerEl)` with no `stop()`/`close()` call of its own, then immediately
+creates and mounts a *brand new* element for the new session. Removing the old element from the DOM
+is a complete no-op as far as its internals are concerned with no `disconnectedCallback` to react
+to it — the old instance's WebSocket connection, `MediaSource`/`SourceBuffer`, and RTP processing
+all kept running in the background, now contending with the brand-new instance for the same tab's
+resources. That explains both symptoms: a still-live old AV1 SourceBuffer's decoder context
+receiving interleaved garbage explains a *nonsensical* codec-mismatched decode error more plausibly
+than any single-codec bug could, and generic resource contention between two live sessions explains
+an otherwise-inexplicable "RTP arrives, nothing renders" freeze on an otherwise-normal H.264 stream.
+
+Fixed by finally implementing `disconnectedCallback()`: calls `stop()` if `this.player` exists,
+using the exact same "only when there's actually a player to stop, catch since `stop()` throws
+when there isn't" guard already used for the analogous case in the `src`-attribute reconnect path
+(`applySrcAttribute`-adjacent code, `:4296-4322`). See
+`docs/player/01-elements-interface-exceptions.md`'s updated class-level lifecycle-callback bullet
+and new `disconnectedCallback()` Method Analysis bullet for the full writeup — that doc's own prior
+note about the missing callback is what pointed straight at the fix once the root cause was known.
