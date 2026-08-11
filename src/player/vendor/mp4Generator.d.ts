@@ -33,8 +33,12 @@ export interface Mp4VideoTrackInfo {
   height: number;
   type: 'video';
   codecType: string;
-  sps: (Uint8Array | undefined)[];
-  pps: (Uint8Array | undefined)[];
+  /** H264/H265 only. Must be omitted (not `[undefined]`) for every other codecType — mp4Generator.js's
+   * videoSample() only skips its NAL-length-prefixed SPS/PPS/VPS pre-processing when the field is
+   * literally absent (`track.sps || []`); a present-but-`[undefined]`-element array still iterates and
+   * crashes reading `.byteLength` off that `undefined` element. */
+  sps?: (Uint8Array | undefined)[];
+  pps?: (Uint8Array | undefined)[];
   profileIdc?: number;
   profileCompatibility?: number;
   levelIdc?: number;

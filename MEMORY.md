@@ -644,3 +644,53 @@ Fixed with three changes, in order of how directly each addresses the cascade:
 See `docs/player/05-video-player-rendering.md`'s `VideoTagPlayer` Method Analysis
 (`createInitSegment`/`createAudioSample`/`setSourceBuffer` bullets) for the full per-method
 writeup.
+
+**Update — this was not actually the (full) root cause.** The exact same crash persisted after
+this fix shipped (1.0.10), reproduced with both VP9 and AV1. Confirmed the fix's build output was
+correctly published/installed (grepped the compiled bundle for the guard) before looking further,
+ruling out a stale-build red herring.
+
+## VideoTagPlayer.setVideoInfo() — the real root cause: sps/pps set unconditionally for every codec
+
+Static reading of `mp4Generator.js` didn't find this one — a live stack trace did. Since the user
+couldn't get DevTools' console UI to reveal/expand the stack trace (tried several ways), added a
+one-line temporary `console.error(err.stack)` at `MediaRouter.onAudioData`'s catch site, rebuilt,
+had them reproduce, and read the plain-text stack trace it printed. That immediately pinpointed a
+completely different function than either previous fix touched:
+
+```
+at t (mp4Generator's videoSample(), reading a[b].byteLength)
+at Rz (stsd-adjacent box builder)
+... (initSegment's box-tree call chain)
+at rv.createInitSegment
+at rv.setAudioInfo
+```
+
+`mp4Generator.js`'s `videoSample()` unconditionally NAL-length-prefixes `track.vps`/`.sps`/`.pps`
+*before* its own `codecType === "H264"` branch check — `var a = track.sps || []` correctly no-ops
+when `sps` is genuinely absent, but `VideoTagPlayer.setVideoInfo()` was setting
+`videoInfoBox.sps = [videoinfo.spsPayload]` / `.pps = [videoinfo.ppsPayload]` **unconditionally for
+every codec**, before the per-codec `if`/`else if` chain. For VP9/AV1/VP8/MJPEG (no SPS/PPS
+concept at all), `spsPayload`/`ppsPayload` are always `undefined` — so `sps` ends up as `[undefined]`,
+a *non-empty, truthy* array (the `|| []` fallback only ever triggers on a genuinely-absent
+property, not a present array with an undefined element), and `videoSample()`'s loop crashes on
+`a[0].byteLength` — well before ever reaching the `codecType` check that would have ignored it.
+This is exactly why the previous entry's `createInitSegment()` null-guard fix (a real bug, kept)
+didn't stop the crash: `videoInfoBox` was non-null and otherwise fine by the time this ran — its
+`sps`/`.pps` fields were the malformed part, not its existence.
+
+Fixed by moving the `sps`/`.pps` assignment into the `H264` and `H265` branches specifically
+(mirroring how `vps` was already H265-only, correctly, in the same function) instead of the shared
+base object literal — `Mp4VideoTrackInfo.sps`/`.pps` (`mp4Generator.d.ts`) became optional to
+match, so for every other codec the fields are now genuinely absent rather than
+present-with-undefined, and `videoSample()`'s existing `|| []` guard handles that correctly with
+no change to the vendored file needed this time.
+
+**Takeaway for next time a wrapped/generic error message (like `MediaRouter`'s "onAudioData from
+mediaRouter: errorcode […], message […]") doesn't have an obvious cause from static reading of the
+call chain**: a temporary `console.error(originalError.stack)` at the catch site, rebuilt and
+reproduced once, is far faster and more reliable than guessing from symptom text alone — especially
+when the user's browser DevTools UI resists giving up the stack trace through normal interaction
+(tried: expanding the collapsed error group, clicking the message text, right-click copy — none
+worked in this session's Edge browser). Remove the diagnostic once the real throw site is found;
+don't ship it.

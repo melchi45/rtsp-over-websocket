@@ -2340,16 +2340,18 @@ export class VideoTagPlayer extends VideoPlayer {
       width: targetWidth,
       height: targetHeight,
       type: 'video',
-      codecType,
-      sps: [videoinfo.spsPayload],
-      pps: [videoinfo.ppsPayload]
+      codecType
     };
 
     if (codecType === 'H264') {
+      videoInfoBox.sps = [videoinfo.spsPayload];
+      videoInfoBox.pps = [videoinfo.ppsPayload];
       videoInfoBox.profileIdc = videoinfo.profileIdc as number;
       videoInfoBox.profileCompatibility = 0;
       videoInfoBox.levelIdc = videoinfo.levelIdc as number;
     } else if (codecType === 'H265') {
+      videoInfoBox.sps = [videoinfo.spsPayload];
+      videoInfoBox.pps = [videoinfo.ppsPayload];
       videoInfoBox.profileTierLevel = videoinfo.profileTierLevel;
       videoInfoBox.vps = [videoinfo.vpsPayload as Uint8Array | undefined];
     } else if (codecType === 'VP9') {

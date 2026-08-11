@@ -727,32 +727,46 @@ flowchart TD
     `channelCount`/`samplingFrequencyIndex`; Opus uses a native-mux config with no
     `audioobjecttype`; G711/G726 keeps a fixed 8kHz-mono AAC-transcode target), and calls
     `createInitSegment()` again to re-declare the init segment with the new track config.
-  - `createInitSegment()` (`:1349-1367`) — **root-caused and fixed**: returns early (no-op) if
-    `this.videoInfoBox` is still `null`. Both `onVideoData()`'s first-I-frame block and
-    `setAudioInfo()`'s codec-switch block call this, but only the former ever sets
-    `videoInfoBox` first — if audio RTP reaches the player before the first video I-frame does
-    (observed live against this repo's own VP9/AV1 transcoding demo, apparently more easily than
-    for H264/H265), `setAudioInfo()` used to call `initSegment([null, this.audioInfo])`, which
-    reached `mp4Generator.js`'s box-concatenation code with an `undefined` child box from the
-    video track's own (never-actually-built) config box and threw `Cannot read properties of
-    undefined (reading 'byteLength')` — killing the whole `MediaRouter` session (surfaced through
-    `MediaRouter.onAudioData`'s try/catch as `RTSPOverWebSocketError 0x030B`, and observed
-    cascading further into the RTSP/WebSocket connection itself getting torn down). Deferring
-    costs nothing: once the first video I-frame does arrive, `onVideoData()`'s own
-    `createInitSegment()` call runs with the already-current `this.audioInfo` anyway.
+  - `setVideoInfo(videoinfo, codecType)` (`:2315-`) — **the actual root cause of a VP9/AV1
+    `onAudioData ... byteLength` crash**, isolated via a temporary diagnostic
+    `console.error(err.stack)` at the `MediaRouter.onAudioData` catch site (the two fixes below
+    were both real bugs, both fixed first, and *neither* stopped the crash — a live stack trace
+    was what actually found it). `videoInfoBox.sps`/`.pps` used to be set unconditionally to
+    `[videoinfo.spsPayload]`/`[videoinfo.ppsPayload]` for every codec, before the per-codec
+    `if`/`else if` chain even ran — meaningless for VP9/AV1/VP8/MJPEG (only H264/H265 have an
+    SPS/PPS concept), so for those, `spsPayload`/`ppsPayload` are always `undefined`, making
+    `videoInfoBox.sps` a *non-empty* array containing one `undefined` element:
+    `[undefined]`. `mp4Generator.js`'s `videoSample()` does `var a = track.sps || []` — correct
+    when `sps` is absent entirely (`undefined || []` → `[]`, loop body never runs) but `[undefined]`
+    is still a truthy, non-empty array, so its NAL-length-prefixing loop runs anyway and crashes on
+    `a[0].byteLength` — *before* that function ever reaches its own `codecType === "H264"` check
+    that would have ignored `sps`/`pps` for AV1 regardless. Fixed by moving the `sps`/`pps`
+    assignment into the `H264`/`H265` branches specifically (mirroring how `vps` was already
+    H265-only) instead of the shared base object — `Mp4VideoTrackInfo.sps`/`.pps`
+    (`mp4Generator.d.ts`) became optional to match. For any other codec the fields are now
+    genuinely absent, not present-with-undefined, so `videoSample()`'s existing `|| []` guard
+    handles it correctly with no vendored-file change needed.
+  - `createInitSegment()` (`:1349-1367`) — a real, separate bug, fixed first but insufficient on
+    its own: returns early (no-op) if `this.videoInfoBox` is still `null`. Both `onVideoData()`'s
+    first-I-frame block and `setAudioInfo()`'s codec-switch block call this, but only the former
+    ever sets `videoInfoBox` first — if audio RTP reaches the player before the first video
+    I-frame does, `setAudioInfo()` used to call `initSegment([null, this.audioInfo])`, hitting the
+    same kind of `mp4Generator.js` box-concatenation crash from a `null` track instead of a
+    malformed one. Deferring costs nothing: once the first video I-frame does arrive,
+    `onVideoData()`'s own `createInitSegment()` call runs with the already-current
+    `this.audioInfo` anyway.
   - `createAudioSample(streamData, audioinfo, chunkCodec)` — also bails out defensively if
-    `streamData.frameData` is falsy, skipping just that one sample rather than letting the same
-    `.byteLength` throw take down the session. Belt-and-suspenders alongside the
-    `createInitSegment()` fix above (which was the fix for the *specific* crash reported) — kept
-    since a missing/empty frame from a different upstream cause is still plausible and a single
+    `streamData.frameData` is falsy, skipping just that one sample rather than letting a
+    `.byteLength` throw take down the session. Kept as defense-in-depth alongside the two fixes
+    above — a missing/empty frame from a different upstream cause is still plausible, and a single
     bad audio sample still shouldn't be able to kill video playback too.
   - `setSourceBuffer()` (`:1536-`) — returns early unless `mediaSource.readyState === 'open'`,
     guarding the immediately-following `mediaSource.duration = 0` (which the MSE spec requires
     `readyState === 'open'` for). Only ever called from the `'sourceopen'` listener, which should
     already guarantee that — but a stale/late-firing event during session teardown/reconnect
-    churn (observed live immediately following the crash above, before it was fixed) can still
-    reach here after the `MediaSource` has already moved on to `'closed'`/`'ended'`, throwing an
-    uncaught `InvalidStateError`.
+    churn (observed live as a downstream symptom of the crash above, before it was fixed) can
+    still reach here after the `MediaSource` has already moved on to `'closed'`/`'ended'`,
+    throwing an uncaught `InvalidStateError`.
 
 - **Call Stack.**
 
