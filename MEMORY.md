@@ -478,3 +478,32 @@ Confirmed via the same YouTube-to-RTSP transcoding demo server as the AP fix (ff
 uses `TRAIL_N`); real Hanwha devices apparently don't hit this either way — both H265Session bugs
 were latent for real camera streams and only surfaced once ffmpeg-transcoded H.265 was actually
 exercised.
+
+## Canvas tag vs video tag decode paths — easy to chase into the wrong file (documented, not a bug)
+
+Not a bug — a real wrong-turn taken while investigating one, worth recording so it doesn't happen
+again. A report of low H.265 decode FPS (RTP arriving at the full 24fps, only ~7fps actually
+decoded/displayed, confirmed via the demo page's statistics panel) was first investigated in
+`decoderWorker.ts`/`AssemblyDecoder` (the WASM H.264/H.265 software decoder) — the wrong file: the
+consumer was using Renderer Type `video`, not `canvas`, and `VideoTagPlayer` (the `video`-tag path)
+**never touches `decoderWorker` or any vendored/WebCodecs decoder for H.264/H.265 at all** — it
+remuxes RTP into fragmented MP4 and hands it to a real `<video>` element via MSE, so decode happens
+entirely inside the browser's own internal pipeline, same as playing a local MP4 file.
+
+The full split (now documented as a table at the top of `docs/player/05-video-player-rendering.md`,
+read that first for anything decode-performance-or-codec-support related):
+- `canvas` + H264/H265 → `decoderWorker` → `AssemblyDecoder` (vendored ffmpeg.wasm, **software**).
+- `canvas` + VP8/VP9/AV1 → `decoderWorker` → `WebCodecsVideoDecoder` (browser-native, hardware-capable).
+- `video` + H264/H265 → **no JS decoder** — real MSE, browser-native decode.
+- `video` + VP8/VP9/AV1 → real MSE if `MediaSource.isTypeSupported()` accepts that codec's fMP4 box
+  type, else `WebCodecsVideoDecoder` in `'bridge'` mode (decoded `VideoFrame`s piped into a
+  `MediaStreamTrackGenerator` feeding the `<video>` element).
+
+**The original FPS report is still open** — not root-caused or fixed yet. Since `video`-tag mode
+for H.264/H.265 has no vendored decoder to blame, the next places to actually look are (a)
+`VideoTagPlayer`'s fMP4-muxing/`SourceBuffer.appendBuffer()` cadence for an unrelated inefficiency,
+or (b) the browser/hardware's own real decode ceiling for 1080p H.265 on whatever machine was
+tested (`videoElement.webkitDroppedFrameCount`, which the reported "Drops" statistic is sourced
+from, is a genuine browser-reported counter, not something this codebase computes/throttles
+itself for the `video`-tag path the way `decoderWorker.ts`'s drop-frame heuristic does for
+`canvas`) — not yet distinguished between the two.

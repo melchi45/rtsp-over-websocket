@@ -7,6 +7,22 @@ package) and the `<video>`-tag/MSE pipeline (`VideoTagPlayer`). Both are ports o
 player's `Video/Player/*` sources; see [`src/player/README.md`](../../src/player/README.md#5-videoplayer--rendering-hierarchy)
 for the one-page class-diagram summary this document expands on.
 
+**Decode-path quick reference** (read this before chasing a decode-performance or
+codec-support question into the wrong file — confirmed the hard way once already, see
+MEMORY.md's "canvas tag vs video tag decode paths" entry):
+
+| Renderer Type (`tagMode`) | H.264 / H.265                                              | VP8 / VP9 / AV1                                                              |
+| -------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `canvas`                   | `decoderWorker` → `AssemblyDecoder` (vendored ffmpeg.wasm, **software** decode) | `decoderWorker` → `WebCodecsVideoDecoder` (browser-native `VideoDecoder`, hardware-capable) |
+| `video`                    | **No JS decoder at all.** `VideoTagPlayer` remuxes RTP → fragmented MP4 (`mp4Generator`) and hands it to a real `<video>` element via MSE — the *browser's own* internal decoder does the work, same as playing a local MP4 file. | `MediaSource.isTypeSupported()`-gated: real MSE (same as H264/H265 above) if the browser declares support for that codec's fMP4 box type, else falls back to `WebCodecsVideoDecoder` in **`'bridge'`** output mode (decoded `VideoFrame`s piped into a `MediaStreamTrackGenerator` feeding the `<video>` element) — see `VideoTagPlayer`'s own Method Analysis below for the `realMseSupported` check. |
+
+The one thing both tag modes share for H.264/H.265: neither one ever runs `WebCodecsVideoDecoder`
+for those two codecs specifically — `canvas` always uses the WASM path, `video` always uses real
+MSE (browser-native decode, not WebCodecs). A decode-throughput complaint for H.264/H.265 in
+`canvas` mode is a `decoderWorker`/`AssemblyDecoder` question; the same complaint in `video` mode
+is *not* — there's no vendored decoder involved at all, so look at `VideoTagPlayer`'s fMP4-muxing/
+MSE-append pipeline (and the browser's own decode capability for that resolution/profile) instead.
+
 Collaborators documented elsewhere, referenced here by name only:
 - **`MediaRouter`** (`mediaSession/MediaRouter.ts`) — the RTP/session-layer class that owns a
   `VideoPlayerLike` instance (`this.player`) and is the sole source of decoded/depacketized frame
