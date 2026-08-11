@@ -736,3 +736,49 @@ existing tests (which only use explicit-size-field fixtures, unaffected by this 
 See `docs/player/03-mediaSession-core-video.md`'s `AV1HeaderParser` section for the full writeup,
 including a correction to that section's own stale claim that the parser "doesn't parse
 `color_config()`" (it does, and has for a while — the doc just hadn't been updated to match).
+
+**Follow-up — the configObu fix alone wasn't enough.** After 1.0.12 shipped it, the exact same
+symptom persisted on AV1 retest (black screen, `TEARDOWN`/reconnect loop). A temporary
+`console.error` on `VideoTagPlayer`'s video-element `'error'` event (same diagnostic-injection
+technique as the earlier `onAudioData` investigation — again faster than fighting the user's Edge
+DevTools console UI) surfaced the real `MediaError`: `code=3 PIPELINE_ERROR_DECODE:
+dav1d_send_data() failed with error -22` (EINVAL), on **inter frames**
+(`is_key_frame=0`) specifically — a different bug from the configObu one (which only affects the
+init segment's config record, built once from the first keyframe).
+
+## AV1Session OBU normalization — RTP-framed OBUs lack the in-stream size field ISOBMFF requires
+
+Root cause: `AV1Session.ts`'s depacketizer concatenated each RTP-level OBU element's raw bytes
+into the access-unit buffer *exactly as the sender framed them* — preserving whatever
+`obu_has_size_field` bit the original `obu_header` happened to have. RTP AV1 senders commonly
+leave it `0`, since RTP-level length-prefixing/packet-boundary framing already delimits elements at
+that layer — framing information that's lost the moment elements get concatenated into one flat
+buffer. The AV1-ISOBMFF binding's "low overhead bitstream format" mandates
+`obu_has_size_field == 1` on every contained OBU as a bitstream-conformance rule; without it, a
+spec-conformant consumer (Chrome's dav1d-backed MSE decode path, which is what `VideoTagPlayer`'s
+`av1C`/ISOBMFF route feeds) can't correctly delimit multiple OBUs (Frame header + Tile group, etc.)
+within one access unit and rejects the sample outright. `WebCodecsVideoDecoder`'s canvas/bridge
+tier never surfaced this — it tolerates missing per-OBU size fields, unlike ISOBMFF, which is
+presumably why this went unnoticed until `VideoTagPlayer` (added later than the canvas/WebCodecs
+paths) was live-tested against real AV1 material for the first time.
+
+The obvious first fix attempt (rewrite each element to force `obu_has_size_field = 1` with a size
+computed from `element.length`, as they arrive) turned out to be insufficient too: the observed
+access units run 30-70KB, routinely exceeding one RTP packet's MTU, so a single OBU commonly
+fragments across *several* packets (the RTP AV1 payload format's `Z`/continuation-fragment bit).
+The true `obu_size` can only be known once an OBU is **fully** reassembled — computing it per
+arriving fragment would just re-introduce a different wrong-size bug.
+
+Fixed properly with a pending-OBU accumulator: `beginPendingObu`/`appendPendingObuPayload`/
+`flushPendingObu` buffer one in-progress OBU's payload separately from `inputBuffer` (a
+`setBuffer`-style grow-on-demand `Uint8Array`, not the shared access-unit buffer) until it's known
+complete — the next non-continuation element starts, or the access unit ends (marker bit) — only
+then writing `[header|leb128(realSize)|payload]` into `inputBuffer` in one shot. Verified with a
+standalone reimplementation of the algorithm in a throwaway script (no test harness exists for
+`*Session.ts` classes in this environment — same limitation noted elsewhere in this file):
+a synthetic 3-packet-fragmented OBU followed by a fresh OBU reassembles with the correct leb128
+size (confirmed by round-tripping the output through a generic OBU walker) and correct
+`obu_has_size_field` on both. See `docs/player/03-mediaSession-core-video.md`'s `AV1Session`
+section (the "OBU normalization" note) for the full writeup, including a correction to that
+section's own now-stale claim that fragment reassembly "needs no special logic beyond correct
+per-packet element splitting" — true for the raw bytes, not for their `obu_has_size_field` meaning.

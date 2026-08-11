@@ -1006,15 +1006,30 @@ classDiagram
 ### Structure
 
 `AV1Session extends RtpSession`. Private state: `inputBuffer` (`SIZE_1_4K`), `inputLength`,
-`playback`, `frameType: 'I' | 'P'`. Module-level `readLeb128(data, offset)` decodes an unsigned
-LEB128 integer (AV1's variable-length integer encoding, used for OBU element sizes), returning
-`{ value, bytesRead }` and throwing `0x0101` if it would read past the payload. Module-level
-constant `OBU_SEQUENCE_HEADER = 1` (AV1 Bitstream & Decoding Process spec §6.2.2 OBU type
-enumeration) is the only OBU type this class distinguishes.
+`playback`, `frameType: 'I' | 'P'`, plus a **pending-OBU accumulator** —
+`pendingObuHeaderBytes: Uint8Array | null` (doubles as "an OBU is currently in progress"),
+`pendingObuPayload`/`pendingObuPayloadLength` (see Method Analysis's "OBU normalization" note for
+why this exists — a real bug fix, not present in earlier versions of this class). Module-level
+`readLeb128(data, offset)` decodes an unsigned LEB128 integer (AV1's variable-length integer
+encoding, used for OBU element sizes), returning `{ value, bytesRead }` and throwing `0x0101` if it
+would read past the payload; `writeLeb128(value)` is its inverse, used only by the normalization
+path below. Module-level constant `OBU_SEQUENCE_HEADER = 1` (AV1 Bitstream & Decoding Process spec
+§6.2.2 OBU type enumeration) is the only OBU type this class distinguishes.
 
 ### Method Analysis
 
 - **`init()`**, **`setBuffer(chunk)`** — same shape as `H264Session`'s.
+- **`beginPendingObu(element)`/`appendPendingObuPayload(chunk)`/`flushPendingObu()`** (private,
+  see "OBU normalization" below) — the pending-OBU accumulator's own three operations.
+  `beginPendingObu` parses `element`'s own `obu_header` (extension flag, and any in-stream
+  `obu_size` the sender happened to include — only to skip past it, its *value* is discarded) just
+  to separate header byte(s) from payload bytes, clones the header with `obu_has_size_field` forced
+  to `1`, and starts a fresh payload accumulation. `appendPendingObuPayload` is a `setBuffer`-style
+  grow-on-demand append, used both by `beginPendingObu`'s initial chunk and by fragment
+  continuations. `flushPendingObu` (no-op if nothing is pending) writes
+  `[headerBytes, writeLeb128(payload.length), payload]` into `inputBuffer` via `setBuffer` — the
+  real `obu_size`, computed only once the OBU is known fully reassembled — then clears the pending
+  state.
 - **`splitObuElements(payload, obuCount)`** (private) — splits the region of one packet's payload
   after the 1-byte aggregation header into individual OBU element byte ranges, per the AV1 RTP
   payload spec ("RTP Payload Format For AV1", v1.0) §4.4:
@@ -1032,25 +1047,47 @@ enumeration) is the only OBU type this class distinguishes.
      packet; `W` = OBU element count (0 = unknown, see `splitObuElements`); `N` = first packet of a
      new coded video sequence (read but not currently surfaced in `videoInfo`).
   3. Calls `splitObuElements` to get each element's raw bytes.
-  4. For each element **except** one that is a fragment continuation (`i === 0 && Z`, since its
-     bytes don't start with a fresh `obu_header`), peeks the OBU type nibble (`(byte0 >> 3) &
-     0x0f`, AV1 spec §5.3.1's `obu_header()` layout: `forbidden_bit(1) obu_type(4)
-     obu_extension_flag(1) obu_has_size_field(1) obu_reserved_1bit(1)`); if it's
-     `OBU_SEQUENCE_HEADER`, marks `frameType = 'I'` for this access unit — encoders only emit a
-     Sequence Header OBU ahead of a key frame, so its presence is used as the key-frame signal the
-     same way `H264Session`/`H265Session` use the presence of SPS/VPS, rather than parsing AV1's
-     considerably more involved `frame_header_obu()` bit syntax.
-  5. Appends every element's raw bytes into `inputBuffer` in arrival order — fragmentation (`Z`/`Y`)
-     needs no special reassembly logic beyond correct per-packet element splitting, since
-     concatenating the fragments in order reproduces the original OBU bytes exactly (the same
-     principle `H264Session`'s FU-A continuation-append and `H265Session`'s FU continuation-append
-     rely on).
-  6. On **marker bit** (AV1 RTP payload spec §5: marks the last packet of a temporal unit): same
-     snapshot/reset/counter pattern as the other video sessions. Builds `streamData` (`codecType:
-     'AV1'`) / `videoInfo` (`frameType`, `framerate` — no cached parameter-set payload; AV1's
-     Sequence Header OBU is preserved in-band inside `frameData` itself rather than cached
-     separately, since it's already a normal OBU in the reassembled stream), fires
-     `eventVideoCallback`, resets `frameType` to `'P'`.
+  4. For each element that **is** a fragment continuation (`i === 0 && Z`, since its bytes don't
+     start with a fresh `obu_header`), appends its raw bytes onto the pending OBU accumulator via
+     `appendPendingObuPayload` and moves on — it extends whatever OBU is already in progress.
+  5. For each element that **is not** a continuation, first `flushPendingObu()`s whatever was
+     previously in progress (complete now, whether that took one packet or several), then peeks the
+     OBU type nibble (`(byte0 >> 3) & 0x0f`, AV1 spec §5.3.1's `obu_header()` layout:
+     `forbidden_bit(1) obu_type(4) obu_extension_flag(1) obu_has_size_field(1)
+     obu_reserved_1bit(1)`) — if it's `OBU_SEQUENCE_HEADER`, marks `frameType = 'I'` for this access
+     unit (encoders only emit a Sequence Header OBU ahead of a key frame, used as the key-frame
+     signal the same way `H264Session`/`H265Session` use the presence of SPS/VPS) — then
+     `beginPendingObu(element)` starts accumulating it as the new in-progress OBU.
+  6. On **marker bit** (AV1 RTP payload spec §5: marks the last packet of a temporal unit):
+     `flushPendingObu()`s one last time (in case the access unit's final OBU never got followed by
+     a fresh element to trigger the flush in step 5), then the same snapshot/reset/counter pattern
+     as the other video sessions. Builds `streamData` (`codecType: 'AV1'`) / `videoInfo`
+     (`frameType`, `framerate` — no cached parameter-set payload; AV1's Sequence Header OBU is
+     preserved in-band inside `frameData` itself rather than cached separately, since it's already
+     a normal OBU in the reassembled stream), fires `eventVideoCallback`, resets `frameType` to
+     `'P'`.
+
+  **OBU normalization — real bug fix, not present in earlier versions of this class.** A prior
+  version of this method just appended every element's raw bytes into `inputBuffer` in arrival
+  order, on the theory that fragmentation (`Z`/`Y`) "needs no special reassembly logic beyond
+  correct per-packet element splitting, since concatenating the fragments in order reproduces the
+  original OBU bytes exactly" — true for the *bytes*, but not for their *meaning*: it preserved
+  whatever `obu_has_size_field` bit each element's original sender happened to set, which RTP AV1
+  senders commonly leave `0` (relying on RTP-level length-prefix/packet-boundary framing instead —
+  exactly the framing information lost once elements are concatenated into one flat buffer). The
+  AV1-ISOBMFF binding's "low overhead bitstream format" mandates `obu_has_size_field == 1` on every
+  contained OBU as a bitstream-conformance rule; without it, `VideoTagPlayer`'s ISOBMFF/`av1C` MSE
+  path can't correctly delimit multiple OBUs within one reconstructed access unit, and Chrome's
+  dav1d-backed decoder rejects the sample outright — confirmed live as `dav1d_send_data() failed
+  with error -22`, overwhelmingly on inter frames (access units here run 30-70KB, routinely
+  exceeding one RTP packet's MTU, so this hit almost every frame in practice).
+  `WebCodecsVideoDecoder`'s canvas/bridge tier never surfaced this — it tolerates missing per-OBU
+  size fields, unlike ISOBMFF, which is presumably why this went unnoticed until `VideoTagPlayer`
+  (added later than the canvas/WebCodecs decode paths) was live-tested against real AV1 material.
+  Fixed by rewriting every OBU element to carry an explicit, correct `obu_size` regardless of how
+  the sender framed it — see the pending-OBU accumulator methods above for how (the size can only
+  be known once an OBU is *fully* reassembled, which the naive "append as it arrives" approach
+  couldn't provide).
 - **`close()`** — clears `sessionId`, stops the statistics timer.
 
 ### Call Stack
@@ -1064,7 +1101,10 @@ AOM "RTP Payload Format For AV1" v1.0 (no IETF RFC number — AOM-maintained spe
 Chrome/libwebrtc implement): §4.4 aggregation header (`Z/Y/W/N`) and OBU element
 leb128-length-prefixing rules, §5 marker-bit-marks-temporal-unit-end convention. AV1 Bitstream &
 Decoding Process Specification §5.3.1 (`obu_header()` byte layout) and §6.2.2 (OBU type
-enumeration, `OBU_SEQUENCE_HEADER = 1`). RFC 3550 §5.1 for the RTP fixed header.
+enumeration, `OBU_SEQUENCE_HEADER = 1`). AV1 Codec ISO Media File Format Binding
+(aomediacodec.github.io/av1-isobmff) §5's "low overhead bitstream format" — `obu_has_size_field ==
+1` mandatory on every contained OBU — is what the OBU-normalization fix above exists to satisfy.
+RFC 3550 §5.1 for the RTP fixed header.
 
 ### Relations & Data Flow
 
@@ -1074,8 +1114,13 @@ classDiagram
         -inputBuffer
         -frameType
         -playback
+        -pendingObuHeaderBytes
+        -pendingObuPayload
         +depacketize(interleaved, header, payload)
         -splitObuElements(payload, obuCount)
+        -beginPendingObu(element)
+        -appendPendingObuPayload(chunk)
+        -flushPendingObu()
     }
     RtpSession <|-- AV1Session
     AV1Session ..> rtpDepacketizeUtils : parseRtpHeaderFlags, syncPlaybackTimestampFromRtpExtension
