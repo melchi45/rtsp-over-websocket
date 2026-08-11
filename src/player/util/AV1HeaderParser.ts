@@ -184,9 +184,7 @@ function parseColorConfig(
  * recover everything an `av1C` config box needs. Returns `null` if the
  * input looks truncated.
  */
-function parseSequenceHeaderObu(payload: Uint8Array): Omit<AV1FrameHeader, 'obuStart' | 'obuEnd'> | null {
-  const reader = new BitReader(payload);
-
+function parseSequenceHeaderObu(reader: BitReader): Omit<AV1FrameHeader, 'obuStart' | 'obuEnd'> | null {
   const seqProfile = reader.readBits(3);
   reader.readBits(1); // still_picture
   const reducedStillPictureHeader = reader.readBits(1);
@@ -283,6 +281,9 @@ function parseSequenceHeaderObu(payload: Uint8Array): Omit<AV1FrameHeader, 'obuS
   reader.readBits(1); // enable_restoration
 
   const colorConfig = parseColorConfig(reader, seqProfile);
+  reader.readBits(1); // film_grain_params_present — not needed by an av1C box, but reading it
+  // (rather than stopping at color_config()) keeps `reader.bytePosition()` accurate to this
+  // OBU's true end, which `parseAV1SequenceHeader` needs when the OBU had no explicit size field.
 
   if (reader.bitsRemaining() < 0) {
     return null;
@@ -334,15 +335,33 @@ export function parseAV1SequenceHeader(frameData: Uint8Array): AV1FrameHeader | 
         return null;
       }
     } else {
-      // No explicit size: per the AV1 spec this OBU's payload runs to the
-      // end of the containing temporal unit — which, at this call site, is
-      // all of `frameData` (one already-reassembled access unit).
+      // No explicit size field: per the AV1 spec this OBU's payload runs to
+      // the end of the containing temporal unit — treated here as "to the
+      // end of frameData" only as an upper bound for the *search* (finding
+      // where the next OBU could start, below). It is NOT trustworthy as
+      // this OBU's own true end: `AV1Session.ts`'s RTP depacketizer commonly
+      // reconstructs Sequence-Header-OBU-then-Frame-OBU access units where
+      // the Sequence Header element itself carries no size field (RTP-level
+      // framing delimited it instead), so "runs to end of frameData" would
+      // wrongly swallow the following Frame/Tile OBU bytes into `configObu`
+      // too — see the OBU_SEQUENCE_HEADER branch below, which recomputes the
+      // true end from how many bytes actually got consumed parsing it.
       payloadEnd = frameData.length;
     }
 
     if (obuType === OBU_SEQUENCE_HEADER) {
-      const parsed = parseSequenceHeaderObu(frameData.subarray(payloadStart, payloadEnd));
-      return parsed === null ? null : { ...parsed, obuStart, obuEnd: payloadEnd };
+      const reader = new BitReader(frameData.subarray(payloadStart, payloadEnd));
+      const parsed = parseSequenceHeaderObu(reader);
+      if (parsed === null) {
+        return null;
+      }
+      // When there was no explicit obu_size, `payloadEnd` above is only a
+      // conservative upper bound — recover the OBU's true end from the
+      // reader's own cursor (byte-aligned, matching trailing_bits()) instead,
+      // so `configObu` (av1C's configOBUs) doesn't include unrelated trailing
+      // OBU data from the same access unit.
+      const trueObuEnd = obuHasSizeField ? payloadEnd : payloadStart + reader.bytePosition();
+      return { ...parsed, obuStart, obuEnd: trueObuEnd };
     }
 
     if (!obuHasSizeField) {

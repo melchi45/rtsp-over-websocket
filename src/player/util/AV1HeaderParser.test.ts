@@ -165,6 +165,27 @@ describe('parseAV1SequenceHeader', () => {
     });
   });
 
+  it('recovers the true OBU end from bytes actually consumed when the sequence header OBU has no explicit size field (real RTP-depacketized case)', () => {
+    // AV1Session.ts's RTP depacketizer commonly concatenates a Sequence Header OBU (RTP-framed,
+    // no in-stream obu_size) immediately followed by more OBU data (Frame Header/Tile Group) from
+    // the same access unit — parseAV1SequenceHeader must not let the "no size field" case swallow
+    // that trailing data into obuEnd/configObu (av1C's configOBUs must be just the sequence header).
+    const sized = buildSequenceHeaderObu(640, 480, 0);
+    const payload = sized.subarray(2); // drop [obuHeader(sized-flag set), leb128 size byte]
+    const seqObuNoSize = new Uint8Array([obuHeader(OBU_SEQUENCE_HEADER, false), ...payload]);
+    const trailingObu = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]); // stand-in Frame/Tile OBU bytes
+    const stream = new Uint8Array([...seqObuNoSize, ...trailingObu]);
+
+    const result = parseAV1SequenceHeader(stream);
+
+    expect(result).not.toBeNull();
+    expect(result!.width).toBe(640);
+    expect(result!.height).toBe(480);
+    expect(result!.obuStart).toBe(0);
+    expect(result!.obuEnd).toBe(seqObuNoSize.length);
+    expect(result!.obuEnd).toBeLessThan(stream.length);
+  });
+
   it('extracts a profile-1 keyframe (4:4:4, mono_chrome inferred 0, no subsampling)', () => {
     const obu = buildSequenceHeaderObu(1280, 720, 1);
     expect(parseAV1SequenceHeader(obu)).toEqual({

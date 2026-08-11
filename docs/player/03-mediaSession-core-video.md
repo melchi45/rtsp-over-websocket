@@ -1137,12 +1137,15 @@ pass surfaced, since both look like plausible "expected" behavior rather than bu
      (visually: a solid flat color, not the actual decoded frame — confirmed live). Fixed with one
      `gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)` call in `onInitTextures()`.
 
-**AV1 caveat**: this environment's `ffmpeg` cannot publish AV1 over RTSP at all (separate,
-unrelated bug in ffmpeg's own RTP muxer — see root `MEMORY.md` and `README.md`'s "External tools"
-section), so the AV1 decode path above could only be verified via unit tests
-(`util/AV1HeaderParser.test.ts`, synthetic OBU fixtures) against the AV1 spec, not against a real
-encoder or in a real browser. Treat it as implemented-and-spec-checked, not end-to-end-confirmed,
-until real AV1 test material is available.
+**AV1 caveat — since resolved via live testing**: this doc previously noted that this
+environment's `ffmpeg` couldn't publish AV1 over RTSP at all, so the AV1 decode path could only be
+verified via `util/AV1HeaderParser.test.ts`'s synthetic OBU fixtures, not end-to-end. Real test
+material became available via this repo's own YouTube-to-RTSP transcoding demo
+(`-strict experimental`, see `transcodeSession.ts`), and live testing against it found a real bug —
+see `AV1HeaderParser`'s section below (`parseAV1SequenceHeader`'s OBU-boundary recovery) for the
+fix. `video`-tag mode is now confirmed working against real (transcoded) AV1 material;
+`canvas`-tag mode's WASM decode path remains unverified live (no bug found there by this pass, but
+it wasn't specifically exercised either).
 
 ---
 
@@ -1638,18 +1641,44 @@ cross-thread sharing needed.
   past what `VP9Session.parseFrameType` already reads (`frame_marker`/profile bits/
   `show_existing_frame`/`frame_type`, all within byte 0) through `frame_sync_code()` and
   `color_config()` into `frame_size()`. Returns `null` for inter frames (no `frame_size()` present).
-- **`util/AV1HeaderParser.ts`** — `parseAV1SequenceHeader(frameData): { width, height, profile } |
-  null`. Walks the raw OBU stream in `frameData` (same `obu_header()`/leb128-`obu_size` shape
+- **`util/AV1HeaderParser.ts`** — `parseAV1SequenceHeader(frameData): AV1FrameHeader | null`
+  (`width`/`height`/`profile`/`seqLevelIdx0`/`seqTier0`/`highBitdepth`/`twelveBit`/`bitDepth`/
+  `monoChrome`/`chromaSubsamplingX`/`chromaSubsamplingY`/`chromaSamplePosition`/`obuStart`/
+  `obuEnd` — everything an `av1C` config box (`mp4Generator.js`) needs, not just size/profile).
+  Walks the raw OBU stream in `frameData` (same `obu_header()`/leb128-`obu_size` shape
   `AV1Session.ts` already parses for its own, narrower key-frame-detection purpose — a separate
   local copy of the leb128 reader, not shared, since this parses in-bitstream `obu_size` out of
   already-reassembled frame bytes, a different call site) looking for an `OBU_SEQUENCE_HEADER`
-  (type 1); if found, parses `sequence_header_obu()` (AV1 spec §5.5.1) — including its optional
-  timing-info/decoder-model/operating-points loop, which must be walked correctly to keep the bit
-  cursor aligned even though none of those fields are returned — through to
-  `frame_width_bits_minus_1`/`frame_height_bits_minus_1`/`max_frame_width_minus_1`/
-  `max_frame_height_minus_1`. Stops there (doesn't parse the subsequent `color_config()` for bit
-  depth, unlike the VP9 parser) — width/height and `seq_profile` are the only fields anything
-  downstream currently needs.
+  (type 1); if found, parses the *entire* `sequence_header_obu()` (AV1 spec §5.5.1) — including its
+  optional timing-info/decoder-model/operating-points loop (walked correctly to keep the bit cursor
+  aligned even though most of those fields aren't returned), `frame_width_bits_minus_1`/
+  `frame_height_bits_minus_1`/`max_frame_width_minus_1`/`max_frame_height_minus_1`, the frame-id/
+  superblock/tool-enable flag run, `color_config()` (AV1 spec §5.5.2 — bit depth/chroma
+  subsampling/sample position, needed for `av1C`, unlike the width/height-only VP9 parser's
+  `frame_size()`), and `film_grain_params_present` (read purely to keep the bit cursor accurate to
+  the OBU's true end — its value isn't returned or used).
+
+  **`obuStart`/`obuEnd` — fixed, real bug found via live testing.** These bound the raw Sequence
+  Header OBU bytes `MediaRouter.ts` slices out into `videoInfo.configObu`, which
+  `VideoTagPlayer.setVideoInfo()` passes straight through to `mp4Generator.js`'s `av1C()` as
+  `configOBUs` (conventionally the verbatim OBU bytes, not a re-serialization). When the OBU's own
+  header declares no explicit `obu_size` field, the AV1 spec says its payload "runs to the end of
+  the containing temporal unit" — but `AV1Session.ts`'s RTP depacketizer commonly reconstructs
+  exactly that case for a Sequence-Header-then-Frame-OBU access unit (the Sequence Header element
+  itself has no size field, RTP-level framing delimited it instead), so treating "end of temporal
+  unit" as "end of `frameData`" wrongly folded the *following* Frame/Tile OBU bytes into
+  `configObu` too — an invalid, oversized `configOBUs` value that Chrome's AV1 decoder rejects,
+  confirmed live as `Fail to append frame buffer to source buffer ... The HTMLMediaElement.error
+  attribute is not null` (a downstream symptom; the browser sets the media element's error state
+  once the malformed init/config segment reaches the decoder, and every subsequent `appendBuffer`
+  call fails because of that pre-existing error). Fixed by having `BitReader` expose a
+  `bytePosition()` (current cursor, byte-aligned like `trailing_bits()` would leave it) and, when
+  no size field was present, recomputing `obuEnd` from how many bytes `parseSequenceHeaderObu`
+  actually consumed instead of trusting `frameData.length` — `film_grain_params_present` above is
+  read specifically so that byte position lands at the OBU's true end, not one field short of it.
+  See `util/AV1HeaderParser.test.ts`'s "recovers the true OBU end... (real RTP-depacketized case)"
+  test for the regression guard (a Sequence Header OBU with no size field, followed by 4 bytes of
+  stand-in trailing OBU data that a pre-fix `obuEnd` would have wrongly swallowed).
 
 ### Method Analysis
 

@@ -45,4 +45,13 @@ export class BitReader {
   bitsRemaining(): number {
     return this.data.length * 8 - this.bitPosition;
   }
+
+  /** Current cursor position rounded up to the next byte boundary — matches
+   * what a `trailing_bits()` byte-alignment pad would leave the cursor at.
+   * Lets a caller recover "how many bytes of the input did parsing this
+   * syntax element actually consume" for callers that need the true end
+   * offset of a variable-length structure within a larger buffer. */
+  bytePosition(): number {
+    return Math.ceil(this.bitPosition / 8);
+  }
 }

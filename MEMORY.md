@@ -694,3 +694,45 @@ when the user's browser DevTools UI resists giving up the stack trace through no
 (tried: expanding the collapsed error group, clicking the message text, right-click copy — none
 worked in this session's Edge browser). Remove the diagnostic once the real throw site is found;
 don't ship it.
+
+## AV1 av1C configObu boundary bug — real AV1 test material found a genuine gap in unverified code
+
+Once VP9 started working (the `setVideoInfo()` sps/pps fix above), a live retest across VP8/VP9/
+AV1/a real camera surfaced three more distinct findings in one report. This entry covers AV1
+(still black screen, `TEARDOWN` + reconnect loop, `errorcode [778]` — `appendBuffer` failing
+because `HTMLMediaElement.error` was already non-null from an earlier rejected segment). VP8
+(video plays, no audio — a known, separate limitation, `setupBridge()`'s `MediaStream` has no
+audio track since WebCodecs-bridge mode was only ever wired up for video) and the real camera's
+H.264/OPUS stream freezing after a while (RTP still arriving, FPS drops to 0) are still open —
+no diagnosis yet, need more information for both.
+
+`docs/player/03-mediaSession-core-video.md` had explicitly flagged this exact risk beforehand:
+"[AV1] could only be verified via unit tests... against the AV1 spec, not against a real encoder or
+in a real browser. Treat it as implemented-and-spec-checked, not end-to-end-confirmed." That note
+turned out to be exactly right — live AV1 material via this repo's own transcoding demo found a
+real bug the synthetic-fixture-only test suite couldn't have caught.
+
+Root cause: `parseAV1SequenceHeader` (`util/AV1HeaderParser.ts`) sets `obuEnd = frameData.length`
+whenever the Sequence Header OBU it finds has no explicit `obu_size` field — spec-correct in
+isolation ("runs to the end of the containing temporal unit"), but `AV1Session.ts`'s RTP
+depacketizer routinely reconstructs exactly a Sequence-Header-then-Frame-OBU access unit where the
+Sequence Header element itself has no size field (RTP framing delimited it instead) — so "end of
+temporal unit" got treated as "end of `frameData`," wrongly folding the *following* Frame/Tile OBU
+bytes into `videoInfo.configObu`. That oversized, invalid `configOBUs` value reaches
+`mp4Generator.js`'s `av1C()` verbatim, and Chrome's AV1 decoder rejects the resulting init/config
+segment — which is what actually threw the reported `errorcode [778]` on a *later* `appendBuffer`
+call (the element's `error` was already set by then; that specific append wasn't the real failure,
+just the next thing to trip over it).
+
+Fixed by making `BitReader` expose `bytePosition()` (current cursor rounded up to the next byte —
+what a `trailing_bits()` pad would leave it at) and, in the no-size-field case, recomputing
+`obuEnd` from how many bytes `parseSequenceHeaderObu` actually consumed rather than trusting
+`frameData.length`. Extended `parseSequenceHeaderObu` to read one more field
+(`film_grain_params_present`, value unused) purely so the cursor lands at the OBU's true end
+instead of stopping short after `color_config()`. Verified with a new test constructing exactly
+this shape (size-less Sequence Header OBU + 4 bytes of stand-in trailing OBU data) — `obuEnd` now
+correctly stops at the sequence header's own boundary instead of swallowing the trailing bytes; all
+existing tests (which only use explicit-size-field fixtures, unaffected by this branch) still pass.
+See `docs/player/03-mediaSession-core-video.md`'s `AV1HeaderParser` section for the full writeup,
+including a correction to that section's own stale claim that the parser "doesn't parse
+`color_config()`" (it does, and has for a while — the doc just hadn't been updated to match).
