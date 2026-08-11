@@ -24,6 +24,18 @@ export default defineConfig({
   // currently-executing script (`document.currentScript.src` in the IIFE
   // build, `import.meta.url` in the ESM build) instead.
   base: './',
+  // vendor/runtime/ (ffmpeg.js/.wasm, ffmpegAAC.transcoder.js/.wasm,
+  // minizip-asm.js — the classic-script Emscripten/UMD bundles the worker
+  // entries below `importScripts()`/`fetch()` at runtime) is copied
+  // *verbatim* into dist/player/ root via publicDir instead of going
+  // through Vite's normal asset pipeline — see the `worker:` block below
+  // for why that distinction matters. Only the actual runtime-loaded files
+  // live under runtime/; vendor/'s .d.ts files and mp4Generator.js (a
+  // normally `import`ed, directly-bundled module, not one of these
+  // classic-script loads) stay out of it deliberately, so dist/player/
+  // doesn't ship type declarations or test files alongside the real build
+  // output.
+  publicDir: resolve(__dirname, 'vendor/runtime'),
   build: {
     outDir: resolve(__dirname, '../../dist/player'),
     emptyOutDir: true,
@@ -49,11 +61,33 @@ export default defineConfig({
   // `importScripts()` (see e.g. zipWorker.ts / AssemblyDecoder.ts's doc
   // comments), which only resolves `this`/globals the way those vendor
   // bundles expect under a classic (non-ESM) worker script — an `'es'`-format
-  // worker bundle would break that. Those vendor files are referenced via
-  // `new URL('../../vendor/xxx', import.meta.url)`, which Vite inlines as
-  // base64 `data:` URLs directly in the worker chunk (Vite's default for
-  // assets referenced from within a worker), so they need no separate
-  // copy/deploy step either.
+  // worker bundle would break that.
+  //
+  // Those vendor files are referenced via `new URL('../xxx', import.meta.url)`
+  // (one level up from the worker chunk's own `dist/player/assets/` — see
+  // `publicDir` above for where `../xxx` actually resolves to). This
+  // deliberately does NOT match an existing file relative to the *source*
+  // worker/**/*.ts location (there is no worker/xxx or worker/videoDecoder/
+  // xxx), so Vite's static analysis can't find anything to inline: it
+  // leaves the `new URL(...)` call as plain runtime code instead (with a
+  // "doesn't exist at build time" build-log note, not an error), and it's
+  // resolved for real once the browser actually runs it, against the
+  // publicDir copy sitting one directory up from `assets/`.
+  //
+  // This used to instead read `new URL('../../vendor/xxx', import.meta.url)`
+  // — a path Vite's static analysis *could* resolve — which is exactly the
+  // problem: Vite's default behavior for an asset reference resolved from
+  // inside a worker chunk is to inline it as a base64 `data:` URL directly
+  // in that chunk, regardless of `build.assetsInlineLimit` (confirmed
+  // empirically against Vite 6.4 — that option has no effect here). That's
+  // fine in an unrestricted page, but a real consumer embedding this player
+  // in a Chrome extension hit it for real: the extension's
+  // `script-src 'self' 'wasm-unsafe-eval'` CSP (MV3's default couldn't be
+  // loosened to allow arbitrary `data:` scripts) flatly rejected the H264
+  // decoder worker's `importScripts('data:text/javascript;base64,...')`
+  // call, breaking canvas-tag playback entirely. A same-origin
+  // `chrome-extension://<id>/ffmpeg.js`-style URL (what this now produces)
+  // satisfies `'self'` with no CSP changes needed on the consumer's side.
   worker: {
     format: 'iife'
   }

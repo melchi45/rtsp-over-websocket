@@ -11,15 +11,17 @@ export interface ZipWorkerRequest {
 // `webworker` lib isn't used project-wide. `importScripts` loads the vendor
 // UMD bundle as its own top-level classic script (see minizip-asm.d.ts for
 // why that matters, rather than an ES `import`). The URL uses
-// `new URL('...', import.meta.url)` so Vite emits vendor/minizip-asm.js as
-// a build asset and rewrites this call to the final hashed path.
+// `new URL('../minizip-asm.js', import.meta.url)` — see vite.config.ts's
+// `publicDir` comment for why that specific (deliberately build-time-
+// unresolvable) path matters: it's what keeps Vite from base64-inlining
+// this into the Worker chunk, which broke under real consumers' CSP.
 declare function importScripts(...urls: string[]): void;
 declare const self: {
   onmessage: ((event: MessageEvent<ZipWorkerRequest>) => void) | null;
   postMessage(message: Uint8Array, transfer?: Transferable[]): void;
 };
 
-importScripts(new URL('../../vendor/minizip-asm.js', import.meta.url).href);
+importScripts(new URL('../minizip-asm.js', import.meta.url).href);
 
 /**
  * Ported from the legacy player’s Worker/Backup/zipWorker — zips the backup

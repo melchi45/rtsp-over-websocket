@@ -364,3 +364,35 @@ was presumably meant to work against whichever backing client was in use (`Sunap
 call `join()` — see its section in `docs/player/02-network.md`), but `SunapiManager` only ever constructs a
 `SunapiClient`, which never had one. Fixed by removing the `join()` call and the `joinAfterGet` option entirely
 from `SunapiManager.ts`; see `docs/player/02-network.md`'s `SunapiManager` section for the full per-method writeup.
+
+## Vendor Emscripten/UMD bundles (ffmpeg.js, ffmpegAAC.transcoder.js, minizip-asm.js) base64-inlined into Worker chunks — broke under a real consumer's CSP (fixed)
+
+`AssemblyDecoder.ts`/`AssemblyTranscoder.ts`/`zipWorker.ts` load their vendored Emscripten/UMD bundles via
+`importScripts(new URL('../../vendor/xxx', import.meta.url).href)` inside their respective Worker chunks. Vite's
+default behavior for an asset reference it can statically resolve *from inside a worker chunk* is to inline it as
+a base64 `data:` URL directly in that chunk — confirmed empirically (Vite 6.4) that `build.assetsInlineLimit`
+(even set to `0`) has **no effect** on this; it's a worker-specific code path, not the general asset pipeline.
+Harmless in an unrestricted page, but a real consumer embedding `<rtsp-over-websocket>` in a Chrome extension hit
+it for real: the extension's `script-src 'self' 'wasm-unsafe-eval'` CSP (MV3 extension_pages CSP can't be loosened
+to allow arbitrary `data:` scripts) rejected the H264 decoder worker's
+`importScripts('data:text/javascript;base64,...')` call outright — canvas-tag playback broke completely, reported
+as a CSP violation console error, not an obviously-vendor-related one.
+
+Fixed by moving the actual runtime-loaded vendor files (ffmpeg.js/.wasm, ffmpegAAC.transcoder.js/.wasm,
+minizip-asm.js) into `vendor/runtime/` and pointing `vite.config.ts`'s `publicDir` at that folder, so they're
+copied *verbatim* to `dist/player/` root instead of going through Vite's asset pipeline at all — then changing
+each `new URL(...)` call from `'../../vendor/xxx'` (a path Vite's static analysis *could* resolve, which is
+exactly the problem) to `'../xxx'` (deliberately unresolvable at build time — there's no `worker/xxx` or
+`worker/videoDecoder/xxx` — so Vite logs a "doesn't exist at build time, remains unchanged" note and leaves the
+call as plain runtime code, correctly resolving once actually deployed against the `publicDir` copy one directory
+up from the worker chunk's own `assets/`). A same-origin `chrome-extension://<id>/ffmpeg.js`-style URL satisfies
+`'self'` with zero CSP changes needed on the consumer's side. `vendor/`'s `.d.ts` files and `mp4Generator.js`
+(normally `import`ed and directly bundled, not one of these classic-script loads) deliberately stay out of
+`vendor/runtime/`, so `dist/player/` doesn't ship type declarations or test files alongside the real build output
+either. See `vite.config.ts`'s `publicDir`/`worker` comments for the full mechanism writeup.
+
+Two other approaches were tried and empirically failed before this one: `build.assetsInlineLimit: 0` (no effect,
+confirmed above) and switching the imports to explicit `?url` suffixes (`import x from '../../vendor/xxx?url'`)
+instead of `new URL(...)` — also still inlined (and doubled the chunk size, since it inlined *both* the `?url`
+import's copy and the original `new URL(...)` call's copy). Worth knowing if this class of Vite worker-asset
+behavior needs revisiting again in a future Vite version.

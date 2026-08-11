@@ -27,11 +27,14 @@ declare function importScripts(...urls: string[]): void;
  * Like AACAudioDecoder.ts, this assumes the vendor `Module` global's async
  * WASM bootstrapping (`importScripts(...)` + `fetch(...)` +
  * `Module.onRuntimeInitialized`) runs the same way it does in legacy. The
- * asset URLs use `new URL('...', import.meta.url)` so Vite emits
- * vendor/ffmpeg.{js,wasm} as build assets and rewrites these calls to the
- * final hashed path. `importScripts`/`fetch` are still constructor-injectable
- * (defaulting to the real globals) purely so tests can substitute fakes
- * without needing a real Worker/WASM environment.
+ * asset URLs use `new URL('../ffmpeg.{js,wasm}', import.meta.url)` — a path
+ * that only resolves once actually deployed (see vite.config.ts's
+ * `publicDir` comment for exactly why: this used to instead resolve at
+ * build time, which made Vite base64-inline the whole vendor bundle into
+ * this file directly and broke under real consumers' CSP). `importScripts`/
+ * `fetch` are still constructor-injectable (defaulting to the real globals)
+ * purely so tests can substitute fakes without needing a real Worker/WASM
+ * environment.
  */
 export class AssemblyDecoder {
   channelId = 0;
@@ -70,14 +73,18 @@ export class AssemblyDecoder {
     // `Module.wasmBinary` must be assigned *before* the glue script runs:
     // its own `createWasm()` reads `Module["wasmBinary"]` synchronously at
     // the top of its own (synchronous) execution, falling back to fetching
-    // a same-named "ffmpeg.wasm" next to itself if unset — a real file that
-    // doesn't exist once the vendored wasm is bundled/inlined by Vite (see
-    // AssemblyDecoder.test.ts's fetch-before-importScripts test).
-    fetchFn(new URL('../../vendor/ffmpeg.wasm', import.meta.url).href)
+    // a same-named "ffmpeg.wasm" next to itself if unset — relying on that
+    // fallback instead would still work today (both files now sit side by
+    // side in dist/player/, see vite.config.ts's `publicDir` comment), but
+    // pre-fetching explicitly here means this class controls the timing/
+    // failure path itself rather than depending on the vendor glue script's
+    // own guess (see AssemblyDecoder.test.ts's fetch-before-importScripts
+    // test).
+    fetchFn(new URL('../ffmpeg.wasm', import.meta.url).href)
       .then((response) => response.arrayBuffer())
       .then((buffer) => {
         Module.wasmBinary = buffer;
-        importScriptsFn(new URL('../../vendor/ffmpeg.js', import.meta.url).href);
+        importScriptsFn(new URL('../ffmpeg.js', import.meta.url).href);
       });
   }
 

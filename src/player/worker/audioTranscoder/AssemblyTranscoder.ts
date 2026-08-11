@@ -31,10 +31,12 @@ const OUTPUT_BUFFER_SIZE = 4096;
  *
  * Like AssemblyDecoder.ts, `importScripts`/`fetch` are constructor-injectable
  * (defaulting to the real globals) purely for testability. The asset URLs
- * passed to them use `new URL('...', import.meta.url)` so Vite emits
- * vendor/ffmpegAAC.transcoder.{js,wasm} as build assets and rewrites these
- * calls to the final hashed path, regardless of which page embeds the
- * built Worker chunk.
+ * passed to them use `new URL('../ffmpegAAC.transcoder.{js,wasm}',
+ * import.meta.url)` — see vite.config.ts's `publicDir` comment for why that
+ * specific (deliberately build-time-unresolvable) path, instead of one
+ * pointing at the real vendor/ source location, matters: it's what keeps
+ * Vite from base64-inlining these into the Worker chunk, which broke under
+ * real consumers' CSP.
  */
 export class AssemblyTranscoder {
   private encoderContext: number | null = null;
@@ -73,14 +75,18 @@ export class AssemblyTranscoder {
     // `Module.wasmBinary` must be assigned *before* the glue script runs:
     // its own `createWasm()` reads `Module["wasmBinary"]` synchronously at
     // the top of its own (synchronous) execution, falling back to fetching
-    // a same-named "ffmpegAAC.wasm" next to itself if unset — a real file
-    // that doesn't exist once the vendored wasm is bundled/inlined by Vite
-    // (see AssemblyTranscoder.test.ts's fetch-before-importScripts test).
-    fetchFn(new URL('../../vendor/ffmpegAAC.transcoder.wasm', import.meta.url).href)
+    // a same-named wasm file next to itself if unset — relying on that
+    // fallback instead would still work today (both files now sit side by
+    // side in dist/player/, see vite.config.ts's `publicDir` comment), but
+    // pre-fetching explicitly here means this class controls the timing/
+    // failure path itself rather than depending on the vendor glue script's
+    // own guess (see AssemblyTranscoder.test.ts's fetch-before-importScripts
+    // test).
+    fetchFn(new URL('../ffmpegAAC.transcoder.wasm', import.meta.url).href)
       .then((response) => response.arrayBuffer())
       .then((buffer) => {
         Module.wasmBinary = buffer;
-        importScriptsFn(new URL('../../vendor/ffmpegAAC.transcoder.js', import.meta.url).href);
+        importScriptsFn(new URL('../ffmpegAAC.transcoder.js', import.meta.url).href);
       });
   }
 
