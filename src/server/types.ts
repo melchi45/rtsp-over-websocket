@@ -55,6 +55,13 @@ export interface CreateSessionRequest {
   /** RTSP-over-WebSocket digest credentials this session will accept. */
   username: string;
   password: string;
+  /** H264/H265 only — whether x264/x265 may emit B-frames (default true, ffmpeg's own default).
+   * The player's VideoTagPlayer (Renderer Type "video") now writes real composition-time-offsets
+   * for B-frame content, so this defaults on; set false to force an IPPP-only, camera-like
+   * stream (e.g. for comparing against Renderer Type "canvas", whose WASM decoder reorders
+   * B-frames internally either way and was never affected). Ignored for MJPEG/AV1/VP8/VP9, which
+   * have no B-frame concept in this server's encoder args. */
+  bFrames?: boolean;
 }
 
 export type SessionStatus = 'starting' | 'live' | 'stopped' | 'failed';

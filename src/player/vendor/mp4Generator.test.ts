@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { initSegment } from './mp4Generator';
-import type { Mp4VideoTrackInfo } from './mp4Generator';
+import { initSegment, mediaSegment } from './mp4Generator';
+import type { Mp4BoxInfo, Mp4Sample, Mp4VideoTrackInfo } from './mp4Generator';
 
 interface BoxHeader {
   type: string;
@@ -121,5 +121,69 @@ describe('mp4Generator VP9/AV1 sample entries', () => {
     expect(payload[3]).toBe(0); // reserved / initial_presentation_delay_present=0 / reserved nibble
     expect(Array.from(payload.subarray(4))).toEqual(Array.from(configObu));
     expect(payload.length).toBe(4 + configObu.length);
+  });
+});
+
+describe('mp4Generator video trun composition-time-offset (CTS)', () => {
+  // videoTrun() picks its trun variant per-call from samples[0]'s shape (see mp4Generator.js),
+  // so a segment with no compositionTimeOffset on any sample must produce byte-for-byte the same
+  // trun this class always wrote (VideoTagPlayer.ts's B-frame-free/camera path) — this is the
+  // regression guard for that.
+  it('omits the composition-time-offset flag and reproduces the plain frameDuration trun layout when no sample carries one', () => {
+    const samples = [{ size: 4, frameData: new Uint8Array(), timeStamp: {}, frameDuration: 3000 } as Mp4Sample];
+    const data = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const boxInfo: Mp4BoxInfo = { id: 1, samples, baseMediaDecodeTime: 0, type: 'video' };
+
+    const segment = mediaSegment(1, [boxInfo], data);
+    const moof = findChildBox(segment, 0, segment.length, 'moof');
+    const traf = findChildBox(segment, moof.payloadStart, moof.payloadEnd, 'traf');
+    const trun = findChildBox(segment, traf.payloadStart, traf.payloadEnd, 'trun');
+    const payload = segment.subarray(trun.payloadStart, trun.payloadEnd);
+
+    expect(payload[0]).toBe(0x00); // version 0
+    expect([payload[1], payload[2], payload[3]]).toEqual([0x00, 0x03, 0x05]); // no CTS flag (0x800)
+    expect(payload.length).toBe(4 + 4 + 4 + 4 + (4 + 4)); // header(4)+count(4)+dataOffset(4)+firstSampleFlags(4) + duration+size
+
+    const mdat = findChildBox(segment, moof.payloadEnd, segment.length, 'mdat');
+    expect(Array.from(segment.subarray(mdat.payloadStart, mdat.payloadEnd))).toEqual(Array.from(data));
+  });
+
+  it('writes a version-1 trun with the composition-time-offset flag and correct per-sample CTS, keeping mdat alignment intact', () => {
+    const samples = [
+      { size: 4, frameData: new Uint8Array(), timeStamp: {}, frameDuration: 3000, compositionTimeOffset: 6000 } as Mp4Sample,
+      { size: 3, frameData: new Uint8Array(), timeStamp: {}, frameDuration: 3000, compositionTimeOffset: -1500 } as Mp4Sample
+    ];
+    const data = new Uint8Array([0xde, 0xad, 0xbe, 0xef, 0xf0, 0x0d, 0x01]);
+    const boxInfo: Mp4BoxInfo = { id: 1, samples, baseMediaDecodeTime: 0, type: 'video' };
+
+    const segment = mediaSegment(1, [boxInfo], data);
+    const moof = findChildBox(segment, 0, segment.length, 'moof');
+    const traf = findChildBox(segment, moof.payloadStart, moof.payloadEnd, 'traf');
+    const trun = findChildBox(segment, traf.payloadStart, traf.payloadEnd, 'trun');
+    const payload = segment.subarray(trun.payloadStart, trun.payloadEnd);
+
+    expect(payload[0]).toBe(0x01); // version 1 (signed CTS)
+    expect([payload[1], payload[2], payload[3]]).toEqual([0x00, 0x0b, 0x05]); // CTS flag (0x800) set
+
+    const sampleCount = new DataView(segment.buffer, segment.byteOffset + trun.payloadStart + 4, 4).getUint32(0);
+    expect(sampleCount).toBe(2);
+
+    // trun payload layout: version+flags(4) + sample_count(4) + data_offset(4) +
+    // first_sample_flags(4) = 16-byte header, then [duration(4), size(4), cts(4)] per sample.
+    const sampleView = new DataView(segment.buffer, segment.byteOffset + trun.payloadStart + 16, 12 * samples.length);
+    expect(sampleView.getUint32(0)).toBe(3000); // sample[0].duration
+    expect(sampleView.getUint32(4)).toBe(4); // sample[0].size
+    expect(sampleView.getInt32(8)).toBe(6000); // sample[0].cts
+    expect(sampleView.getUint32(12)).toBe(3000); // sample[1].duration
+    expect(sampleView.getUint32(16)).toBe(3); // sample[1].size
+    expect(sampleView.getInt32(20)).toBe(-1500); // sample[1].cts (signed, negative)
+
+    // The mdat payload must still start exactly where trun's own data_offset says it does, and
+    // contain the original sample bytes unmodified — the real regression this test guards
+    // against is the offset math not accounting for the extra 4 CTS bytes/sample.
+    const dataOffset = new DataView(segment.buffer, segment.byteOffset + trun.payloadStart + 8, 4).getUint32(0);
+    const mdat = findChildBox(segment, moof.payloadEnd, segment.length, 'mdat');
+    expect(moof.payloadStart - 8 + dataOffset).toBe(mdat.payloadStart);
+    expect(Array.from(segment.subarray(mdat.payloadStart, mdat.payloadEnd))).toEqual(Array.from(data));
   });
 });

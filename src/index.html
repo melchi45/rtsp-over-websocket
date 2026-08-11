@@ -527,6 +527,11 @@
                         <option value="VP9">VP9</option>
                       </select>
                     </label>
+                    <label class="checkbox-field" id="yt-bframes-field"
+                      ><input id="yt-bframes" type="checkbox" checked />
+                      B-frames
+                      <span class="field-note">(H.264/H.265 only — off forces an IPPP-only, camera-like stream)</span>
+                    </label>
                   </div>
                 </div>
 
@@ -1842,6 +1847,17 @@
         var videoCodecSelect = document.getElementById('yt-video-codec');
         var audioCodecSelect = document.getElementById('yt-audio-codec');
         var audioBitrateSelect = document.getElementById('yt-audio-bitrate');
+        var bFramesCheckbox = document.getElementById('yt-bframes');
+
+        // B-frames only mean anything to x264/x265 — see CreateSessionRequest.bFrames's comment
+        // in src/server/types.ts. MJPEG/AV1/VP8/VP9 have no B-frame concept in this server's
+        // encoder args, so grey the control out (and imply "on" has no effect) for those.
+        function updateBFramesAvailability() {
+          var applies = videoCodecSelect.value === 'H264' || videoCodecSelect.value === 'H265';
+          bFramesCheckbox.disabled = !applies;
+        }
+        videoCodecSelect.addEventListener('change', updateBFramesAvailability);
+        updateBFramesAvailability();
 
         // Representative bitrate list per codec, matching what
         // src/server/services/transcodeSession.ts's audioEncoderArgs()/
@@ -1931,6 +1947,7 @@
               applyAvailability(videoCodecSelect, caps.video);
               applyAvailability(audioCodecSelect, caps.audio);
               updateAudioBitrateOptions();
+              updateBFramesAvailability();
               updateTranscodingSettingsAvailability();
             })
             .catch(function (err) {
@@ -2083,6 +2100,8 @@
           ytUsernameInput.value = s.request.username;
           form.username.value = s.request.username;
           videoCodecSelect.value = s.request.videoCodec;
+          updateBFramesAvailability();
+          bFramesCheckbox.checked = s.request.bFrames !== false;
           audioCodecSelect.value = s.request.audioCodec;
           updateAudioBitrateOptions();
           audioBitrateSelect.value = String(s.request.audioBitrateKbps);
@@ -2141,7 +2160,12 @@
             '</span>' +
             '<span>channel=' + s.channel + '</span>' +
             '<span>id=' + s.id.slice(0, 8) + '</span>' +
-            '<span>' + s.request.videoCodec + ' @ ' + s.request.resolutionHeight + 'p / ' + s.request.audioCodec + ' ' + s.request.audioBitrateKbps + 'kbps</span>' +
+            '<span>' +
+              s.request.videoCodec +
+              ' @ ' + s.request.resolutionHeight + 'p' +
+              ((s.request.videoCodec === 'H264' || s.request.videoCodec === 'H265') ? (s.request.bFrames === false ? ' (no B-frames)' : ' (B-frames)') : '') +
+              ' / ' + s.request.audioCodec + ' ' + s.request.audioBitrateKbps + 'kbps' +
+            '</span>' +
             '<span style="width: 100%">WebSocket: ' + wsUrlForCurrentServer() + '</span>';
           if (s.error) {
             parts += '<span style="color: var(--error)">' + s.error + '</span>';
@@ -2191,7 +2215,8 @@
             audioCodec: audioCodecSelect.value,
             audioBitrateKbps: parseInt(document.getElementById('yt-audio-bitrate').value, 10),
             username: document.getElementById('yt-username').value,
-            password: document.getElementById('yt-password').value
+            password: document.getElementById('yt-password').value,
+            bFrames: bFramesCheckbox.checked
           };
           // Entered as 1-based, same as the Player tab's Channel field, and
           // converted to 0-based (the wire value — see Session.channel in

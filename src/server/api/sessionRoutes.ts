@@ -40,6 +40,14 @@ function validateCreateRequest(body: unknown): { value: CreateSessionRequest; ch
     channel = n;
   }
 
+  // Optional — see CreateSessionRequest.bFrames's comment in types.ts. Omitted/undefined
+  // defaults to true (ffmpeg's own default: B-frames on).
+  let bFrames = true;
+  if (b.bFrames !== undefined && b.bFrames !== null) {
+    if (typeof b.bFrames !== 'boolean') return { error: '"bFrames" must be a boolean' };
+    bFrames = b.bFrames;
+  }
+
   return {
     value: {
       youtubeUrl: b.youtubeUrl,
@@ -48,7 +56,8 @@ function validateCreateRequest(body: unknown): { value: CreateSessionRequest; ch
       audioCodec: b.audioCodec as AudioCodec,
       audioBitrateKbps: b.audioBitrateKbps,
       username: b.username,
-      password: b.password
+      password: b.password,
+      bFrames
     },
     channel
   };

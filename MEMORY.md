@@ -507,3 +507,93 @@ tested (`videoElement.webkitDroppedFrameCount`, which the reported "Drops" stati
 from, is a genuine browser-reported counter, not something this codebase computes/throttles
 itself for the `video`-tag path the way `decoderWorker.ts`'s drop-frame heuristic does for
 `canvas`) — not yet distinguished between the two.
+
+## H.265 `video`-tag FPS drop root-caused: not decode throughput, but missing B-frame reordering (fixed at the source)
+
+Follow-up to the entry above, which left the FPS report open. Root cause found via
+`chrome://media-internals` (the user attached its live JSON dump): the H.265 YouTube-transcoding
+demo session was using a **hardware** decoder (`VDAVideoDecoder`, `kIsPlatformVideoDecoder: true`)
+the entire time — ruling out a decode-throughput ceiling — but logged, continuously for the whole
+session, `Decoded frame with timestamp X s is out of order` immediately followed by
+`Dropping frame with timestamp Y s, which is earlier than the last rendered frame`. The same
+demo's H.264 session and the real camera's H.264 sessions in the same dump show neither message.
+
+Real cause: `mp4Generator.d.ts`'s `Mp4Sample` has no composition-time-offset/PTS-vs-DTS field —
+only a plain `duration` — so the fMP4 `VideoTagPlayer` builds can only represent decode order ===
+display order for one linear sequence. `PlaybackBufferManager` (the H.265 reordering buffer
+documented under `CanvasTagPlayer`) exists *only* for the `canvas`-tag path — `video`-tag mode has
+no reordering of any kind. x265 (this repo's own transcoding demo server) uses B-frames by default
+even at `-preset veryfast`; RTP packets for a B-frame stream arrive in decode order, each correctly
+timestamped with its true presentation time, so the arrival-order timestamp sequence is inherently
+non-monotonic — exactly what the muxer can't represent and what the browser's own frame-ordering
+logic was rejecting almost every frame for. Real Hanwha camera encoders don't use B-frames for
+low-latency streaming, which is why `video`-tag playback against a real camera was never affected
+— matching this file's "Canvas tag vs video tag decode paths" entry's note that this was
+demo/ffmpeg-specific.
+
+**Superseded** — initially worked around at the source (`transcodeSession.ts` forcing
+`bframes=0`), then fixed properly per explicit request: real B-frame content should just work in
+`video`-tag mode, not only be avoidable. See this file's "VideoTagPlayer composition-time-offset
+(CTS) support" entry below for the actual fix (real ISOBMFF composition-time-offsets) and the
+source-side option this left behind.
+
+## VideoTagPlayer composition-time-offset (CTS) support — real B-frame reordering, not just a workaround
+
+Follow-up/supersedes the entry above. Once the `bframes=0` server-side workaround fixed the
+reported symptom, the natural follow-up question was asked directly: shouldn't the *player* handle
+B-frames too, not just avoid them for the one encoder this repo controls? Answered by tracing what
+actually reorders B-frames for the `canvas`-tag path first: **not** `PlaybackBufferManager`/
+`VideoBufferList` (read in full — it's a plain FIFO doubly-linked list, no timestamp sort, no
+B-frame-specific logic anywhere) but the WASM decoder itself (`AssemblyDecoder`/ffmpeg.wasm),
+which — like any standards-compliant H.264/H.265 decoder — reorders B-frames into display order
+internally as ordinary decode semantics, for free, before any frame reaches this repo's own code.
+`VideoTagPlayer` never decodes anything (it hands *encoded* NAL units to the browser via MSE), so
+it never got that benefit — the reordering problem was entirely unaddressed there, and the
+`bframes=0` fix just avoided ever needing to address it, rather than solving it.
+
+Real fix requires ISOBMFF's actual mechanism for this: a per-sample **composition-time-offset**
+(CTS) in the `trun` box (ISO/IEC 14496-12 §8.8.8), letting samples be written in *decode* order
+(required — B-frame decode dependencies are baked into the encoded bitstream, you cannot just
+reorder raw NAL units and expect them to decode) while each one separately declares its true
+*display* time. `mp4Generator.d.ts`'s `Mp4Sample` had no such field, and `mp4Generator.js`'s
+`videoTrun()` had only a vestigial, non-functional trace of CTS support (a `trunHeader`/`
+compositionTimeOffset` flag-detection branch whose sample-writing loop never actually emitted CTS
+bytes — dead code, not a working feature). This is genuinely additive to a vendored file this
+project otherwise treats as copied-verbatim (per `mp4Generator.d.ts`'s own top comment) — justified
+here since it's filling in real spec support the file gestured at but never finished, not a
+rewrite.
+
+Implementation, split across three files:
+- `mp4Generator.js`: `videoTrun()` gained a third branch (alongside the existing
+  no-`frameDuration`/has-`frameDuration` ones), selected when `samples[0].compositionTimeOffset !==
+  undefined` — writes a version-1 (signed) `trun` with flags `0x000B05` (adds the
+  composition-time-offset bit to the existing duration/size/first-sample-flags/data-offset set) and
+  a `[duration, size, cts]` triple per sample, correctly extending the `data_offset` computation by
+  the extra 4 bytes/sample this adds. When no sample carries a CTS (every existing/camera stream),
+  output is byte-for-byte identical to before — confirmed via a dedicated regression test.
+- `VideoTagPlayer.ts`: new `getVideoCompositionTimeOffset(streamData)` (live-mode only) computes
+  `presentationTime - decodeTime` per sample without touching `getVideoFrameDuration()`'s existing
+  (deliberately untouched — it also drives the live-edge jitter buffer) duration/delay logic at
+  all: `presentationTime` = this sample's own `rtpTimestamp` relative to the stream's first sample
+  (new field `presentationBaseRtpTimestamp`, reset in `initBaseNTPTimestamp()`); `decodeTime` =
+  `baseVideoTime` plus the summed `frameDuration` of any not-yet-flushed buffered samples — i.e.
+  this sample's own position on the decode-time clock that already exists. Both scaled identically
+  (`* TEN`), so a non-reordered stream's two clocks track each other almost exactly and CTS
+  evaluates to ~0 — no behavior change for camera streams, which this was always correct for.
+- `src/server/services/transcodeSession.ts` / `types.ts` / `sessionRoutes.ts`: the earlier
+  `bframes=0` hardcode became `CreateSessionRequest.bFrames` (default `true`, matching ffmpeg's own
+  default) — a real opt-out for comparison/testing now that B-frames work, applied to both H264 and
+  H265 (`bFramesArg` appended to `-x264-params`/`-x265-params` only when `bFrames === false`).
+  `src/index.html`'s Transcoding Settings panel exposes it as a checkbox (`#yt-bframes`), enabled
+  only for H264/H265, restored on session reflect, and shown in the session-status line.
+
+Verified via `mp4Generator.test.ts`'s new CTS describe block (byte-level: version/flags, per-sample
+duration/size/signed-CTS values including a negative one, and that `data_offset` still points
+exactly at the unmodified mdat payload — the real regression risk was the offset arithmetic missing
+the extra 4 bytes/sample) plus the existing regression test confirming the no-CTS path is
+byte-for-byte unchanged. Not yet re-verified against a live browser session (no interactive browser
+in this environment) — the original bug's diagnosis came from a `chrome://media-internals` dump the
+user attached, and the actual "does Chrome now display B-frame H.265 smoothly" confirmation is
+still pending a live test on their end. See `docs/player/05-video-player-rendering.md`'s
+`VideoTagPlayer` section (replacing its former "Known gap: no B-frame reordering support" note)
+for the full per-method writeup.

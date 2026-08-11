@@ -82,6 +82,8 @@ interface VideoSample {
   timeStamp: TimestampData;
   frameDuration: number;
   rtpTimestamp?: number;
+  /** Composition-time-offset (PTS - DTS), TIME_SCALE units — see getVideoCompositionTimeOffset(). */
+  compositionTimeOffset?: number;
 }
 
 interface AudioSample {
@@ -227,6 +229,10 @@ export class VideoTagPlayer extends VideoPlayer {
   private baseVideoTime = 0;
   private baseAudioTime = 0;
   private baseNTPTimestamp = 0;
+  /** Live-mode CTS base: the first video sample's rtpTimestamp, so presentation time can be
+   * measured on the same origin as baseVideoTime (a running sum of frameDuration values).
+   * See getVideoCompositionTimeOffset(). */
+  private presentationBaseRtpTimestamp: number | null = null;
   private boxStartTime: number[] = [];
   private lastBoxSize = 0;
   private fileName = '';
@@ -1046,9 +1052,49 @@ export class VideoTagPlayer extends VideoPlayer {
   private initBaseNTPTimestamp(videoTimestamp: TimestampData): void {
     this.baseAudioTime = 0;
     this.baseVideoTime = 0;
+    this.presentationBaseRtpTimestamp = null;
     this.baseNTPTimestamp = videoTimestamp.utcTimeStamp
       ? videoTimestamp.utcTimeStamp
       : (videoTimestamp.timestamp as number) * 1000 + (videoTimestamp.timestamp_usec as number);
+  }
+
+  /**
+   * Composition-time-offset (PTS - DTS) for a live-mode video sample, TIME_SCALE units.
+   *
+   * getVideoFrameDuration() derives each sample's `frameDuration` from consecutive
+   * rtpTimestamp deltas in *arrival* order, `Math.abs()`-clamped to stay positive — correct
+   * for encoders that never reorder (arrival order === decode order === display order, true
+   * of every real Hanwha camera stream observed), but not for an encoder using B-frames
+   * (RTP packets arrive in decode order; each packet's own rtpTimestamp is still its true
+   * presentation time per RFC 3550, so the arrival-order timestamp sequence is inherently
+   * non-monotonic whenever a B-frame is in flight). `Mp4Sample`/`mp4Generator.js` has no
+   * composition-time-offset concept beyond what this method now supplies, so without it every
+   * sample's presentation time was implicitly forced equal to its decode time — confirmed live
+   * via chrome://media-internals to make Chrome's own MSE pipeline reject and drop most frames
+   * of a B-frame H.265 stream ("Decoded frame ... is out of order" / "Dropping frame ...").
+   *
+   * Computed independently of frameDuration/baseVideoTime's own (already delicate, live-edge-
+   * buffering-relevant) logic rather than by changing it: `decodeTime` is this sample's position
+   * on the existing running decode-time clock (baseVideoTime plus any samples already buffered
+   * in this.videoSamples but not yet flushed to a segment); `presentationTime` is this sample's
+   * own rtpTimestamp relative to the first sample's (both scaled identically to frameDuration's
+   * `* TEN`, so they share units). For non-reordered streams the two clocks track each other
+   * almost exactly, so this evaluates to ~0 (no observable behavior change); for a B-frame
+   * stream it captures the true, bounded reordering offset.
+   */
+  private getVideoCompositionTimeOffset(streamData: VideoStreamData): number {
+    const rtpTimestamp = Number(streamData.timeStamp.rtpTimestamp);
+    if (this.presentationBaseRtpTimestamp === null) {
+      this.presentationBaseRtpTimestamp = rtpTimestamp;
+    }
+    const presentationTime = (rtpTimestamp - this.presentationBaseRtpTimestamp) * TEN;
+
+    let decodeTime = this.baseVideoTime;
+    for (const bufferedSample of this.videoSamples) {
+      decodeTime += bufferedSample.frameDuration;
+    }
+
+    return presentationTime - decodeTime;
   }
 
   private initBaseAudioTime(audioTimestamp: TimestampData): boolean {
@@ -1192,6 +1238,7 @@ export class VideoTagPlayer extends VideoPlayer {
     } else {
       this.preVideoFrameData = this.getVideoFrameDuration(streamData, videoInfo, this.preVideoFrameData);
       sample.frameDuration = this.preVideoFrameData.frameDuration;
+      sample.compositionTimeOffset = this.getVideoCompositionTimeOffset(streamData);
       if (this.dummyAudio) {
         this.makeDummyAudio(sample.frameDuration);
       } else {

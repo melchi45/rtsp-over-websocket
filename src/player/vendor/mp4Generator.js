@@ -1119,7 +1119,7 @@ trex = function (track, sampleDuration) {
 };
 
 (function () {
-  var audioTrun, videoTrun, trunHeader, trunHeader1;
+  var audioTrun, videoTrun, trunHeader, trunHeader1, trunHeader1Cts;
 
   // This method assumes all samples are uniform. That is, if a
   // duration is present for the first sample, it will be present for
@@ -1178,8 +1178,28 @@ trex = function (track, sampleDuration) {
     ];
   };
 
+  // Same as trunHeader1, plus the sample-composition-time-offset flag (0x800) and version 1
+  // (signed offsets — a B-frame source's CTS can be negative for the first few samples of a
+  // GOP). Used only when every sample in this trun carries a `compositionTimeOffset` — see
+  // VideoTagPlayer.ts's getVideoCompositionTimeOffset().
+  trunHeader1Cts = function (samples, offset) {
+    return [
+      0x01, 0x00, // version 1
+      0x0B, 0x05, // flags: data-offset | first-sample-flags | duration | size | composition-time-offset
+      (samples.length & 0xFF000000) >>> 24,
+      (samples.length & 0xFF0000) >>> 16,
+      (samples.length & 0xFF00) >>> 8,
+      samples.length & 0xFF, // sample_count
+      (offset & 0xFF000000) >>> 24,
+      (offset & 0xFF0000) >>> 16,
+      (offset & 0xFF00) >>> 8,
+      offset & 0xFF, // data_offset
+      0x00, 0x00, 0x00, 0x00
+    ];
+  };
+
   videoTrun = function (track, offset) {
-    var bytes, samples, sample, i;
+    var bytes, samples, sample, i, cts;
     samples = track.samples || [];
     if (samples[0].frameDuration == null) {
       offset += 8 + 12 + 4 + (4 * samples.length); // size
@@ -1192,6 +1212,27 @@ trex = function (track, sampleDuration) {
           (sample.size & 0xFF00) >>> 8,
           sample.size & 0xFF, // sample_size
 
+        ]);
+      }
+    } else if (samples[0].compositionTimeOffset !== undefined) {
+      offset += 8 + 12 + 4 + (4 * samples.length) + (4 * samples.length) + (4 * samples.length); // duration, size, cts
+      bytes = trunHeader1Cts(samples, offset);
+      for (i = 0; i < samples.length; i++) {
+        sample = samples[i];
+        cts = sample.compositionTimeOffset | 0; // coerce to a signed 32-bit integer
+        bytes = bytes.concat([
+          (sample.frameDuration & 0xFF000000) >>> 24,
+          (sample.frameDuration & 0xFF0000) >>> 16,
+          (sample.frameDuration & 0xFF00) >>> 8,
+          sample.frameDuration & 0xFF, // sample_duration
+          (sample.size & 0xFF000000) >>> 24,
+          (sample.size & 0xFF0000) >>> 16,
+          (sample.size & 0xFF00) >>> 8,
+          sample.size & 0xFF, // sample_size
+          (cts & 0xFF000000) >>> 24,
+          (cts & 0xFF0000) >>> 16,
+          (cts & 0xFF00) >>> 8,
+          cts & 0xFF // sample_composition_time_offset
         ]);
       }
     } else {

@@ -11,8 +11,22 @@ interface RunningTranscode {
 
 const processes = new Map<string, RunningTranscode>();
 
-function videoEncoderArgs(codec: VideoCodec, encoder: string, height: number): string[] {
+function videoEncoderArgs(codec: VideoCodec, encoder: string, height: number, bFrames: boolean): string[] {
   const scale = ['-vf', `scale=-2:${height}`];
+  // bframes=0: forces an IPPP-only, camera-like stream. VideoTagPlayer.ts (Renderer Type
+  // "video") now computes a real per-sample composition-time-offset (see
+  // getVideoCompositionTimeOffset()) and mp4Generator.js's trun writer can encode it, so
+  // B-frame content plays correctly there too — this is an opt-out for comparison/testing, not
+  // a required workaround anymore. Confirmed live via chrome://media-internals that, before the
+  // CTS fix, x265's default bframes setting made every H.265 demo session log repeating
+  // "Decoded frame ... is out of order" / "Dropping frame ... which is earlier than the last
+  // rendered frame" for the whole session (RTP packets arrive in decode order; each one's own
+  // rtpTimestamp is still its true presentation time, so the arrival-order sequence is
+  // inherently non-monotonic whenever a B-frame is in flight) — `canvas`-tag mode was never
+  // affected, since its WASM decoder reorders B-frames internally regardless. Real Hanwha
+  // encoders don't use B-frames for low-latency streaming, so this setting has no camera
+  // equivalent either way.
+  const bFramesArg = bFrames ? '' : ':bframes=0';
   switch (codec) {
     case 'MJPEG':
       return ['-c:v', encoder, '-q:v', '5', ...scale];
@@ -29,12 +43,12 @@ function videoEncoderArgs(codec: VideoCodec, encoder: string, height: number): s
       // non-keyframe slices with no cached SPS/PPS and fail to decode ("SPS payload is not available").
       return [
         '-c:v', encoder, '-preset', 'veryfast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p',
-        '-x264-params', 'repeat-headers=1', '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale
+        '-x264-params', `repeat-headers=1${bFramesArg}`, '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale
       ];
     case 'H265':
       return [
         '-c:v', encoder, '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-        '-x265-params', 'repeat-headers=1', '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale
+        '-x265-params', `repeat-headers=1${bFramesArg}`, '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale
       ];
     // force_key_frames (VP8/VP9/AV1): same rationale as H264/H265 above, confirmed empirically —
     // without it, libvpx/libaom's default GOP sizing on this source produced *zero* keyframes in
@@ -147,7 +161,7 @@ async function buildFfmpegArgs(session: Session): Promise<string[]> {
     '0:v:0',
     '-map',
     '0:a:0',
-    ...videoEncoderArgs(request.videoCodec, videoEncoder, request.resolutionHeight),
+    ...videoEncoderArgs(request.videoCodec, videoEncoder, request.resolutionHeight, request.bFrames !== false),
     ...audioEncoderArgs(request.audioCodec, audioEncoder, request.audioBitrateKbps),
     '-f',
     'rtsp',

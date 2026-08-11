@@ -22,6 +22,9 @@ export interface Mp4Sample {
   frameDuration?: number;
   duration?: number;
   rtpTimestamp?: number;
+  /** trun sample_composition_time_offset (PTS - DTS). Only honored on the `frameDuration`-based
+   * video trun path (videoTagPlayer.ts's live-mode samples) — see mp4Generator.js's videoTrun(). */
+  compositionTimeOffset?: number;
 }
 
 export interface Mp4VideoTrackInfo {

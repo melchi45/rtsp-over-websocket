@@ -789,6 +789,45 @@ sequenceDiagram
   collaborators are the vendored `mp4Generator` module and the small `util/` helpers
   (`CircularTypedArrayQueue`, `Median`, `Mean`, `IntervalTimer`).
 
+- **B-frame reordering: composition-time-offset (CTS).** Unlike `CanvasTagPlayer` (whose WASM
+  decoder reorders B-frames internally as ordinary decoder behavior, via `PlaybackBufferManager`'s
+  jitter buffer downstream of that), `VideoTagPlayer` hands *encoded* NAL units to the browser via
+  MSE — RTP packets for a B-frame source arrive in decode order, and each one's own `rtpTimestamp`
+  is still its true presentation time (RFC 3550), so the arrival-order timestamp sequence is
+  inherently non-monotonic whenever a B-frame is in flight. Originally undiagnosed as exactly
+  that: confirmed live via `chrome://media-internals` against this repo's own YouTube-to-RTSP
+  H.265 transcoding demo (x265 uses B-frames by default even at `-preset veryfast`) — every
+  session logged `Decoded frame ... is out of order` / `Dropping frame ... which is earlier than
+  the last rendered frame` continuously for the whole playback, Chrome's own MSE pipeline silently
+  discarding most frames (an apparent ~24fps input throttled to ~7fps displayed, with hardware
+  decode confirmed active the whole time — not a decode-throughput problem). Real Hanwha camera
+  encoders don't use B-frames for low-latency streaming, so `video`-tag mode against a real camera
+  was never affected.
+
+  Fixed with real ISOBMFF composition-time-offsets rather than a source-side workaround:
+  `getVideoCompositionTimeOffset(streamData)` (private, live-mode only) computes, per sample,
+  `presentationTime - decodeTime` where `presentationTime` is this sample's own `rtpTimestamp`
+  relative to the stream's first sample (`presentationBaseRtpTimestamp`, reset in
+  `initBaseNTPTimestamp()`) and `decodeTime` is `baseVideoTime` plus the summed `frameDuration` of
+  any samples already buffered in `this.videoSamples` but not yet flushed — i.e. this sample's own
+  position on the *existing* (unmodified) decode-time clock `getVideoFrameDuration()`/
+  `baseVideoTime` already maintain. Both are scaled identically (`* TEN`), so for a non-reordered
+  stream the two clocks track each other almost exactly and this evaluates to ~0 — no observable
+  behavior change for the camera path this was always correct for. `createVideoSample()` stores the
+  result on `VideoSample.compositionTimeOffset`, which `mp4Generator.js`'s `videoTrun()` now
+  detects (`samples[0].compositionTimeOffset !== undefined`) and writes as a real, signed
+  (trun version 1) `sample_composition_time_offset` per ISO/IEC 14496-12 §8.8.8 — a genuine,
+  additive extension to the vendored muxer (see `mp4Generator.test.ts`'s CTS describe block for
+  byte-level coverage of both the new path and the unchanged fallback), not a JS-side reordering
+  buffer, since B-frame *decode* dependencies mean the samples still have to reach the browser's
+  decoder in decode order regardless.
+
+  The demo transcoding server (`src/server/services/transcodeSession.ts`) no longer forces
+  `bframes=0` unconditionally — `CreateSessionRequest.bFrames` (default `true`, ffmpeg's own
+  default) is now a real user-facing option (the demo's Transcoding Settings panel exposes it as
+  a checkbox, enabled only for H264/H265), useful for deliberately comparing against
+  `bFrames: false`'s IPPP-only/camera-like behavior rather than as a required workaround.
+
 ```mermaid
 flowchart LR
     StreamPlayer -->|"createVideoPlayer()"| VideoTagPlayer
