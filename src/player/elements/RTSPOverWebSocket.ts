@@ -2301,6 +2301,17 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.applyVideoContainerVisibility();
 
     if (this.video !== undefined && this.video !== null) {
+      // The canvas's `width`/`height` attributes hold the decoded video's
+      // intrinsic pixel buffer size (set to the real resolution, e.g.
+      // 1920x1080, by CanvasRenderer/WebGLCanvas once frames arrive), which
+      // is unrelated to how large it should be drawn on screen. Without an
+      // explicit CSS size the canvas renders at that intrinsic size and
+      // overflows the <rtsp-over-websocket> host's own box (e.g. 800x480).
+      // `onRTSPOverWebSocketVideoMode` applies this same
+      // width/height:100%+display:block styling when it replaces the tag on
+      // a canvas<->video mode change, but only if that later replacement
+      // actually fires; setting it here up front makes the fit unconditional.
+      this.video.setAttribute('style', 'width: 100%;\r\nheight: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto;');
       rtspOverWebSocketWrapperElement.appendChild(this.video);
 
       this.zoom_point = { x: 0, y: 0 };
@@ -3642,11 +3653,17 @@ export class RTSPOverWebSocket extends HTMLElement {
     const videoElement = getElementByAttributeValue(event.tagmode, 'rtsp-channel-mapped-id', event.elementId);
 
     if (videoElement !== undefined) {
-      let styleText = '';
-      if (event.tagmode !== 'canvas') {
-        styleText += 'width: 100%;\r\n';
-      }
-      styleText += 'height: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto\r\n';
+      // `width: 100%` used to be applied only for tagmode !== 'canvas', on the
+      // assumption canvas would size itself from its width/height attributes.
+      // Those attributes hold the decoded stream's intrinsic pixel buffer
+      // size (e.g. 1920x1080), not a display size — with only `height: 100%`
+      // set, a replaced element like <canvas> auto-computes its displayed
+      // width from that intrinsic aspect ratio, which overflows a host box
+      // whose own aspect ratio is narrower than the video's (e.g. an
+      // 800x480/5:3 host with a 16:9 video). Applying width:100% here for
+      // every tagmode keeps the canvas fit to its parent, matching the
+      // sizing already applied at initial attach (`updateRendering()`).
+      const styleText = 'width: 100%;\r\nheight: 100%;\r\ndisplay: block;\r\nmargin-left: auto;\r\nmargin-right: auto\r\n';
       videoElement.setAttribute('style', styleText);
     }
   }

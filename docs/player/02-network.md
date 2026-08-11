@@ -177,10 +177,14 @@ recent history — see `retryWithCredentials()` below).
   - `Options` → `Describe`: issues `DESCRIBE` with `Accept: application/sdp` (or `Require:
     Bestshot` if `bestshot` is set).
   - `Describe` → `Setup`: requires `SDPData` (else throws `RTSPOverWebSocketError` `0x0210`);
-    classifies each SDP media session into a codec bucket (`JPEG`/`H264`/`H265`; `PCMU`/`PCMA`/
-    `G726-*` — split further into talk-back tracks by `trackID=t`/`trackID=back` vs. normal audio;
-    `MPEG4-GENERIC`; `OPUS`; `vnd.onvif.metadata`) and pushes an `SdpInfoEntry` per recognized
-    track into `SDPinfo`; unrecognized codecs report error `0x0300` without adding a track. Issues
+    classifies each SDP media session into a codec bucket (`JPEG`/`H264`/`H265`/`VP8`/`VP9`/`AV1`;
+    `PCMU`/`PCMA`/`G726-*` — split further into talk-back tracks by `trackID=t`/`trackID=back` vs.
+    normal audio; `MPEG4-GENERIC`; `OPUS`; `vnd.onvif.metadata`) and pushes an `SdpInfoEntry` per
+    recognized track into `SDPinfo`; unrecognized codecs report error `0x0300` without adding a
+    track. `VP8`/`VP9`/`AV1` are classified here purely so `RtpClient.sendSdpInfo` can build the
+    matching depacketizer session (`VP8Session`/`VP9Session`/`AV1Session`, see
+    `03-mediaSession-core-video.md`) — see that file's "Known gap" note on those sessions for what
+    is (and isn't) wired up beyond depacketization. Issues
     the first `SETUP` with `Transport: RTP/AVP/TCP;unicast;interleaved=<n>-<n+1>` (interleave IDs
     are `2*setupSDPIndex` / `2*setupSDPIndex+1`) — re-authenticates against `ContentBase` first if
     it differs from `rtspUrl` and a challenge is cached.
@@ -624,7 +628,21 @@ an alternate source of RTSP digest-auth response values for camera-mode devices.
   `AuthError`) for a `'camera'` `serverType` missing `cameraIp`/`user`/`password`, or any
   `serverType` missing `password`. Resolves the digest config's `hostname`/`port`/`protocol` from
   `window.location` for `'camera'`, or from `deviceInfo`/`window.location` (proxy-dependent) for
-  `'grunt'`.
+  `'grunt'` — but only when `window.location.protocol` is actually `http:`/`https:` (see the
+  chrome-extension-host fix below); for any other page scheme it falls back to `deviceInfo`'s own
+  `hostname`/`port`/`protocol` instead, since there's no such origin/proxy to borrow from.
+- **Chrome-extension-host fix** (deviates from a straight legacy port, unlike this file's other
+  documented "preserved as-is" legacy quirks): legacy unconditionally borrowed
+  `window.location.hostname`/`port`/`protocol` for the `'camera'` branch, and for `'grunt'` +
+  `proxy: true`. That's a reasonable default when the embedding page is itself http(s) — e.g. a
+  same-origin reverse proxy in front of the device — but breaks when it isn't, concretely when
+  `<rtsp-over-websocket>` is embedded in a Chrome extension page (`window.location.protocol` is
+  `"chrome-extension:"`, which is never a valid protocol/host to reach a SUNAPI device on and
+  produces a `chrome-extension://invalid/`-style unresolvable request). Both borrowing branches
+  are now gated on `window.location.protocol` being `http:`/`https:`; otherwise they use
+  `deviceInfo`'s own values (already correctly resolved upstream — see `SunapiManager.init()`'s
+  matching fix). Same root cause and fix shape in `SunapiManager.init()` and
+  `SunapiRestClient`'s device-config setup below.
 - Not exported as extending anything; implements no interface. Confirmed-unreachable legacy
   methods (`mobile(...)`, `clearDigestCache()`, `DetectBrowser()`, `checkStaleResponseIssue()`)
   are dropped — they existed on the legacy object literal but were never attached to its
@@ -767,12 +785,27 @@ over `SunapiClient`, exposing one method per SUNAPI endpoint.
 
 ### Method Analysis
 
-- `init(info)` — stores `device`, normalizes `protocol` from `window.location`, remaps
+- `init(info)` — stores `device`, normalizes `protocol` from `window.location` **only when that
+  page protocol is `http:`/`https:`** (chrome-extension-host fix, see below — for any other page
+  scheme, `info.device.protocol` is left as whatever the caller already resolved), remaps
   `hostname`/`username` from `cameraIp`/`user` for non-`'nvr'` device types, constructs `new
   SunapiClient(device)`, and calls `sunapiClient.get('/stw-cgi/attributes.cgi', ...)` to fetch
   device capability attributes, wrapping any error as a `SunapiError`. (A legacy quirk that
   unconditionally reset `_sunapiClient` right before an `if (!this._sunapiClient)` "already
   initialized" check is dropped since that branch was permanently unreachable.)
+- **Chrome-extension-host fix** (deviates from a straight legacy port, unlike this file's other
+  documented "preserved as-is" legacy quirks): legacy always synced `device.protocol` to
+  `window.location.protocol` whenever they differed — fine for a normal http(s) tab, but for
+  `<rtsp-over-websocket>` embedded in a Chrome extension page, `window.location.protocol` is
+  `"chrome-extension:"`, which isn't a valid protocol to reach a SUNAPI device on. Worse, by the
+  time `init()` runs, `RTSPOverWebSocket.updateSunapiManager()` has *already* resolved the correct
+  `device.protocol` from the element's `secure`/`https` attribute — so the unconditional sync was
+  clobbering an already-correct value with the literal string `"chrome-extension"`, producing SUNAPI
+  requests against an unresolvable `chrome-extension://<host>/...` URL (Chrome's
+  `net::ERR_FAILED`/`chrome-extension://invalid/` fallback). The sync now only fires when
+  `window.location.protocol` is `http:`/`https:`; behavior for a normal http(s) host is unchanged.
+  Same root cause and fix shape in `SunapiClient`'s constructor and `SunapiRestClient`'s
+  device-config setup (see those sections).
 - `getAttributes()`, `getDeviceInfo()`, `getClientIp()`, `getTimezoneInfo()`, `getDateInfo()`,
   `getSystemProfileAccessInfo()`, `getVideoSource()`, `getVideoProfileAll()`/`getVideoProfile()`,
   `getVideoProfilePolicyAll()`/`getVideoProfilePolicy()`, `getRtspStreamURL()` — each builds one
@@ -886,7 +919,14 @@ request to a dedicated Web Worker instead of an in-thread `XMLHttpRequest`.
 - `init(deviceInfo)` — validates required fields per `serverType` (`hostname` for `'nvr'`,
   `cameraIp` for `'camera'`; `username`/`user` accordingly; `password` always required), throwing
   `RTSPOverWebSocketError` (`0x0400`-`0x0403`) otherwise, then copies validated/normalized values
-  into `deviceConfig` (protocol derived from `window.location.protocol`).
+  into `deviceConfig` (protocol derived from `window.location.protocol` **only when that page
+  protocol is `http:`/`https:`** — chrome-extension-host fix, same root cause and shape as
+  `SunapiManager.init()`'s and `SunapiClient`'s constructor's, see `SunapiManager`'s section for
+  the full story. `SunapiInitDeviceInfo` carries no `protocol` field of its own to fall back to
+  here, unlike those two, so the non-http(s) fallback is this class's own `'http'` default rather
+  than a caller-supplied value). This class is confirmed unreachable from the live app today (see
+  Relations & Data Flow below), so this is a correctness fix for its public-API surface rather than
+  something that changes current runtime behavior.
 - `get(uri, jsonData, successFn, failFn, scope, isAsyncCall, isText)` /
   `post(uri, jsonData, successFn, failFn, scope, fileData, specialHeaders)` — store
   `successFn`/`failFn` on the instance, then call `sendGet`/`sendPost`.

@@ -12,7 +12,7 @@ var box, dinf, dOps, esds, ftyp, mdat, mfhd, minf, moof, moov, mvex, mvhd,
   trak, tkhd, mdia, mdhd, hdlr, sdtp, stbl, stsd, traf, trex,
   trun, types, MAJOR_BRAND, MINOR_VERSION, AVC1_BRAND, VIDEO_HDLR,
   ISO2_BRAND, ISO5_BRAND, DASH_BRAND, MP41_BRAND, iods, mehd, trep,
-  free, udta, meta, ilst, styp, sidx,
+  free, udta, meta, ilst, styp, sidx, vpcC, av1C,
   AUDIO_HDLR, HDLR_TYPES, VMHD, SMHD, DREF, STCO, STSC, STSZ, STTS;
 
 var arr = [];
@@ -24,6 +24,11 @@ var arr = [];
     avcC: [],
     hvc1: [],
     hvcC: [],
+    vp08: [], // codingname (VP8 — never used as a stsd entry type today, see videoSample(); kept for FourCC-table uniformity)
+    vp09: [], // codingname
+    vpcC: [],
+    av01: [], // codingname
+    av1C: [],
     btrt: [],
     dinf: [],
     dref: [],
@@ -302,6 +307,123 @@ dOps = function (track) {
 
 ftyp = function () {
   return box(types.ftyp, MAJOR_BRAND, MINOR_VERSION, AVC1_BRAND, MP41_BRAND, ISO5_BRAND, DASH_BRAND);
+};
+
+// Shared 78-byte VisualSampleEntry header (ISO/IEC 14496-12 §12.1.3) — byte-
+// identical shape across avc1/hvc1/vp09/av01, only width/height vary. Kept
+// as its own helper instead of copy-pasting a 4th ~78-byte literal.
+function visualSampleEntry(width, height) {
+  return new Uint8Array([
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, // reserved
+    0x00, 0x01, // data_reference_index
+    0x00, 0x00, // pre_defined
+    0x00, 0x00, // reserved
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, // pre_defined
+    (width & 0xff00) >> 8,
+    width & 0xff, // width
+    (height & 0xff00) >> 8,
+    height & 0xff, // height
+    0x00, 0x48, 0x00, 0x00, // horizresolution
+    0x00, 0x48, 0x00, 0x00, // vertresolution
+    0x00, 0x00, 0x00, 0x00, // reserved
+    0x00, 0x01, // frame_count
+    0x13,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, // compressorname
+    0x00, 0x18, // depth = 24
+    0x11, 0x11 // pre_defined = -1
+  ]);
+}
+
+// VP Codec ISO Media File Format Binding, VPCodecConfigurationRecord
+// (https://github.com/webmproject/vp9-dash — chromaSubsampling enum
+// confirmed there: 0=4:2:0 vertical, 1=4:2:0 colocated with luma (0,0),
+// 2=4:2:2, 3=4:4:4). `level` is always 0 ("unspecified") — VP9's own
+// bitstream has no per-keyframe level field to source it from.
+//
+// colourPrimaries/transferCharacteristics/matrixCoefficients: the binding
+// spec only says these follow ISO/IEC 23001-8 (CICP/H.273) without giving a
+// VP9-`color_space`-to-CICP table of its own. The mapping below follows the
+// same convention ffmpeg's VP9 decoder uses (libavcodec/vp9.c's per-
+// color_space AVColorSpace table, whose values are themselves CICP matrix-
+// coefficients codes) — a de facto ecosystem convention, not a value this
+// player's decode correctness depends on (the elementary VP9 bitstream is
+// self-describing; these three fields are colour-management metadata only).
+var VP9_CICP_COLOR_CONFIG = [
+  { primaries: 2, transfer: 2, matrix: 2 }, // 0 CS_UNKNOWN -> unspecified
+  { primaries: 5, transfer: 5, matrix: 5 }, // 1 CS_BT_601 -> BT.470BG
+  { primaries: 1, transfer: 1, matrix: 1 }, // 2 CS_BT_709
+  { primaries: 6, transfer: 6, matrix: 6 }, // 3 CS_SMPTE_170
+  { primaries: 7, transfer: 7, matrix: 7 }, // 4 CS_SMPTE_240
+  { primaries: 9, transfer: 14, matrix: 9 }, // 5 CS_BT_2020
+  { primaries: 2, transfer: 2, matrix: 2 }, // 6 CS_RESERVED -> unspecified fallback
+  { primaries: 1, transfer: 13, matrix: 0 } // 7 CS_RGB -> BT.709 primaries + sRGB transfer + Identity matrix
+];
+
+function vp9ChromaSubsampling(subsamplingX, subsamplingY) {
+  if (subsamplingX === 1 && subsamplingY === 1) {
+    return 1; // 4:2:0 colocated — VP9's own convention (no separate chroma_sample_position field to distinguish "vertical")
+  }
+  if (subsamplingX === 1 && subsamplingY === 0) {
+    return 2; // 4:2:2
+  }
+  return 3; // 4:4:4 (0,0)
+}
+
+vpcC = function (track) {
+  var colorConfig = VP9_CICP_COLOR_CONFIG[track.colorSpace] || VP9_CICP_COLOR_CONFIG[0];
+  var chromaSubsampling = vp9ChromaSubsampling(track.subsamplingX, track.subsamplingY);
+  return box(types.vpcC, new Uint8Array([
+    0x01, // version
+    0x00, 0x00, 0x00, // flags
+    track.profile, // profile
+    0x00, // level (unspecified — VP9 has no per-keyframe level field)
+    ((track.bitDepth & 0x0f) << 4) | ((chromaSubsampling & 0x07) << 1) | (track.colorRange & 0x01),
+    colorConfig.primaries,
+    colorConfig.transfer,
+    colorConfig.matrix,
+    0x00, 0x00 // codecIntializationDataSize = 0 (no codecIntializationData)
+  ]));
+};
+
+// AV1 Codec ISO Media File Format Binding, AV1CodecConfigurationRecord
+// (https://aomediacodec.github.io/av1-isobmff/ §2.3.3 — confirmed field
+// layout: marker(1)=1/version(7)=1, seq_profile(3)/seq_level_idx_0(5),
+// seq_tier_0(1)/high_bitdepth(1)/twelve_bit(1)/monochrome(1)/
+// chroma_subsampling_x(1)/chroma_subsampling_y(1)/chroma_sample_position(2),
+// reserved(3)=0/initial_presentation_delay_present(1)=0/reserved(4)=0, then
+// configOBUs = the verbatim Sequence Header OBU bytes (not a from-scratch
+// re-serialization) — `track.configObu` is that raw byte range, sourced
+// from `AV1HeaderParser.parseAV1SequenceHeader`'s returned obuStart/obuEnd.
+// Not a FullBox — the marker/version pair plays that role at the record
+// level instead of a box-level version/flags.
+av1C = function (track) {
+  var configObu = track.configObu || new Uint8Array(0);
+  var header = new Uint8Array([
+    0x81, // marker(1)=1, version(7)=1
+    ((track.profile & 0x07) << 5) | (track.seqLevelIdx0 & 0x1f),
+    (((track.seqTier0 & 0x01) << 7) |
+      ((track.highBitdepth & 0x01) << 6) |
+      ((track.twelveBit & 0x01) << 5) |
+      ((track.monoChrome & 0x01) << 4) |
+      ((track.chromaSubsamplingX & 0x01) << 3) |
+      ((track.chromaSubsamplingY & 0x01) << 2) |
+      (track.chromaSamplePosition & 0x03)),
+    0x00 // reserved(3)=0, initial_presentation_delay_present(1)=0, reserved(4)=0
+  ]);
+  var payload = new Uint8Array(header.length + configObu.length);
+  payload.set(header, 0);
+  payload.set(configObu, header.length);
+  return box(types.av1C, payload);
 };
 
 hdlr = function (type) {
@@ -786,6 +908,10 @@ stbl = function (track) {
         0x00, 0x18, // depth = 24
         0x11, 0x11 // pre_defined = -1
       ]), esds(track));
+    } else if (track.codecType === "VP9") {
+      return box(types.vp09, visualSampleEntry(track.width, track.height), vpcC(track));
+    } else if (track.codecType === "AV1") {
+      return box(types.av01, visualSampleEntry(track.width, track.height), av1C(track));
     }
   };
 

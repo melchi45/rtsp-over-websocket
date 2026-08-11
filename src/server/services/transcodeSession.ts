@@ -36,14 +36,34 @@ function videoEncoderArgs(codec: VideoCodec, encoder: string, height: number): s
         '-c:v', encoder, '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
         '-x265-params', 'repeat-headers=1', '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale
       ];
+    // force_key_frames (VP8/VP9/AV1): same rationale as H264/H265 above, confirmed empirically —
+    // without it, libvpx/libaom's default GOP sizing on this source produced *zero* keyframes in
+    // 15-20s of playback, so a viewer connecting mid-stream could go a long time without ever
+    // receiving one. VP8/VP9/AV1 have no in-band-parameter-set concept (unlike H264/H265's SPS/PPS
+    // repeat-headers), but each keyframe is otherwise the *only* place the player can read a frame's
+    // real width/height from (see player-side `VP8HeaderParser`/`VP9HeaderParser`/`AV1HeaderParser`)
+    // and the only frame type a fresh `VideoDecoder` can start decoding from at all — so the need for
+    // a reachable keyframe soon after connecting is, if anything, stricter here than for H264/H265.
+    // -strict experimental (AV1): ffmpeg's RTP/RTSP muxer marks its AV1 payloader experimental,
+    // same as VP9 below — confirmed live on ffmpeg 9.0, the first version whose muxer has an
+    // AV1 rtpmap entry at all (4.4.2/7.1.1 had none, see README.md's "External tools" section).
+    // Without this flag: "Packetizing AV1 is experimental ... Could not write header ... Experimental feature".
     case 'AV1':
       return encoder === 'libsvtav1'
-        ? ['-c:v', encoder, '-preset', '10', '-pix_fmt', 'yuv420p', ...scale]
-        : ['-c:v', encoder, '-cpu-used', '8', '-pix_fmt', 'yuv420p', ...scale];
+        ? ['-c:v', encoder, '-preset', '10', '-pix_fmt', 'yuv420p', '-strict', 'experimental', '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale]
+        : ['-c:v', encoder, '-cpu-used', '8', '-pix_fmt', 'yuv420p', '-strict', 'experimental', '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale];
     case 'VP8':
-      return ['-c:v', encoder, '-deadline', 'realtime', '-cpu-used', '5', ...scale];
+      return ['-c:v', encoder, '-deadline', 'realtime', '-cpu-used', '5', '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale];
     case 'VP9':
-      return ['-c:v', encoder, '-deadline', 'realtime', '-cpu-used', '5', '-pix_fmt', 'yuv420p', ...scale];
+      // -strict experimental: ffmpeg's RTP/RTSP muxer marks its VP9 payloader (RFC-draft, never
+      // finalized as an RFC) experimental and refuses to write the output header without this —
+      // confirmed live: omitting it fails every VP9 session with "Packetizing VP9 is experimental
+      // ... Could not write header for output file #0 ... Experimental feature", never reaching
+      // MediaMTX at all.
+      return [
+        '-c:v', encoder, '-deadline', 'realtime', '-cpu-used', '5', '-pix_fmt', 'yuv420p', '-strict', 'experimental',
+        '-force_key_frames', 'expr:gte(t,n_forced*2)', ...scale
+      ];
   }
 }
 
@@ -180,10 +200,24 @@ export async function startTranscode(session: Session): Promise<void> {
     }
   };
 
+  // The *first* ffmpeg stderr line that looks like an actual failure (not
+  // just the last non-empty line — confirmed live: on a real failure ffmpeg
+  // prints the real cause once (e.g. "Could not write header for output
+  // file #0 ... Server returned 400 Bad Request") followed by unrelated
+  // shutdown noise from other streams (e.g. "[aac ...] N frames left in the
+  // queue on closing"), and the *last* line is that noise, not the cause).
+  // Folded into the generic "exited with code N" failure message below —
+  // without this, a failure's actual cause only ever showed up in the
+  // server's own console log, not in the session status the API/UI surfaces.
+  let firstFfmpegErrorLine = '';
   ffmpeg.stderr.setEncoding('utf8');
   ffmpeg.stderr.on('data', (chunk: string) => {
     for (const line of chunk.split(/\r|\n/)) {
-      if (line.trim()) console.log(`[ffmpeg][${tag}] ${line.trim()}`);
+      const trimmed = line.trim();
+      if (trimmed) {
+        console.log(`[ffmpeg][${tag}] ${trimmed}`);
+        if (!firstFfmpegErrorLine && /error|could not|failed/i.test(trimmed)) firstFfmpegErrorLine = trimmed;
+      }
       onProgressLine(line);
     }
   });
@@ -224,7 +258,9 @@ export async function startTranscode(session: Session): Promise<void> {
     if (!ytDlp.killed && typeof ytDlp.pid === 'number') killPid(ytDlp.pid, 'SIGTERM', true);
     const current = sessionStore.getSession(session.id);
     if (current && current.status !== 'stopped') {
-      sessionStore.updateStatus(session.id, code === 0 ? 'stopped' : 'failed', signal ? `ffmpeg killed by ${signal}` : `ffmpeg exited with code ${code}`);
+      const reason = signal ? `ffmpeg killed by ${signal}` : `ffmpeg exited with code ${code}`;
+      const message = code !== 0 && firstFfmpegErrorLine ? `${reason}: ${firstFfmpegErrorLine}` : reason;
+      sessionStore.updateStatus(session.id, code === 0 ? 'stopped' : 'failed', message);
     }
   });
 }

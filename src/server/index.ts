@@ -2,16 +2,18 @@
  * YouTube -> configurable transcode -> RTSP -> RTSP-over-WebSocket demo
  * server for src/player's <rtsp-over-websocket> element.
  *
- * Depends on a MediaMTX instance already listening on 127.0.0.1:8554 with a
- * permissive `paths: all_others:` catch-all (see ../../../mediamtx.yml in
- * the parent loitering_tracking project, which already runs one — this
- * server does NOT spawn its own MediaMTX: that shared instance is owned by
- * the parent LTS server process and used for live camera streaming, so
- * competing for the same ports would either fail outright (EADDRINUSE) or
- * destabilize unrelated camera sessions. If no MediaMTX is reachable at
- * startup, sessions will simply fail at the ffmpeg-publish step with a
- * clear connection-refused error — see services/transcodeSession.ts.
+ * Depends on a MediaMTX instance listening on 127.0.0.1:8554 with a
+ * permissive `paths: all_others:` catch-all (see README.md's "External
+ * tools" section for how to install/run one). This process itself never
+ * spawns or manages MediaMTX — `npm run start:server`'s
+ * scripts/ensure-mediamtx.js does that instead, and only if nothing is
+ * already reachable on that port, so an externally-managed/shared instance
+ * is never touched. If no MediaMTX is reachable at startup, sessions will
+ * simply fail at the ffmpeg-publish step with a clear connection-refused
+ * error — see services/transcodeSession.ts.
  */
+
+import './loadEnv'; // must run before ./config (and anything else reading process.env) — see loadEnv.ts
 
 import net from 'node:net';
 import http from 'node:http';

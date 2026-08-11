@@ -202,8 +202,20 @@ export class SunapiClient {
     this.restClientConfig.proxy = deviceInfo.proxy === true;
     this.restClientConfig.serverType = deviceInfo.serverType === 'grunt' ? 'grunt' : 'camera';
 
+    // Borrowing window.location.* below only makes sense when this page
+    // itself is an http(s) origin acting as a reverse proxy for the device
+    // (the 'grunt' + proxy case) or standing in for the device entirely
+    // (the non-'grunt' case) — for a non-http(s) host (e.g. a
+    // chrome-extension: page), there's no such proxy/origin to borrow, and
+    // using it anyway produces a request against a URL Chrome can't
+    // resolve. Same root cause and fix as SunapiManager.init(); see its
+    // comment for the full story. Falling back to deviceInfo's own
+    // hostname/port/protocol in that case mirrors the 'grunt' branch's
+    // non-proxy path just below.
+    const pageIsHttp = window.location.protocol === 'http:' || window.location.protocol === 'https:';
+
     if (this.restClientConfig.serverType === 'grunt') {
-      if (this.restClientConfig.proxy) {
+      if (this.restClientConfig.proxy && pageIsHttp) {
         this.restClientConfig.digest.hostname = window.location.hostname;
         this.restClientConfig.digest.port = window.location.port;
       } else {
@@ -211,10 +223,16 @@ export class SunapiClient {
         this.restClientConfig.digest.port = deviceInfo.port;
       }
       this.restClientConfig.digest.protocol = deviceInfo.protocol;
-    } else {
+    } else if (pageIsHttp) {
       this.restClientConfig.digest.hostname = window.location.hostname;
       this.restClientConfig.digest.port = window.location.port;
-      this.restClientConfig.digest.protocol = window.location.protocol;
+      // .protocol carries a trailing ':' (e.g. "http:") unlike every other
+      // protocol field in this codebase ("http") — stripped to match.
+      this.restClientConfig.digest.protocol = window.location.protocol.split(':')[0];
+    } else {
+      this.restClientConfig.digest.hostname = deviceInfo.hostname;
+      this.restClientConfig.digest.port = deviceInfo.port;
+      this.restClientConfig.digest.protocol = deviceInfo.protocol;
     }
 
     if (typeof deviceInfo.user !== 'undefined' && deviceInfo.user !== null && deviceInfo.user !== '') {

@@ -1,5 +1,6 @@
 /// <reference path="../../vendor/EmscriptenModule.d.ts" />
 import { AssemblyDecoder, type AssemblyDecoderFrame } from './AssemblyDecoder';
+import { WebCodecsVideoDecoder } from './WebCodecsVideoDecoder';
 
 // Ported from the legacy player’s Worker/VideoDecoder/decoderWorker — legacy
 // pre-declares the ambient `Module` global here, before `importScripts`-ing
@@ -52,21 +53,45 @@ const DEFAULT_FRAME_RATE = 30;
  * threshold — or the *previous* frame already tripped the primary one — it's
  * skipped instead of decoded.
  *
- * `isDecoderReady` is only ever set `true` from inside `onDecoderReady()`'s
- * `if (frameBuffer.length > 0 || playMode === 'Playback')` guard — a real
- * legacy quirk this preserves: if the WASM runtime finishes initializing
- * while `frameBuffer` is still empty and `playMode` isn't `'Playback'` yet,
- * `isDecoderReady` never becomes true (that guard only runs once, since
- * `onDecoderReady` fires exactly once per decoder lifetime), and every
- * subsequent 'decode' message is buffered forever instead of decoded.
+ * `onDecoderReady()` unconditionally drains whatever's in `frameBuffer`
+ * (zero or more items) and then sets `isDecoderReady = true`. An earlier
+ * version of this port faithfully preserved a legacy quirk here — an
+ * `if (frameBuffer.length > 0 || playMode === 'Playback')` guard around the
+ * whole function, meaning `isDecoderReady` would never become `true` at all
+ * if the decoder finished initializing while `frameBuffer` was still empty
+ * and `playMode` wasn't yet `'Playback'` (every later 'decode' message would
+ * buffer forever instead of decoding). That never manifested for
+ * `AssemblyDecoder` in practice — its WASM module load is slow enough
+ * (network fetch + instantiate) that `frameBuffer` always had at least one
+ * queued frame by the time `onDecoderReady` fired — but it broke
+ * `WebCodecsVideoDecoder` outright (confirmed live: permanently blank
+ * canvas, no errors): browser-native `VideoDecoder.configure()` resolves
+ * near-instantly, so `onDecoderReady` routinely fires before the first
+ * 'decode' message has even arrived, hitting the empty-buffer trap every
+ * time in Live mode. The guard's own asymmetry — Playback mode already
+ * bypassed it unconditionally — was the tell that this was a latent bug the
+ * WASM path's timing happened to never trigger, not a deliberate invariant;
+ * removed rather than preserved.
+ *
+ * `decoder` holds either an `AssemblyDecoder` (H264/H265, WASM) or a
+ * `WebCodecsVideoDecoder` (VP8/VP9/AV1, browser-native) — chosen once in
+ * `receiveMessage`'s `'createDecoder'` case and otherwise driven identically
+ * by the rest of this file, which only calls the small surface both classes
+ * share (`decode`/`close`/`setOutputSize`/`channelId`/`addListener`). One
+ * accepted behavior difference: the drop-frame/`'lowPerformance'` timing
+ * heuristic below (wall-clock time around the `decoder.decode()` call) will
+ * effectively never fire for the WebCodecs path, since that `decode()` call
+ * returns near-instantly (submits to an async/hardware-accelerated queue and
+ * shifts a *previously*-decoded frame off its own internal FIFO) rather than
+ * blocking like the WASM path — this measures call overhead, not real
+ * decode latency, for VP8/VP9/AV1. Not a bug to chase.
  */
-let decoder: AssemblyDecoder | null = null;
+let decoder: AssemblyDecoder | WebCodecsVideoDecoder | null = null;
 let frameRate = DEFAULT_FRAME_RATE;
 let decodedClock = 0;
 let usePacketDrop = true;
 let isDecoderReady = false;
 let decoderIndex = 0;
-let playMode: string | undefined;
 let toBeContinueDropFrameFlag = false;
 let threshold = DEFAULT_THRESHOLD;
 let threshold2 = DEFAULT_THRESHOLD2;
@@ -81,10 +106,6 @@ function effectiveFrameRate(currentFps: number | undefined): number {
 }
 
 function onDecoderReady(): void {
-  if (!(frameBuffer.length > 0 || playMode === 'Playback')) {
-    return;
-  }
-
   while (frameBuffer.length !== 0) {
     const lastFrame = frameBuffer.shift() as DecoderWorkerFrame;
     let decodedFrame: Uint8Array | null;
@@ -137,7 +158,7 @@ function receiveMessage(event: MessageEvent<DecoderWorkerMessage>): void {
   const message = event.data;
   switch (message.type) {
     case 'createDecoder':
-      decoder = new AssemblyDecoder(message.data);
+      decoder = message.data === 'H264' || message.data === 'H265' ? new AssemblyDecoder(message.data) : new WebCodecsVideoDecoder(message.data);
       decoder.channelId = message.channelId;
       decoder.addListener('onDecoderReady', onDecoderReady);
       break;
@@ -165,7 +186,11 @@ function receiveMessage(event: MessageEvent<DecoderWorkerMessage>): void {
       }
       break;
     case 'playMode':
-      playMode = message.data;
+      // The module-level `playMode` this used to record became write-only
+      // once `onDecoderReady()`'s `playMode === 'Playback'` check was
+      // removed (see that function's doc comment) — the message itself is
+      // still sent by CanvasTagPlayer.createDecoderWorker() and accepted
+      // here, just no longer stored.
       break;
     case 'decode':
       if (decoder !== null) {

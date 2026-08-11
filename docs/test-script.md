@@ -120,7 +120,15 @@ curl -sS -X POST http://127.0.0.1:4000/api/sessions \
   -d '{"youtubeUrl":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","resolutionHeight":720,
        "videoCodec":"AV1","audioCodec":"AAC","audioBitrateKbps":128,
        "username":"u","password":"p"}'
-# expect 422 if this ffmpeg build has no AV1 encoder — cross-check against GET /api/capabilities first
+# expect 422 if this ffmpeg build has no AV1 *encoder* — cross-check against GET /api/capabilities first.
+# NOTE: an ffmpeg build can have the encoder (libaom-av1/libsvtav1 etc., so this returns 201 not 422)
+# yet still be unable to *publish* AV1 over RTSP — as of ffmpeg 7.1.1 (the newest tested), its RTP
+# muxer has no a=rtpmap entry for AV1 at all (confirmed: H264/H265/VP8/VP9/JPEG/opus all have one,
+# AV1 doesn't), so the session reaches status: "failed" a few seconds later instead, with a "Server
+# returned 400 Bad Request" / "clock rate not found" error attached. That's TC-SRV-041-shaped (async
+# failure), not this 422 case. This is NOT a version threshold — don't expect a newer ffmpeg to fix
+# it without actually testing (an earlier "needs ffmpeg 6.0+" guess here was wrong, see MEMORY.md).
+# See docs/DESIGN.md §1.3 and CLAUDE.md's environment gotchas for the full explanation.
 ```
 
 **TC-SRV-026 — channel conflict (409):** start one session with an explicit `"channel": 0`, then immediately

@@ -203,13 +203,21 @@ export class SunapiRestClient {
       });
     }
 
-    const locProtocol = window.location.protocol;
-    const splitProt = locProtocol.split(':');
+    const splitProt = window.location.protocol.split(':');
+    // Only trust the page's own protocol when it's actually http(s) — for
+    // a non-http(s) host (e.g. a chrome-extension: page) it says nothing
+    // about the target device's protocol. Same root cause and fix as
+    // SunapiManager.init(); see its comment for the full story.
+    // Unlike SunapiManager/SunapiClient's device-info types,
+    // SunapiInitDeviceInfo carries no protocol field to fall back to here,
+    // so this falls back to this class's own default (see deviceConfig's
+    // initializer above) rather than an explicit caller-provided value.
+    const pageIsHttp = splitProt[0] === 'http' || splitProt[0] === 'https';
 
     this.deviceConfig.serverType = deviceInfo.deviceType!;
     this.deviceConfig.hostname = deviceInfo.hostname!;
     this.deviceConfig.port = deviceInfo.port!;
-    this.deviceConfig.protocol = splitProt[0];
+    this.deviceConfig.protocol = pageIsHttp ? splitProt[0] : 'http';
     this.deviceConfig.ClientIPAddress = deviceInfo.ClientIPAddress!;
     this.deviceConfig.username = deviceInfo.username!;
     this.deviceConfig.password = deviceInfo.password;

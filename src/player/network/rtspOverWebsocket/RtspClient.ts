@@ -1425,7 +1425,7 @@ export class RtspClient {
       for (let idx = 0; idx < rtspSDPData.Sessions.length; idx += 1) {
         const sdpInfoObj: SdpInfoEntry = { Type: rtspSDPData.Sessions[idx].Type ?? '', trackID: '' };
         const codecMime = rtspSDPData.Sessions[idx].CodecMime ?? '';
-        if (codecMime === 'JPEG' || codecMime === 'H264' || codecMime === 'H265') {
+        if (codecMime === 'JPEG' || codecMime === 'H264' || codecMime === 'H265' || codecMime === 'VP8' || codecMime === 'VP9' || codecMime === 'AV1') {
           sdpInfoObj.codecName = codecMime;
           sdpInfoObj.trackID = rtspSDPData.Sessions[idx].ControlURL ?? '';
           sdpInfoObj.ClockFreq = rtspSDPData.Sessions[idx].ClockFreq;

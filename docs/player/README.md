@@ -22,7 +22,7 @@ with a class in file *M* is named, not re-explained.
 |---|---|---|
 | [01-elements-interface-exceptions.md](01-elements-interface-exceptions.md) | Public API surface, orchestration, errors | `RTSPOverWebSocket`, `StreamManager`, `StreamPlayer`, React wrapper, `RTSPOverWebSocketBaseError` hierarchy |
 | [02-network.md](02-network.md) | RTSP-over-WebSocket signaling + SUNAPI HTTP | `RtspClient`, `RtspClientManager`, `Transport`, `DigestGenerator`, `SunapiClient`, `SunapiManager`, `SunapiRestClient` |
-| [03-mediaSession-core-video.md](03-mediaSession-core-video.md) | RTP/RTCP session base classes, routing, video depacketization | `Session`, `RtpSession`, `RTCPSession`, `RtpClient`, `MediaRouter`, `MetaDataParser`, `H264Session`, `H265Session`, `MjpegSession`, `VideoRtcpSession`, `PlaybackBufferManager` |
+| [03-mediaSession-core-video.md](03-mediaSession-core-video.md) | RTP/RTCP session base classes, routing, video depacketization | `Session`, `RtpSession`, `RTCPSession`, `RtpClient`, `MediaRouter`, `MetaDataParser`, `H264Session`, `H265Session`, `VP8Session`, `VP9Session`, `AV1Session`, `MjpegSession`, `VideoRtcpSession`, `PlaybackBufferManager` |
 | [04-mediaSession-audio-text.md](04-mediaSession-audio-text.md) | Audio/text codec sessions | `AACSession`, `AudioTalkSession`, `G711Session`, `G726Session`, `OPUSSession`, `MetaSession` |
 | [05-video-player-rendering.md](05-video-player-rendering.md) | Canvas/WebGL and `<video>`(MSE) rendering | `VideoPlayer`, `CanvasTagPlayer`, `CanvasRenderer`, `WebGLCanvas`, `YUVWebGLCanvas`, `VideoTagPlayer` |
 | [06-listen-audio.md](06-listen-audio.md) | Audio decode + playback | `AudioDecoder` hierarchy (AAC/G711/G726x/OPUS), `AudioPlayer`, `AudioPlayerAAC`, `AudioPlayerGxx` |
@@ -88,6 +88,9 @@ sections; this is a quick index of which standard governs which part of the wire
 | RFC 3550 (RTP/RTCP) | RTP header fields, RTCP sender/receiver reports | 03 |
 | RFC 6184 (H.264 RTP payload) | `H264Session` NAL/FU-A/STAP-A parsing | 03 |
 | RFC 7798 (H.265/HEVC RTP payload) | `H265Session` NAL/FU parsing | 03 |
+| RFC 7741 (VP8 RTP payload) + RFC 6386 (VP8 bitstream, informational) | `VP8Session` payload-descriptor/key-frame parsing | 03 |
+| draft-ietf-payload-vp9 (VP9 RTP payload) + VP9 Bitstream Spec §6.2 | `VP9Session` payload-descriptor/`frame_type` parsing | 03 |
+| AOM "RTP Payload Format For AV1" v1.0 + AV1 Bitstream Spec §5.3.1/§6.2.2 | `AV1Session` aggregation-header/OBU parsing | 03 |
 | RFC 2435 (JPEG RTP payload) | `MjpegSession`, worker-side `MjpegDepacketizer` | 03, 07 |
 | RFC 3551 (RTP A/V Profile) | Static payload types for G.711/G.726, RTP transport for those codecs | 03, 04, 06 |
 | RFC 3640 (MPEG-4 generic / AAC RTP payload) | `AACSession` AU-header parsing | 04, 06 |
@@ -124,3 +127,11 @@ maintainer's attention:
   in files 02/03/07 (e.g. a dead `VideoRtcpSession` microsecond-diff computation, an
   `AudioHeader.settingG726` field-assignment typo, `SunapiManager`/`SunapiRequestTask` paths that
   reference undeclared globals) — see each file's relevant subsection rather than this summary.
+- `VP8Session`/`VP9Session`/`AV1Session` (added after this set was first written) are wired all the
+  way through SDP negotiation, RTP depacketization, **and now decode/render** (see file 03's
+  VP8/VP9/AV1 section, and file 07's `WebCodecsVideoDecoder`) — VP8/VP9 confirmed working
+  end-to-end via a real browser, AV1 implemented identically but unverified end-to-end (this
+  environment's `ffmpeg` can't produce a live AV1 source to test against). The
+  `RTSPOverWebSocket` `codec` attribute allow-list (file 01, REQ-PLY-027) still doesn't list these
+  three — that attribute isn't actually required for playback to work (confirmed live), so it's a
+  documentation/API-surface gap, not a functional one.

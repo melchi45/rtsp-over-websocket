@@ -106,6 +106,21 @@ npm run start:server:https   # https only (REST + wss://.../StreamingServer on p
 npm run stop:server          # stops whatever is listening on those ports
 ```
 
+Each `start:server*` script runs `scripts/ensure-mediamtx.js` first: if nothing is already reachable on
+`127.0.0.1:8554`, it starts `mediamtx` (binary resolved from `MEDIAMTX_BIN`, PATH, or `/opt/mediamtx/mediamtx`;
+config from `MEDIAMTX_CONFIG` or `/opt/mediamtx/mediamtx.yml` if present) and records its pid, so `npm run
+stop:server` can later stop that same instance. If MediaMTX is *already* reachable — started manually, or an
+instance shared with something else — neither script touches its lifecycle; it's left running as-is.
+
+`npm run start:server` (bare, no `:http`/`:https` suffix) prompts interactively — `Select which protocol(s) to
+start...` — whenever it's run attached to a real terminal with no protocol specified another way. To skip that
+prompt permanently: copy [.env.example](.env.example) to `.env` and set `RTSP_WS_PROTOCOL=http` (or `https`/`both`).
+`.env` is loaded automatically by every `start:server*`/`stop:server` script (`scripts/loadEnv.js` for the plain
+scripts, `src/server/loadEnv.ts` for the compiled server itself) — no need to `export` anything in your shell. It
+also doubles as the place to override any other `src/server`/`scripts/ensure-mediamtx.js` env var (ports, TLS
+paths, `MEDIAMTX_BIN`/`MEDIAMTX_CONFIG`, ...) — see `.env.example` for the full list. `.env` itself is
+machine-specific and gitignored; `.env.example` stays tracked as the template.
+
 Once running, open `http://localhost:4000/` (or `https://localhost:4001/`) — the server serves the demo page
 directly. The Player tab connects to any `<rtsp-over-websocket>`-compatible device; the Server tab drives the
 YouTube-transcode demo pipeline end to end.
@@ -120,10 +135,48 @@ running for a session to make it all the way to `live`. (Ubuntu/Debian, sudo req
 
 **ffmpeg** — used for transcoding.
 
-```
-sudo apt update
-sudo apt install -y ffmpeg
-```
+- Method A — apt (simple, may be an older distro-packaged version):
+  ```
+  sudo apt update
+  sudo apt install -y ffmpeg
+  ```
+- Method B — PPA (newer version, e.g. ffmpeg 9):
+  ```
+  sudo add-apt-repository ppa:ubuntuhandbook1/ffmpeg9
+  sudo apt update
+  sudo apt install -y ffmpeg
+  ```
+  Confirm the installed version with `ffmpeg --version` — the first line should report `ffmpeg version 9...`.
+
+**AV1 output requires ffmpeg 9+ — earlier versions cannot do it at all, no flag works around it.**
+This has flipped twice as ffmpeg's own AV1 RTP support evolved; here's the full, verified history:
+
+1. On the Ubuntu 22.04 apt package (ffmpeg 4.4.2, 2021), an `AV1` session fails with `Could not
+   write header for output file #0 ... Server returned 400 Bad Request`; MediaMTX logs `invalid
+   SDP: media 1 is invalid: clock rate not found`.
+2. After installing `ppa:ubuntuhandbook1/ffmpeg7` (ffmpeg **7.1.1**, 2025) — the same failure,
+   verbatim, with the same MediaMTX log line.
+3. Root cause at the time, found by dumping the actual SDP ffmpeg sends (`-loglevel debug`) and by
+   inspecting `libavformat.so`'s own compiled `a=rtpmap:%d <CODEC>/<rate>` format-string table
+   directly (`strings libavformat.so.* | grep rtpmap`): ffmpeg's RTP/RTSP muxer had entries for
+   `H264`, `H265`, `VP8`, `VP9`, `JPEG`, `opus`, and a dozen others — **but none for AV1, in either
+   version**. For an AV1 stream it emitted a bare `m=video 0 RTP/AVP 96` with no `a=rtpmap` line at
+   all, which is invalid SDP (RFC 4566 requires a dynamic payload type to have one) and MediaMTX
+   correctly rejected it.
+4. After installing `ppa:ubuntuhandbook1/ffmpeg9` (ffmpeg **9.0**, 2026) and re-running the same
+   `strings ... | grep rtpmap` check — `a=rtpmap:%d AV1/90000` is now present. ffmpeg implemented
+   the AV1 RTP payloader somewhere between 7.1.1 and 9.0 (exact version unconfirmed — not tested
+   against ffmpeg 8). Re-running an `AV1` session against 9.0 still failed at first, but with a
+   *different* error: `Packetizing AV1 is experimental ... Could not write header ... Experimental
+   feature` — the same "muxer marks it experimental" behavior VP9 already had (see point 5). Adding
+   `-strict experimental` to the AV1 branch of `services/transcodeSession.ts`'s `videoEncoderArgs`
+   (previously only the VP9 branch had it) fixed it: confirmed live via the server's own REST API,
+   session reached `status: "live"` and published real AV1 frames to MediaMTX.
+
+The session correctly ends up `status: "failed"` with the underlying ffmpeg error attached when it
+can't work (confirmed live on 4.4.2/7.1.1), not silently broken. **VP9 and AV1 output both work on
+ffmpeg 9.0** — both need `-strict experimental` because ffmpeg's RTP muxer marks both payloaders
+experimental (RFC-draft, never finalized as RFCs) but does have real rtpmap entries for them.
 
 **yt-dlp** — used for probing/downloading the YouTube source.
 
@@ -149,18 +202,20 @@ sudo tar -xzf /tmp/mediamtx.tar.gz -C /opt/mediamtx
 sudo ln -sf /opt/mediamtx/mediamtx /usr/local/bin/mediamtx
 ```
 
-Run it (default RTSP port 8554 / API port 9997 — the bundled `mediamtx.yml`'s `paths: all_others:` catch-all already
-satisfies the "allow publishing to any path" condition `src/server` needs):
+Run it manually if you want (default RTSP port 8554 / API port 9997 — the bundled `mediamtx.yml`'s `paths:
+all_others:` catch-all already satisfies the "allow publishing to any path" condition `src/server` needs):
 
 ```
 mediamtx /opt/mediamtx/mediamtx.yml
 ```
 
-(Installing needs sudo; running it doesn't — 8554/9997 are both unprivileged ports.)
-
-`src/server` tries to connect to `127.0.0.1:8554` at startup to check whether MediaMTX is up; if it isn't, it logs a
-warning and keeps running anyway — sessions can still be created, but they'll fail at the final publish step
-(`ffmpeg` → MediaMTX) with `Connection refused`.
+(Installing needs sudo; running it doesn't — 8554/9997 are both unprivileged ports.) In practice you don't normally
+need to run this yourself — `npm run start:server` (see above) starts one automatically via
+`scripts/ensure-mediamtx.js` if nothing is already listening on 8554. `src/server` itself only *checks*
+`127.0.0.1:8554` at its own startup (separately from `ensure-mediamtx.js`, which runs earlier as part of the npm
+script) to log whether MediaMTX is reachable; it never spawns MediaMTX itself. If it's still not reachable at that
+point — `mediamtx` missing from PATH and `/opt/mediamtx`, or it failed to start — sessions can still be created but
+will fail at the final publish step (`ffmpeg` → MediaMTX) with `Connection refused`.
 
 ## Testing
 

@@ -37,6 +37,25 @@ export interface Mp4VideoTrackInfo {
   levelIdc?: number;
   profileTierLevel?: number[];
   vps?: (Uint8Array | undefined)[];
+  /** Shared by VP9 (`vpcC`) and AV1 (`av1C`) — the codec's own sequence/frame profile number. */
+  profile?: number;
+  /** VP9 only (`vpcC`) — from `VP9HeaderParser`'s `VP9FrameHeader`. */
+  bitDepth?: number;
+  colorSpace?: number;
+  colorRange?: number;
+  subsamplingX?: number;
+  subsamplingY?: number;
+  /** AV1 only (`av1C`) — from `AV1HeaderParser`'s `AV1FrameHeader`. */
+  seqLevelIdx0?: number;
+  seqTier0?: number;
+  highBitdepth?: number;
+  twelveBit?: number;
+  monoChrome?: number;
+  chromaSubsamplingX?: number;
+  chromaSubsamplingY?: number;
+  chromaSamplePosition?: number;
+  /** AV1 only — the raw Sequence Header OBU bytes (`AV1FrameHeader.obuStart`/`obuEnd` slice of the source frame data), used verbatim as `av1C`'s `configOBUs`. */
+  configObu?: Uint8Array;
 }
 
 export interface Mp4AudioTrackInfo {

@@ -2,6 +2,9 @@ import { RTCPSession } from './RTCPSession';
 import type { RtpSession, WaitingEvent, RtpStatistics } from './RtpSession';
 import { H264Session } from './videoSession/H264Session';
 import { H265Session } from './videoSession/H265Session';
+import { VP8Session } from './videoSession/VP8Session';
+import { VP9Session } from './videoSession/VP9Session';
+import { AV1Session } from './videoSession/AV1Session';
 import { MjpegSession } from './videoSession/MjpegSession';
 import { AudioTalkSession } from './audioSession/AudioTalkSession';
 import { G711Session } from './audioSession/G711Session';
@@ -121,6 +124,27 @@ export class RtpClient {
         }
         case 'H265': {
           const session = new H265Session();
+          session.init();
+          session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
+          rtpSession = session;
+          break;
+        }
+        case 'VP8': {
+          const session = new VP8Session();
+          session.init();
+          session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
+          rtpSession = session;
+          break;
+        }
+        case 'VP9': {
+          const session = new VP9Session();
+          session.init();
+          session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
+          rtpSession = session;
+          break;
+        }
+        case 'AV1': {
+          const session = new AV1Session();
           session.init();
           session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
           rtpSession = session;

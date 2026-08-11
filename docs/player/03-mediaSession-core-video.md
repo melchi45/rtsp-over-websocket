@@ -2,8 +2,9 @@
 
 This document covers the RTP/RTCP session base classes, the per-channel session factory/router
 (`RtpClient`), the player-facing hub (`MediaRouter`), the SUNAPI-metadata parser
-(`MetaDataParser`), and the video codec depacketizers (H.264/H.265/MJPEG) together with their
-buffering/state-machine support classes and the SPS bitstream parsers they depend on. It is part
+(`MetaDataParser`), and the video codec depacketizers (H.264/H.265/MJPEG/VP8/VP9/AV1) together
+with their buffering/state-machine support classes and the SPS bitstream parsers they depend on.
+It is part
 of the per-subsystem documentation set for `src/player` (see [../../src/player/README.md](../../src/player/README.md)
 for the whole-library class map); this file goes deeper on RTP/RTCP wire parsing and buffering
 than that overview does.
@@ -25,12 +26,16 @@ collaborate with these classes: `network/` (`RtspClient`, `Transport`), `video/p
 7. [`MetaDataParser`](#metadataparser-mediasessionmetadataparserts)
 8. [`H264Session`](#h264session-mediasessionvideosessionh264sessionts)
 9. [`H265Session`](#h265session-mediasessionvideosessionh265sessionts)
-10. [`MjpegSession`](#mjpegsession-mediasessionvideosessionmjpegsessionts)
-11. [`VideoRtcpSession`](#videortcpsession-mediasessionvideosessionvideortcpsessionts)
-12. [`PlaybackBufferManager` / `BufferManagerStates`](#playbackbuffermanager-and-buffermanagerstates)
-13. [`VideoBufferList`](#videobufferlist-mediasessionvideosessionvideobufferlistts)
-14. [`H264SPSParser` / `H265SPSParser`](#h264spsparser-and-h265spsparser)
-15. [Module-wide data flow](#module-wide-data-flow)
+10. [`VP8Session`](#vp8session-mediasessionvideosessionvp8sessionts)
+11. [`VP9Session`](#vp9session-mediasessionvideosessionvp9sessionts)
+12. [`AV1Session`](#av1session-mediasessionvideosessionav1sessionts)
+13. [`MjpegSession`](#mjpegsession-mediasessionvideosessionmjpegsessionts)
+14. [`VideoRtcpSession`](#videortcpsession-mediasessionvideosessionvideortcpsessionts)
+15. [`PlaybackBufferManager` / `BufferManagerStates`](#playbackbuffermanager-and-buffermanagerstates)
+16. [`VideoBufferList`](#videobufferlist-mediasessionvideosessionvideobufferlistts)
+17. [`H264SPSParser` / `H265SPSParser`](#h264spsparser-and-h265spsparser)
+18. [`BitReader`, `VP8HeaderParser`, `VP9HeaderParser`, `AV1HeaderParser`](#bitreader-vp8headerparser-vp9headerparser-av1headerparser)
+19. [Module-wide data flow](#module-wide-data-flow)
 
 ---
 
@@ -39,8 +44,9 @@ collaborate with these classes: `network/` (`RtspClient`, `Transport`), `video/p
 ### Structure
 
 `Session` is the root of the entire media-session hierarchy: `Session → RtpSession → {H264Session,
-H265Session, MjpegSession, AACSession, G711Session, G726Session, OPUSSession, AudioTalkSession,
-MetaSession, VideoRtcpSession}` and `Session → RTCPSession`. It carries only the state every
+H265Session, VP8Session, VP9Session, AV1Session, MjpegSession, AACSession, G711Session,
+G726Session, OPUSSession, AudioTalkSession, MetaSession, VideoRtcpSession}` and `Session →
+RTCPSession`. It carries only the state every
 session needs regardless of role (RTCP or per-codec RTP):
 
 - `interleavedId`, `channelId` — RTSP-over-TCP interleaved channel numbers this session owns.
@@ -93,8 +99,9 @@ classDiagram
 ### Structure
 
 `RtpSession extends Session` and is the common base for every *codec* session (video and audio) —
-`H264Session`, `H265Session`, `MjpegSession`, `AACSession`, `G711Session`, `G726Session`,
-`OPUSSession`, `AudioTalkSession`, `MetaSession`, `VideoRtcpSession`. Constructor takes no
+`H264Session`, `H265Session`, `VP8Session`, `VP9Session`, `AV1Session`, `MjpegSession`,
+`AACSession`, `G711Session`, `G726Session`, `OPUSSession`, `AudioTalkSession`, `MetaSession`,
+`VideoRtcpSession`. Constructor takes no
 arguments, calls `super()`, and sets `deviceType = 'camera'` as the default.
 
 Fields: `decoder` (unused placeholder), `codec`/`mime` (strings set by `RtpClient` from SDP),
@@ -108,8 +115,9 @@ packet-count/drop-count bookkeeping (`numberOfDroppedPacket`, `numberOfReceivedP
 (GOP length / drop-percentage / drop-count — set via setters but, per the code comments, largely
 write-only carryovers from the legacy port), plus `statisticsTimer: IntervalTimer | null`.
 
-`Session <|-- RtpSession <|-- {H264Session, H265Session, MjpegSession, AACSession, G711Session,
-G726Session, OPUSSession, AudioTalkSession, MetaSession, VideoRtcpSession}`. `RtpSession` itself
+`Session <|-- RtpSession <|-- {H264Session, H265Session, VP8Session, VP9Session, AV1Session,
+MjpegSession, AACSession, G711Session, G726Session, OPUSSession, AudioTalkSession, MetaSession,
+VideoRtcpSession}`. `RtpSession` itself
 does not implement `depacketize` meaningfully (still a no-op override) — every leaf class must.
 
 ### Method Analysis
@@ -120,7 +128,7 @@ does not implement `depacketize` meaningfully (still a no-op override) — every
 - `setGovLength`/`getGovLength` — GOP-length accessor.
 - `setDecodingTime`/`initStartTime`/`setCheckDelay` — explicit no-ops; the comment at RtpSession.ts:100-102 documents that the legacy values they'd set were never read anywhere either.
 - `getDropPercent`/`getDropCount` — accessors for `dropPer`/`dropCount` (set nowhere in this file; part of the legacy write path for other subsystems).
-- `close()` — clears `sessionId`. Overridden by `H264Session`/`H265Session`/`MjpegSession` to also stop the statistics timer (and, for MJPEG, terminate its worker).
+- `close()` — clears `sessionId`. Overridden by `H264Session`/`H265Session`/`VP8Session`/`VP9Session`/`AV1Session`/`MjpegSession` to also stop the statistics timer (and, for MJPEG, terminate its worker).
 - `startStatisticsTimer(interval?)` — lazily creates an `IntervalTimer` (see `util/IntervalTimer`) that calls `onStatisticsTimer()` every `DEFAULT_STATISTICS_INTERVAL` (1000 ms), regardless of the `interval`/frame-rate-derived value computed (dead parity code, per the inline comment).
 - `stopStatisticsTimer()` / `getStatisticsTimer()` — timer lifecycle.
 - `setStartTimeStamp(timeStamp)` — records the first frame's RTP-derived timestamp and resets `sumOfInterval`; `getTimerStamp()` returns `startTimestamp + sumOfInterval`.
@@ -157,6 +165,9 @@ classDiagram
     Session <|-- RtpSession
     RtpSession <|-- H264Session
     RtpSession <|-- H265Session
+    RtpSession <|-- VP8Session
+    RtpSession <|-- VP9Session
+    RtpSession <|-- AV1Session
     RtpSession <|-- MjpegSession
     RtpSession <|-- VideoRtcpSession
     RtpSession o-- RTCPSession : rtcpSession (RTCPSessionLike)
@@ -258,6 +269,9 @@ indexed **by interleaved channel ID**, not by track index; `sendAudioTalkDataCal
   session class to instantiate:
   - `'H264'` → `new H264Session()`, `init()`, `setFramerate(entry.Framerate ?? 0)`.
   - `'H265'` → `new H265Session()`, same framerate wiring.
+  - `'VP8'` → `new VP8Session()`, same framerate wiring.
+  - `'VP9'` → `new VP9Session()`, same framerate wiring.
+  - `'AV1'` → `new AV1Session()`, same framerate wiring.
   - `'JPEG'` → `new MjpegSession()`, `init()` (no framerate call).
   - `'G.711'` → if `trackID` does **not** contain `trackID=t` (talk) or `trackID=back` (backup), creates `G711Session` with `{ clockFreq, bitrate }`; otherwise (talk track) creates `AudioTalkSession` and kicks off `mediaRouter.startAudioTalk(...)` to bridge Web Audio capture → RTP encoding.
   - `'G.726-16'|'G.726-24'|'G.726-32'|'G.726-40'` → (non-talk/backup tracks only) `G726Session` with bitrate parsed either from `entry.Bitrate` or from the codec-name's numeric suffix (`substr(6,2)`).
@@ -310,7 +324,7 @@ sequenceDiagram
 
     SP->>RtspC: DESCRIBE/SETUP negotiation
     RtspC->>RPC: sendSdpInfo(SDPinfo[])
-    RPC->>RPC: switch(entry.codecName) -> new H264Session()/H265Session()/MjpegSession()/...
+    RPC->>RPC: switch(entry.codecName) -> new H264Session()/H265Session()/VP8Session()/VP9Session()/AV1Session()/MjpegSession()/...
     RPC->>Sess: session.init(), setFramerate()
     RPC->>RPC: sessionArray[RtpInterlevedID] = rtpSession; sessionArray[RtcpInterlevedID] = rtcpSession
 
@@ -323,7 +337,7 @@ sequenceDiagram
 ### RFC / Standard References
 
 - SDP (RFC 4566) media descriptions feed `SdpInfoEntry.codecName` from `a=rtpmap:<pt> <codec>/<clock>` and `Bitrate`/`config`/`SizeLength`/`IndexLength`/`IndexDeltaLength` from `a=fmtp:<pt> ...` (RFC 3640 for `mpeg4-generic`/AAC).
-- RTSP interleaved binary data framing (RFC 2326 §10.12 / RFC 7826 §14): `$` (0x24) + 1-byte channel + 2-byte big-endian length, then payload — `rtspinterleave[1]` is that channel byte, and (see `H264Session`/`H265Session` below) `rtspinterleave[0]` is checked to equal `0x24`.
+- RTSP interleaved binary data framing (RFC 2326 §10.12 / RFC 7826 §14): `$` (0x24) + 1-byte channel + 2-byte big-endian length, then payload — `rtspinterleave[1]` is that channel byte, and (see `H264Session`/`H265Session`/`VP8Session`/`VP9Session`/`AV1Session` below) `rtspinterleave[0]` is checked to equal `0x24`.
 
 ### Relations & Data Flow
 
@@ -339,6 +353,9 @@ classDiagram
     RtpClient --> RTCPSession : creates
     RtpClient --> H264Session : creates
     RtpClient --> H265Session : creates
+    RtpClient --> VP8Session : creates
+    RtpClient --> VP9Session : creates
+    RtpClient --> AV1Session : creates
     RtpClient --> MjpegSession : creates
     RtpClient --> AudioTalkSession : creates
     RtpClient --> G711Session : creates
@@ -359,7 +376,10 @@ Not a class — a pair of pure functions shared across every codec session that 
 parsing or the Hanwha playback-timestamp RTP-extension sync (per its own doc comment: h264Session,
 h265Session, aacSession, g711Session, g726Session, metaSession in the legacy codebase; ported
 identically here for `H264Session`/`H265Session` and — by the same contract — the audio/meta
-sessions documented elsewhere).
+sessions documented elsewhere). `VP8Session`/`VP9Session`/`AV1Session` (added later than this doc
+comment) call both functions the exact same way as `H264Session`/`H265Session` do — there was no
+legacy source to port them from, but they follow the same contract by construction, not by
+coincidence.
 
 ### Method Analysis
 
@@ -375,7 +395,8 @@ sessions documented elsewhere).
   (RFC 3550 §5.3.1): it only activates when `rtpPayload[0] === 0xAB` and `rtpPayload[1]` is
   `0xAD` or `0xAC` (a proprietary marker, not the RFC 3550 generic extension-profile field, since
   this function is called *after* the caller has already computed `extensionHeaderLen` from the
-  standard extension length field — see `H264Session`/`H265Session` `depacketize`). If the marker
+  standard extension length field — see `H264Session`/`H265Session`/`VP8Session`/`VP9Session`/
+  `AV1Session` `depacketize`). If the marker
   doesn't match, it returns `currentPlayback` unchanged (i.e. this is a "Live" stream with no
   playback-timestamp extension present). Otherwise: reads an 8-byte NTP timestamp (4-byte MSW +
   4-byte LSW) starting at offset 4; if `session.deviceType === 'camera'`, additionally reads a
@@ -387,13 +408,15 @@ sessions documented elsewhere).
   i.e. it **estimates the live framerate from the wall-clock gap between consecutive playback
   timestamp markers** rather than trusting a static SDP `Framerate` value. Finally stores the new
   timestamp via `session.SetTimeStamp(...)` and returns `true` (marking the session as being in
-  "Playback" mode from here on — the return value is stored into `H264Session`/`H265Session`'s
-  private `playback` field and later drives `playMode = this.playback ? 'Playback' : 'Live'`).
+  "Playback" mode from here on — the return value is stored into `H264Session`/`H265Session`/
+  `VP8Session`/`VP9Session`/`AV1Session`'s private `playback` field and later drives `playMode =
+  this.playback ? 'Playback' : 'Live'`).
 
 ### Call Stack
 
-Called directly from `H264Session.depacketize`/`H265Session.depacketize` when `flags.extension`
-is set — see those sections' call-stack diagrams.
+Called directly from `H264Session.depacketize`/`H265Session.depacketize`/`VP8Session.depacketize`/
+`VP9Session.depacketize`/`AV1Session.depacketize` when `flags.extension` is set — see those
+sections' call-stack diagrams.
 
 ### RFC / Standard References
 
@@ -408,8 +431,14 @@ vendor-specific (Hanwha) extension, not part of RFC 3550 itself.
 flowchart LR
     H264Session -- flags.extension --> syncPlaybackTimestampFromRtpExtension
     H265Session -- flags.extension --> syncPlaybackTimestampFromRtpExtension
+    VP8Session -- flags.extension --> syncPlaybackTimestampFromRtpExtension
+    VP9Session -- flags.extension --> syncPlaybackTimestampFromRtpExtension
+    AV1Session -- flags.extension --> syncPlaybackTimestampFromRtpExtension
     H264Session --> parseRtpHeaderFlags
     H265Session --> parseRtpHeaderFlags
+    VP8Session --> parseRtpHeaderFlags
+    VP9Session --> parseRtpHeaderFlags
+    AV1Session --> parseRtpHeaderFlags
     syncPlaybackTimestampFromRtpExtension --> Session_SetTimeStamp["session.SetTimeStamp()"]
     syncPlaybackTimestampFromRtpExtension --> Session_setFramerate["session.setFramerate()"]
 ```
@@ -458,7 +487,8 @@ still reached. `onWaiting`/`onStatistics`, by contrast, are ordinary methods inv
 Selected methods (full public surface is large; grouped by role):
 
 - **`handleVideoData(session, playMode, streamData, videoInfo, isMetaImage?)`** — the video data
-  entry point (invoked as `this.eventVideoCallback` from `H264Session`/`H265Session`/`MjpegSession`).
+  entry point (invoked as `this.eventVideoCallback` from `H264Session`/`H265Session`/`VP8Session`/
+  `VP9Session`/`AV1Session`/`MjpegSession`).
   If `isMetaImage`, short-circuits to `metaImageCallback` (used by `MetaImageSession`-flavored
   MJPEG, not full video playback). Otherwise: updates `activeSessions.video` (stopping the
   previous session's statistics timer if the session changed), optionally clones frame data for
@@ -466,8 +496,10 @@ Selected methods (full public surface is large; grouped by role):
   recomputes `streamData.timeStamp.{utcTimeStamp,timestamp,timestamp_usec,utcDatetime}` from the
   RTCP-derived NTP anchor (`videoNTPDateTime`) plus the RTP-timestamp delta since that anchor
   (`streamData.timeStamp.rtpTimestamp - rtcpTSvideo`). On an **I-frame** (`videoInfo.frameType ===
-  'I'`), calls `getFrameSizeInfo` (parses SPS via `H264SPSParser`/`H265SPSParser`, or for MJPEG
-  just reads `videoInfo.width/height`) and, if the codec/size/dimensions changed or there is no
+  'I'`), calls `getFrameSizeInfo` (parses SPS via `H264SPSParser`/`H265SPSParser`; for MJPEG just
+  reads `videoInfo.width/height`; for VP8/VP9/AV1 parses the codec's own self-describing keyframe
+  header via `VP8HeaderParser`/`VP9HeaderParser`/`AV1HeaderParser` — see that section below) and, if
+  the codec/size/dimensions changed or there is no
   current player, tears down and recreates the player via `selectVideoPlayer`, validates the
   resolution via `checkVideoResolution`, wires timestamp/error/resize/framerate callbacks onto it,
   resolves the DOM element via `selectVideoElement`, calls `player.init(videoElement)`, applies
@@ -496,9 +528,9 @@ Selected methods (full public surface is large; grouped by role):
   or `audioNTPDateTime`/`rtcpTSaudio` — these are exactly the values `handleVideoData`/`handleAudioData`
   later use to convert RTP timestamps into wall-clock UTC for `'Live'` playback.
 - **`spsParse(sps, codecType)`** — lazily creates the right parser (`H264SPSParser`/`H265SPSParser`) whenever `videoCodec` changes, throws `RTSPOverWebSocketError` (`0x0304`) if `sps` is missing (encoder sent SPS via an unsupported aggregation type, or SPS hasn't arrived yet), then calls `spsParser.parse(sps)`.
-- **`getFrameSizeInfo(codecType, videoInfo)`** — MJPEG reads `videoInfo.width/height` directly (no SPS); H264/H265 delegate to `spsParse` + `spsParser.getSizeInfo()` and copy width/height/cropWidth/cropHeight back onto `videoInfo`.
+- **`getFrameSizeInfo(codecType, videoInfo, frameData)`** — MJPEG reads `videoInfo.width/height` directly (no SPS); H264/H265 delegate to `spsParse` + `spsParser.getSizeInfo()` and copy width/height/cropWidth/cropHeight back onto `videoInfo`; VP8/VP9/AV1 call `parseNonSpsFrameSize(codecType, frameData)` (a small private dispatcher to `VP8HeaderParser`/`VP9HeaderParser`/`AV1HeaderParser`, see that section below) and, only on a successful (non-`null`) parse, do the same width/height/cropWidth(`0`)/cropHeight(`0`) copy-back — a `null` result (any non-keyframe) leaves `sizeInfo` at its zero defaults, same as MJPEG's shape, relying on the caller's existing `self.videoWidth`/`self.videoHeight` caching to carry the last known size forward.
 - **`checkValidSpeed(codecType, size)`** — for MJPEG above `LIMIT_SPEED_RESOLUTION` (1920×1080), flags `currentProfile.isLimitSpeed` and fires an `0x0302` error/notice when the limit state changes (both directions).
-- **`selectVideoPlayer(channelid, playMode, codecType, size, framerate)`** — closes any existing player; if `stepFlag`, always returns a fresh canvas player. Otherwise picks `tagMode`: MJPEG always canvas; H264/H265 checks `MediaSource.isTypeSupported(mimeType)` (built from `spsParser.getCodecInfo()`) to decide MSE `<video>`-tag eligibility, then applies device/profile/size heuristics (`LIMIT_SIZE.Live/Playback`, `deviceType === 'nvr'`, `defaultVideoTagMode`) to choose canvas vs video tag, emitting `0x0301`/`0x030C`-class errors when the profile can't support the requested resolution. Instantiates via `factories.createVideoPlayer()`/`createCanvasPlayer()`, wires `statistics`/`capture`/`instantplayback` listeners, and applies `boxsize`/`maxInstantPlayback`/`bufferClearInterval`.
+- **`selectVideoPlayer(channelid, playMode, codecType, size, framerate)`** — closes any existing player; if `stepFlag`, always returns a fresh canvas player. Otherwise picks `tagMode`: MJPEG always canvas; H264/H265 checks `MediaSource.isTypeSupported(mimeType)` (built from `spsParser.getCodecInfo()`) to decide MSE `<video>`-tag eligibility, then applies device/profile/size heuristics (`LIMIT_SIZE.Live/Playback`, `deviceType === 'nvr'`, `defaultVideoTagMode`) to choose canvas vs video tag, emitting `0x0301`/`0x030C`-class errors when the profile can't support the requested resolution. **`'VP8'`/`'VP9'`/`'AV1'` have no case in this switch** — they fall to `default: break`, landing on the `tagMode = 'canvas'` set before the switch runs, with none of the H264/H265 MSE-support/size heuristics applied (see the "Known gap" note under `AV1Session` below — the resulting `CanvasTagPlayer` still can't actually decode these codecs, since `AssemblyDecoder`/`CanvasRenderer` don't recognize them either). Instantiates via `factories.createVideoPlayer()`/`createCanvasPlayer()`, wires `statistics`/`capture`/`instantplayback` listeners, and applies `boxsize`/`maxInstantPlayback`/`bufferClearInterval`.
 - **`selectVideoElement(mode)`** — resolves the actual `<canvas>`/`<video>` DOM element via `getElementByAttributeValue` (by mapped element ID, mapped channel ID, or plain channel ID, in that priority), firing `videoModeCallback` first and an error callback (`0x0900`/`0x0901`) if nothing is found.
 - **`checkVideoResolution(codec, info)`** — in `'video'` tag mode, rejects (`'Over4K'`) resolutions above `getMaxResolutionSize()` (browser/codec-dependent 4096×2688 or 4096×2304 for Firefox/Edge) or width > 4096; for H265 on Chromium additionally caps at the Firefox/Edge height limit; canvas mode always passes.
 - **`sendCommandData(type, data)`** — the UI/host command dispatcher: `capture`, `backup` (start/stop, creates/tears down `backupProvider`), `forward`/`backward` (step-play, delegates to `player.forward()`/`backward()` or issues a `stepRequest()`), `speed` (also toggles `dropOut` between 1 and `DROP_OUT_LEVEL` at `|speed| >= ULTRA_SPEED`), `pause`/`resume` (resume re-inits the video player if returning from step mode or `data === true`), `seek`, `audioIn` (delegates to `controlAudioPlayer`), `digitalZoom`, `clearBuffer`, `minimap` (delegates to `handleMinimapCommand`, which manages a `setInterval`-driven minimap refresh), `requestTimeChanged` (skipped on Firefox), `instantplayback`.
@@ -514,7 +546,7 @@ Selected methods (full public surface is large; grouped by role):
 
 ```mermaid
 sequenceDiagram
-    participant Sess as H264Session/H265Session/MjpegSession
+    participant Sess as H264Session/H265Session/VP8Session/VP9Session/AV1Session/MjpegSession
     participant MR as MediaRouter
     participant Player as VideoPlayerLike (CanvasTagPlayer/VideoTagPlayer)
     participant Backup as BackupProviderLike
@@ -796,6 +828,297 @@ classDiagram
     H265Session --> MediaRouter : eventVideoCallback (onVideoData)
     MediaRouter --> H265SPSParser : spsParse() on I-frame (via spsPayload)
 ```
+
+---
+
+## `VP8Session` (`mediaSession/videoSession/VP8Session.ts`)
+
+### Structure
+
+`VP8Session extends RtpSession`, structurally parallel to `H264Session`/`H265Session` but with no
+NAL-style parameter sets to cache and no Annex-B start codes to emit — VP8 has neither, so the
+reassembled buffer is a plain concatenation of depacketized VP8 payload bytes. Private state:
+`inputBuffer: Uint8Array` (`SIZE_1_4K`, grown on demand), `inputLength`, `playback: boolean`,
+`frameType: 'I' | 'P'` (captured once per access unit rather than derived at marker-bit time, since
+the byte that reveals it only exists in the *first* packet of the frame, not the reassembled
+buffer).
+
+### Method Analysis
+
+- **`init()`**, **`setBuffer(chunk)`** — same shape as `H264Session`'s.
+- **`depacketize(rtspInterleaved, rtpHeader, rtpPayload)`**:
+  1. `parseRtpHeaderFlags(rtpHeader)`; `0x24` interleaved-marker check (`0x0102`); CSRC rejection
+     (`0x0103`); padding-length read — identical to `H264Session`.
+  2. Extension header + `syncPlaybackTimestampFromRtpExtension` — identical to `H264Session`.
+  3. Parses the RFC 7741 §4.2 **mandatory payload descriptor** (1 byte): `X(1) R(1) N(1) S(1) R(1)
+     PID(3)`. `X` = extended-control-bits-present, `S` = start-of-VP8-partition, `PID` = partition
+     index (3 bits). If `X`, parses the **extended control bits** byte (`I L T K RSV(4)`): `I`
+     (PictureID present — 1 byte if the M-bit in that byte is 0, 2 bytes if 1, RFC 7741 §4.2), `L`
+     (TL0PICIDX present — 1 byte), `T`/`K` (TID/Y/KEYIDX packed into 1 shared byte if either is
+     set). Throws `0x0101` if the computed descriptor length would consume the entire payload
+     (malformed packet).
+  4. **Key-frame detection**: only on the packet where `S && PID === 0` (the first packet of the
+     first partition of a new frame) — reads bit 0 of the VP8 payload's first byte (after the
+     descriptor): RFC 6386 §9.1's uncompressed data chunk tag has an **inverted** key-frame flag
+     (`0` = key frame) in that bit. Cached into `frameType` until the next such packet.
+  5. Appends the post-descriptor VP8 payload straight into `inputBuffer` — no prefix, no NAL
+     reconstruction, since VP8's RTP payload *is* VP8 bitstream bytes already.
+  6. On **marker bit** (RFC 7741 §4.1: `M=1` marks the last packet of a VP8 frame — same
+     RFC-3550-level convention `H264Session`/`H265Session` use): snapshots the buffer, computes
+     `rtpTimestamp`, resets `inputLength`, records `startTimestamp` on the first frame, increments
+     the packet counter. Builds `streamData` (`codecType: 'VP8'`, ...) and `videoInfo`
+     (`frameType`, `framerate` — no SPS/PPS-equivalent payload, since VP8 encodes stream
+     parameters inside every key frame's own uncompressed header rather than in a separate NAL),
+     fires `eventVideoCallback`, then resets `frameType` to `'P'` for the next access unit.
+- **`close()`** — clears `sessionId`, stops the statistics timer.
+
+### Call Stack
+
+Structurally identical to `H264Session`'s (see that section's diagram) with `VP8Session.depacketize`
+in place of `H264Session.depacketize`.
+
+### RFC / Standard References
+
+RFC 7741 (RTP Payload Format for VP8 Video): §4.1 (RTP header usage — marker bit = last packet of
+a frame), §4.2 (payload descriptor: mandatory octet, extended control bits, PictureID, TL0PICIDX,
+TID/KEYIDX). RFC 6386 (VP8 bitstream/decoding, informational): §9.1 uncompressed data chunk (frame
+tag byte, `key_frame` bit polarity). RFC 3550 §5.1 for the RTP fixed header.
+
+### Relations & Data Flow
+
+```mermaid
+classDiagram
+    class VP8Session {
+        -inputBuffer
+        -frameType
+        -playback
+        +depacketize(interleaved, header, payload)
+    }
+    RtpSession <|-- VP8Session
+    VP8Session ..> rtpDepacketizeUtils : parseRtpHeaderFlags, syncPlaybackTimestampFromRtpExtension
+    VP8Session --> MediaRouter : eventVideoCallback (onVideoData)
+```
+
+---
+
+## `VP9Session` (`mediaSession/videoSession/VP9Session.ts`)
+
+### Structure
+
+`VP9Session extends RtpSession`, structurally parallel to `VP8Session`: `inputBuffer`
+(`SIZE_1_4K`), `inputLength`, `playback`, `frameType: 'I' | 'P'` captured once per access unit.
+Module-level `getBitFromMsb(byte, bitIndex)` helper reads a single bit (index 0 = MSB) — used only
+by `parseFrameType`, since VP9's `frame_type` bit sits at a profile-dependent offset within the
+first byte of the frame rather than a fixed mask.
+
+### Method Analysis
+
+- **`init()`**, **`setBuffer(chunk)`** — same shape as `VP8Session`'s.
+- **`parseFrameType(vp9Payload)`** (private) — implements just enough of VP9's
+  `uncompressed_header()` (VP9 Bitstream & Decoding Process Spec §6.2) to recover `frame_type`:
+  reads `profile_low_bit`/`profile_high_bit` (bits 2-3 from MSB) to get `profile`; if `profile ===
+  3` an extra `reserved_zero` bit is skipped; reads `show_existing_frame` — if set, the packet only
+  points at an already-decoded buffer rather than carrying a new coded frame, so this returns
+  `'P'`; otherwise reads the next bit as `frame_type` (`0` = key frame). All of these bits fit
+  within the first byte for every profile, so no cross-byte bit reader is needed.
+- **`depacketize(rtspInterleaved, rtpHeader, rtpPayload)`**:
+  1. Header validation, extension handling, playback sync — identical to `VP8Session`.
+  2. Parses the **mandatory payload descriptor** byte (draft-ietf-payload-vp9, the revision
+     Chrome/libwebrtc deploy): `I(1) P(1) L(1) F(1) B(1) E(1) V(1) Z(1)` — `I` PictureID present,
+     `P` inter-picture-predicted, `L` layer indices present, `F` flexible mode, `B` start of frame,
+     `V` scalability structure (SS) present.
+  3. If `I`: PictureID field, 1 byte (7-bit form) or 2 bytes (15-bit form, selected by the `M` bit
+     of the first PictureID byte).
+  4. If `L`: 1 byte of layer indices (`TID(3) U(1) SID(3) D(1)`), plus 1 more byte (TL0PICIDX) if
+     **not** in flexible mode.
+  5. If `P && F` (flexible-mode inter prediction): a run of reference-index (`P_DIFF`) octets, each
+     with its own continuation bit (`N`), read until `N === 0`.
+  6. If `V` (scalability structure present): **throws `0x0101`** — SS parsing (spatial-layer
+     dimensions, picture-group reference patterns) is unsupported in this version, the same way
+     `H264Session` throws on STAP-B/MTAP; single-spatial-layer streams (the common IP-camera case)
+     never set this bit.
+  7. On the packet where `B` (start of frame) is set, calls `parseFrameType` on the first byte of
+     the post-descriptor VP9 payload.
+  8. Appends the post-descriptor payload straight into `inputBuffer` — no prefix, VP9's RTP
+     payload is VP9 bitstream bytes already.
+  9. On **marker bit**: same snapshot/reset/counter pattern as `VP8Session`; builds `streamData`
+     (`codecType: 'VP9'`) / `videoInfo` (`frameType`, `framerate`), fires `eventVideoCallback`,
+     resets `frameType` to `'P'`.
+- **`close()`** — clears `sessionId`, stops the statistics timer.
+
+### Call Stack
+
+Structurally identical to `H264Session`'s (see that section's diagram) with `VP9Session.depacketize`
+in place of `H264Session.depacketize`.
+
+### RFC / Standard References
+
+draft-ietf-payload-vp9 (RTP Payload Format for VP9 Video — no RFC number was assigned before
+deployment stabilized around this revision, which is what Chrome/libwebrtc implement): payload
+descriptor layout (`I/P/L/F/B/E/V/Z`), PictureID/layer-index/reference-index encoding. VP9
+Bitstream & Decoding Process Specification §6.2 (`uncompressed_header()` — `frame_marker`,
+`profile`, `show_existing_frame`, `frame_type` bit layout). RFC 3550 §5.1 for the RTP fixed header.
+
+### Relations & Data Flow
+
+```mermaid
+classDiagram
+    class VP9Session {
+        -inputBuffer
+        -frameType
+        -playback
+        +depacketize(interleaved, header, payload)
+        -parseFrameType(payload)
+    }
+    RtpSession <|-- VP9Session
+    VP9Session ..> rtpDepacketizeUtils : parseRtpHeaderFlags, syncPlaybackTimestampFromRtpExtension
+    VP9Session --> MediaRouter : eventVideoCallback (onVideoData)
+```
+
+---
+
+## `AV1Session` (`mediaSession/videoSession/AV1Session.ts`)
+
+### Structure
+
+`AV1Session extends RtpSession`. Private state: `inputBuffer` (`SIZE_1_4K`), `inputLength`,
+`playback`, `frameType: 'I' | 'P'`. Module-level `readLeb128(data, offset)` decodes an unsigned
+LEB128 integer (AV1's variable-length integer encoding, used for OBU element sizes), returning
+`{ value, bytesRead }` and throwing `0x0101` if it would read past the payload. Module-level
+constant `OBU_SEQUENCE_HEADER = 1` (AV1 Bitstream & Decoding Process spec §6.2.2 OBU type
+enumeration) is the only OBU type this class distinguishes.
+
+### Method Analysis
+
+- **`init()`**, **`setBuffer(chunk)`** — same shape as `H264Session`'s.
+- **`splitObuElements(payload, obuCount)`** (private) — splits the region of one packet's payload
+  after the 1-byte aggregation header into individual OBU element byte ranges, per the AV1 RTP
+  payload spec ("RTP Payload Format For AV1", v1.0) §4.4:
+  - `obuCount === 0` (unknown element count): **every** element, including the last, is preceded
+    by a leb128 length field — the loop just consumes length-prefixed elements until the payload
+    is exhausted.
+  - `obuCount` in `1..3` (the aggregation header's `W` field, known count): the first `obuCount -
+    1` elements are leb128-length-prefixed; the final element takes the remainder of the packet
+    with no prefix (its length is implied).
+- **`depacketize(rtspInterleaved, rtpHeader, rtpPayload)`**:
+  1. Header validation, extension handling, playback sync — identical to `H264Session`.
+  2. Parses the **aggregation header** (1 byte, present on every packet): `Z(1) Y(1) W(2) N(1)
+     -(3)`. `Z` = this packet's first OBU element continues an OBU fragment that started in a
+     previous packet; `Y` = this packet's last OBU element is incomplete and continues in the next
+     packet; `W` = OBU element count (0 = unknown, see `splitObuElements`); `N` = first packet of a
+     new coded video sequence (read but not currently surfaced in `videoInfo`).
+  3. Calls `splitObuElements` to get each element's raw bytes.
+  4. For each element **except** one that is a fragment continuation (`i === 0 && Z`, since its
+     bytes don't start with a fresh `obu_header`), peeks the OBU type nibble (`(byte0 >> 3) &
+     0x0f`, AV1 spec §5.3.1's `obu_header()` layout: `forbidden_bit(1) obu_type(4)
+     obu_extension_flag(1) obu_has_size_field(1) obu_reserved_1bit(1)`); if it's
+     `OBU_SEQUENCE_HEADER`, marks `frameType = 'I'` for this access unit — encoders only emit a
+     Sequence Header OBU ahead of a key frame, so its presence is used as the key-frame signal the
+     same way `H264Session`/`H265Session` use the presence of SPS/VPS, rather than parsing AV1's
+     considerably more involved `frame_header_obu()` bit syntax.
+  5. Appends every element's raw bytes into `inputBuffer` in arrival order — fragmentation (`Z`/`Y`)
+     needs no special reassembly logic beyond correct per-packet element splitting, since
+     concatenating the fragments in order reproduces the original OBU bytes exactly (the same
+     principle `H264Session`'s FU-A continuation-append and `H265Session`'s FU continuation-append
+     rely on).
+  6. On **marker bit** (AV1 RTP payload spec §5: marks the last packet of a temporal unit): same
+     snapshot/reset/counter pattern as the other video sessions. Builds `streamData` (`codecType:
+     'AV1'`) / `videoInfo` (`frameType`, `framerate` — no cached parameter-set payload; AV1's
+     Sequence Header OBU is preserved in-band inside `frameData` itself rather than cached
+     separately, since it's already a normal OBU in the reassembled stream), fires
+     `eventVideoCallback`, resets `frameType` to `'P'`.
+- **`close()`** — clears `sessionId`, stops the statistics timer.
+
+### Call Stack
+
+Structurally identical to `H264Session`'s (see that section's diagram) with `AV1Session.depacketize`
+in place of `H264Session.depacketize`.
+
+### RFC / Standard References
+
+AOM "RTP Payload Format For AV1" v1.0 (no IETF RFC number — AOM-maintained spec, the format
+Chrome/libwebrtc implement): §4.4 aggregation header (`Z/Y/W/N`) and OBU element
+leb128-length-prefixing rules, §5 marker-bit-marks-temporal-unit-end convention. AV1 Bitstream &
+Decoding Process Specification §5.3.1 (`obu_header()` byte layout) and §6.2.2 (OBU type
+enumeration, `OBU_SEQUENCE_HEADER = 1`). RFC 3550 §5.1 for the RTP fixed header.
+
+### Relations & Data Flow
+
+```mermaid
+classDiagram
+    class AV1Session {
+        -inputBuffer
+        -frameType
+        -playback
+        +depacketize(interleaved, header, payload)
+        -splitObuElements(payload, obuCount)
+    }
+    RtpSession <|-- AV1Session
+    AV1Session ..> rtpDepacketizeUtils : parseRtpHeaderFlags, syncPlaybackTimestampFromRtpExtension
+    AV1Session --> MediaRouter : eventVideoCallback (onVideoData)
+```
+
+### VP8/VP9/AV1 decode + render — resolved (was: "Known gap: stop at depacketization")
+
+`VP8Session`/`VP9Session`/`AV1Session` were originally documented here as depacketizing correctly
+but having nothing downstream that decoded or rendered them. That gap is closed: VP8/VP9 are
+confirmed working end-to-end in a real browser (screenshot-verified: correct colors, no artifacts,
+via the demo server), and AV1's code path is implemented identically but unverified end-to-end (see
+the caveat at the bottom of this section). Full detail (new classes, worker/`CanvasRenderer` wiring)
+is in `05-video-player-rendering.md` and the `worker/videoDecoder` section of
+`07-talk-backup-worker.md`; this note is a pointer plus the two non-obvious bugs the live-testing
+pass surfaced, since both look like plausible "expected" behavior rather than bugs at first glance:
+
+- **`MediaRouter.getFrameSizeInfo` now has a `'VP8' | 'VP9' | 'AV1'` branch** (alongside MJPEG and
+  the SPS-based H264/H265 branch) that calls one of three new pure parsing functions —
+  `util/VP8HeaderParser.ts`, `util/VP9HeaderParser.ts`, `util/AV1HeaderParser.ts` (plus a shared
+  `util/BitReader.ts` the latter two use) — on `streamData.frameData` directly, since none of these
+  three codecs have an SPS-equivalent parameter set; each keyframe's own header is self-describing
+  instead. Each parser returns `null` (not a throw) for non-keyframe/truncated input, since
+  `getFrameSizeInfo` is called on every frame, not just keyframes — the existing
+  `self.videoWidth`/`self.videoHeight` caching in `handleVideoData`'s non-I-frame branch (unchanged)
+  already papers over the "P-frame parse found nothing" case with zero new code. **This step is not
+  optional** — `CanvasRenderer`'s `YUVWebGLCanvas` allocates its GL textures at a fixed size once, at
+  first `setCanvas()` call; if `videoInfo.width`/`height` were `0` there (true before this fix), the
+  channel gets a *permanently blank canvas*, not a visible error.
+- `MediaRouter.selectVideoPlayer`'s codec `switch` still has no `'VP8'`/`'VP9'`/`'AV1'` case, and
+  none is needed — confirmed this is correct as-is, not a remaining gap: falling to `default: break`
+  already leaves `tagMode = 'canvas'`, which is exactly the right outcome (WebCodecs decode only
+  targets the canvas/WebGL path; `VideoTagPlayer`/MSE is a dead end for these three regardless,
+  since `vendor/mp4Generator.js` has no `vp08`/`vp09`/`av01` box-type support and WebCodecs decoder
+  output is raw frames, not more encoded data MSE could consume anyway).
+- **`CanvasRenderer.setCanvas()`** gained `'VP8'`/`'VP9'`/`'AV1'` cases alongside `'H264'`/`'H265'`,
+  instantiating the same `YUVWebGLCanvas` — reused unchanged otherwise.
+- **New `worker/videoDecoder/WebCodecsVideoDecoder.ts`** (documented in `07-talk-backup-worker.md`
+  alongside `AssemblyDecoder`) wraps the browser's native WebCodecs `VideoDecoder` — chosen over
+  extending `AssemblyDecoder`'s vendored ffmpeg.wasm build, since that build's H264/H265 codec IDs
+  are baked into the compiled WASM blob itself, not extensible from TS. `decoderWorker.ts`'s
+  `'createDecoder'` case now picks `AssemblyDecoder` (H264/H265) or `WebCodecsVideoDecoder`
+  (VP8/VP9/AV1) — everything else in that file (frame buffering, drop-frame heuristics, the
+  `'decoded'` message shape) is unchanged, decoder-agnostic by construction.
+- **Two real bugs surfaced only by live testing against a real VP9 encoder** (both fixed, both worth
+  knowing about if touching this area again):
+  1. `decoderWorker.ts`'s `onDecoderReady()` had a legacy guard —
+     `if (!(frameBuffer.length > 0 || playMode === 'Playback')) return;` — that silently left
+     `isDecoderReady` permanently `false` (every frame buffered forever, no error) if the decoder
+     became ready before any frame had queued. `AssemblyDecoder`'s WASM load is slow enough
+     (network fetch) that this never triggered in practice; `WebCodecsVideoDecoder.configure()`
+     resolves near-instantly and hit it every time in Live mode. Removed — see the function's own
+     doc comment for the full reasoning on why this was safe to remove rather than preserve.
+  2. `video/player/canvas/webgl/YUVWebGLCanvas.ts` never set WebGL's `UNPACK_ALIGNMENT` (default:
+     4), which silently assumes every pixel-data row is padded to a 4-byte boundary — true for
+     H264/H265's macroblock-aligned (16-multiple) widths, never violated before, but false for a
+     real 854px-wide VP9 stream (`854 % 4 == 2`): every `texImage2D` call failed
+     ("ArrayBufferView not big enough for request"), leaving the texture at its uninitialized state
+     (visually: a solid flat color, not the actual decoded frame — confirmed live). Fixed with one
+     `gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)` call in `onInitTextures()`.
+
+**AV1 caveat**: this environment's `ffmpeg` cannot publish AV1 over RTSP at all (separate,
+unrelated bug in ffmpeg's own RTP muxer — see root `MEMORY.md` and `README.md`'s "External tools"
+section), so the AV1 decode path above could only be verified via unit tests
+(`util/AV1HeaderParser.test.ts`, synthetic OBU fixtures) against the AV1 spec, not against a real
+encoder or in a real browser. Treat it as implemented-and-spec-checked, not end-to-end-confirmed,
+until real AV1 test material is available.
 
 ---
 
@@ -1264,6 +1587,84 @@ classDiagram
 
 ---
 
+## `BitReader`, `VP8HeaderParser`, `VP9HeaderParser`, `AV1HeaderParser`
+
+### Structure
+
+VP8/VP9/AV1's equivalent of `H264SPSParser`/`H265SPSParser` — except none of the three codecs has
+a separate parameter-set concept; each keyframe's own header is self-describing, so these parse a
+keyframe's header bits directly out of `streamData.frameData` rather than a cached SPS/VPS payload.
+All four are plain exported functions/one small class (`BitReader`), not stateful classes, so they
+work identically whether called from `MediaRouter` (main thread, via `getFrameSizeInfo`) or
+`WebCodecsVideoDecoder` (Worker thread) — both already receive the frame bytes independently, no
+cross-thread sharing needed.
+
+- **`util/BitReader.ts`** — `class BitReader`: a minimal MSB-first bit reader with a persistent
+  cursor (`readBit()`, `readBits(count)`, `readUvlc()` — AV1 spec §4.10.3's Exp-Golomb-style
+  variable-length code, `bitsRemaining()`). Out-of-range reads return `0` rather than throwing, so
+  truncated input degrades to "parsed zeros" (caught via `bitsRemaining() < 0` after the fact) —
+  mirrors `H264SPSParser`/`H265SPSParser`'s own `getBit`/`readBits` bit-cursor pattern, generalized
+  into a reusable class since two different parsers below need it.
+- **`util/VP8HeaderParser.ts`** — `parseVP8FrameHeader(frameData): { width, height } | null`. RFC
+  6386 §9.1: byte-level only (no `BitReader` needed) — the 3-byte frame tag's `key_frame` bit, then
+  the 3-byte start code (`0x9d 0x01 0x2a`), then two 16-bit little-endian width/height-and-scale
+  fields.
+- **`util/VP9HeaderParser.ts`** — `parseVP9FrameHeader(frameData): { width, height, profile,
+  bitDepth } | null`. VP9 Bitstream & Decoding Process Spec §6.2 `uncompressed_header()` — continues
+  past what `VP9Session.parseFrameType` already reads (`frame_marker`/profile bits/
+  `show_existing_frame`/`frame_type`, all within byte 0) through `frame_sync_code()` and
+  `color_config()` into `frame_size()`. Returns `null` for inter frames (no `frame_size()` present).
+- **`util/AV1HeaderParser.ts`** — `parseAV1SequenceHeader(frameData): { width, height, profile } |
+  null`. Walks the raw OBU stream in `frameData` (same `obu_header()`/leb128-`obu_size` shape
+  `AV1Session.ts` already parses for its own, narrower key-frame-detection purpose — a separate
+  local copy of the leb128 reader, not shared, since this parses in-bitstream `obu_size` out of
+  already-reassembled frame bytes, a different call site) looking for an `OBU_SEQUENCE_HEADER`
+  (type 1); if found, parses `sequence_header_obu()` (AV1 spec §5.5.1) — including its optional
+  timing-info/decoder-model/operating-points loop, which must be walked correctly to keep the bit
+  cursor aligned even though none of those fields are returned — through to
+  `frame_width_bits_minus_1`/`frame_height_bits_minus_1`/`max_frame_width_minus_1`/
+  `max_frame_height_minus_1`. Stops there (doesn't parse the subsequent `color_config()` for bit
+  depth, unlike the VP9 parser) — width/height and `seq_profile` are the only fields anything
+  downstream currently needs.
+
+### Method Analysis
+
+Each `parseXFrameHeader`/`parseAV1SequenceHeader` function is called from exactly two places:
+`MediaRouter.getFrameSizeInfo`'s `'VP8' | 'VP9' | 'AV1'` branch (for `videoInfo.width`/`height`) and
+`WebCodecsVideoDecoder`'s codec-string candidate selection (for VP9/AV1's `profile`, needed to build
+a real `vp09.PP.LL.DD`/`av01.P.LLT.DD` codec string — see that class's section in
+`07-talk-backup-worker.md`). Both call sites already have `frameData`/`data.frameData` independently
+— no plumbing was added to `VideoInfo` or the `*Session.ts` classes for this.
+
+### RFC / Standard References
+
+RFC 6386 §9.1 (VP8 keyframe uncompressed data chunk tag). VP9 Bitstream & Decoding Process Spec
+§6.2 (`uncompressed_header()`), §4.10.3 (`uvlc()`). AV1 Bitstream & Decoding Process Specification
+§5.3.1 (`obu_header()`), §5.5.1 (`sequence_header_obu()`), §5.5.3–5.5.5 (`timing_info()`/
+`decoder_model_info()`/`operating_parameters_info()`, parsed only to stay bit-aligned), §6.2.2 (OBU
+type enumeration).
+
+### Relations & Data Flow
+
+```mermaid
+classDiagram
+    class BitReader {
+        +readBit() number
+        +readBits(count) number
+        +readUvlc() number
+        +bitsRemaining() number
+    }
+    MediaRouter ..> VP8HeaderParser : parseVP8FrameHeader()
+    MediaRouter ..> VP9HeaderParser : parseVP9FrameHeader()
+    MediaRouter ..> AV1HeaderParser : parseAV1SequenceHeader()
+    VP9HeaderParser ..> BitReader : uses
+    AV1HeaderParser ..> BitReader : uses
+    WebCodecsVideoDecoder ..> VP9HeaderParser : parseVP9FrameHeader() (codec-string profile)
+    WebCodecsVideoDecoder ..> AV1HeaderParser : parseAV1SequenceHeader() (codec-string profile)
+```
+
+---
+
 ## Module-wide data flow
 
 End-to-end path for one video access unit, from wire to renderer, showing every class documented
@@ -1284,6 +1685,9 @@ flowchart TD
         subgraph videoSession["mediaSession/videoSession/"]
             H264Session
             H265Session
+            VP8Session
+            VP9Session
+            AV1Session
             MjpegSession
             VideoRtcpSession
             PlaybackBufferManager
@@ -1307,11 +1711,17 @@ flowchart TD
     RtspClient -->|sendRtpData / sendSdpInfo| RtpClient
     RtpClient -->|depacketize per interleaved channel| H264Session
     RtpClient -->|depacketize| H265Session
+    RtpClient -->|depacketize| VP8Session
+    RtpClient -->|depacketize| VP9Session
+    RtpClient -->|depacketize| AV1Session
     RtpClient -->|depacketize| MjpegSession
     RtpClient -->|depacketize| RTCPSession
 
     H264Session -->|eventVideoCallback| MediaRouter
     H265Session -->|eventVideoCallback| MediaRouter
+    VP8Session -->|eventVideoCallback| MediaRouter
+    VP9Session -->|eventVideoCallback| MediaRouter
+    AV1Session -->|eventVideoCallback| MediaRouter
     MjpegSession -->|eventVideoCallback via worker| MediaRouter
     RTCPSession -->|eventRtcpCallback| MediaRouter
 

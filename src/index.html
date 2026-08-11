@@ -187,6 +187,22 @@
         opacity: 0.5;
         cursor: not-allowed;
       }
+      .spinner {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        animation: spin 0.7s linear infinite;
+      }
+      .spinner[hidden] {
+        display: none;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
       .player-status {
         display: flex;
         flex-direction: column;
@@ -482,6 +498,7 @@
                 </label>
                 <div class="actions">
                   <button id="btn-probe" type="button">Check max resolution (Probe)</button>
+                  <span id="probe-spinner" class="spinner" hidden aria-hidden="true"></span>
                 </div>
               </div>
               <p class="hint" id="probe-result" style="margin-top: 12px"></p>
@@ -555,8 +572,10 @@
 
                 <div class="actions">
                   <button id="btn-start-session" type="button">Start</button>
+                  <span id="start-session-spinner" class="spinner" hidden aria-hidden="true"></span>
                   <button id="btn-stop-session" type="button" disabled>Stop</button>
                   <button id="btn-restart-session" type="button" disabled>Restart</button>
+                  <span id="restart-session-spinner" class="spinner" hidden aria-hidden="true"></span>
                   <button id="btn-use-in-player" type="button" disabled>Fill Player tab connection info</button>
                 </div>
               </fieldset>
@@ -1958,6 +1977,8 @@
         var resolutionSelect = document.getElementById('yt-resolution');
         var transcodingSettingsFieldset = document.getElementById('transcoding-settings-fieldset');
         var currentTranscodingUrlEl = document.getElementById('current-transcoding-url');
+        var btnProbe = document.getElementById('btn-probe');
+        var probeSpinnerEl = document.getElementById('probe-spinner');
         var lastProbe = null;
 
         function formatDuration(sec) {
@@ -1980,7 +2001,18 @@
           lastProbe = null;
           updateTranscodingSettingsAvailability();
           probeResultEl.textContent = 'Looking up... (yt-dlp may take a few seconds to fetch the real format list)';
-          apiFetch('/api/youtube/probe?url=' + encodeURIComponent(url))
+          btnProbe.disabled = true;
+          probeSpinnerEl.hidden = false;
+          // A manual probe click means the user is about to change the URL/resolution/codec, so any transcode
+          // already running (previous ffmpeg still publishing to MediaMTX) has to be stopped first — otherwise it
+          // keeps occupying its channel/encoder resources underneath the new probe. stopSession() is a no-op
+          // (resolves immediately) when there's no currentSession. Deliberately NOT reused by
+          // reflectRunningSessionSettings()'s own probe call below — that one re-probes the *already-running*
+          // session's own URL just to repopulate the resolution dropdown and must not stop it.
+          stopSession()
+            .then(function () {
+              return apiFetch('/api/youtube/probe?url=' + encodeURIComponent(url));
+            })
             .then(function (probe) {
               lastProbe = probe;
               probeResultEl.textContent = '"' + probe.title + '" · duration ' + formatDuration(probe.durationSec) + ' · max resolution ' + probe.maxHeight + 'p';
@@ -2006,13 +2038,19 @@
               lastProbe = null;
               updateTranscodingSettingsAvailability();
               probeResultEl.textContent = 'Probe failed: ' + err.message;
+            })
+            .finally(function () {
+              btnProbe.disabled = false;
+              probeSpinnerEl.hidden = true;
             });
         });
 
         // ---- session lifecycle ----
         var btnStartSession = document.getElementById('btn-start-session');
+        var startSessionSpinnerEl = document.getElementById('start-session-spinner');
         var btnStopSession = document.getElementById('btn-stop-session');
         var btnRestartSession = document.getElementById('btn-restart-session');
+        var restartSessionSpinnerEl = document.getElementById('restart-session-spinner');
         var btnUseInPlayer = document.getElementById('btn-use-in-player');
         var sessionStatusEl = document.getElementById('session-status');
 
@@ -2170,17 +2208,20 @@
           return body;
         }
 
-        function startSession() {
+        // Pure session-creation logic, with no button-specific chrome (disabled
+        // state / spinner) of its own — both the Start button and Restart
+        // (stop-then-start) reuse this, but each shows its own spinner next to
+        // its own button rather than both lighting up together on a Restart.
+        function createSession() {
           var body;
           try {
             body = currentFormRequest();
           } catch (err) {
             sessionStatusEl.textContent = err.message;
-            return;
+            return Promise.resolve();
           }
-          btnStartSession.disabled = true;
           sessionStatusEl.textContent = 'Creating session...';
-          apiFetch('/api/sessions', {
+          return apiFetch('/api/sessions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -2193,10 +2234,16 @@
             })
             .catch(function (err) {
               sessionStatusEl.textContent = 'Session creation failed: ' + err.message;
-            })
-            .finally(function () {
-              btnStartSession.disabled = false;
             });
+        }
+
+        function startSession() {
+          btnStartSession.disabled = true;
+          startSessionSpinnerEl.hidden = false;
+          createSession().finally(function () {
+            btnStartSession.disabled = false;
+            startSessionSpinnerEl.hidden = true;
+          });
         }
 
         function stopSession() {
@@ -2236,7 +2283,16 @@
         btnStartSession.addEventListener('click', startSession);
         btnStopSession.addEventListener('click', stopSession);
         btnRestartSession.addEventListener('click', function () {
-          stopSession().then(startSession);
+          btnRestartSession.disabled = true;
+          restartSessionSpinnerEl.hidden = false;
+          stopSession()
+            .then(createSession)
+            .finally(function () {
+              // renderSessionStatus() (run inside createSession()'s .then()) already sets
+              // btnRestartSession.disabled based on the new session's status — only the
+              // spinner needs an unconditional hide here.
+              restartSessionSpinnerEl.hidden = true;
+            });
         });
 
         btnUseInPlayer.addEventListener('click', function () {

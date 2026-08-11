@@ -131,6 +131,9 @@ classDiagram
     RtpSession <|-- OPUSSession
     RtpSession <|-- H264Session
     RtpSession <|-- H265Session
+    RtpSession <|-- VP8Session
+    RtpSession <|-- VP9Session
+    RtpSession <|-- AV1Session
     RtpSession <|-- MjpegSession
     RtpSession <|-- MetaSession
     RtpSession <|-- VideoRtcpSession
@@ -138,6 +141,9 @@ classDiagram
     RtpClient --> RTCPSession : creates
     RtpClient --> H264Session : creates
     RtpClient --> H265Session : creates
+    RtpClient --> VP8Session : creates
+    RtpClient --> VP9Session : creates
+    RtpClient --> AV1Session : creates
     RtpClient --> MjpegSession : creates
     RtpClient --> AudioTalkSession : creates
     RtpClient --> G711Session : creates

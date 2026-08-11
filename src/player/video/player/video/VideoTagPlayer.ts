@@ -10,6 +10,9 @@ import { RTSPOverWebSocketError } from '../../../exceptions/RTSPOverWebSocketErr
 import type { VideoStreamData, VideoInfo, AudioStreamData, AudioInfo, WaitingEvent } from '../../../mediaSession';
 import { saveAs } from 'file-saver';
 import { initSegment, mediaSegment, dualTrackMediaSegment, type Mp4VideoTrackInfo, type Mp4AudioTrackInfo, type Mp4BoxInfo, type Mp4Sample, type Mp4TimeStamp } from '../../../vendor/mp4Generator';
+import { WebCodecsVideoDecoder } from '../../../worker/videoDecoder/WebCodecsVideoDecoder';
+import { defaultRealMseCodecString } from '../../../util/codecString';
+import type { MediaStreamVideoTrackGenerator } from '../../../types/mediaStreamTrackGenerator';
 
 export type AudiotranscoderWorkerFactory = () => Worker;
 
@@ -201,6 +204,21 @@ export class VideoTagPlayer extends VideoPlayer {
 
   private sourceBuffer: SourceBuffer | null = null;
   private mediaSource: MediaSource | null = null;
+
+  // WebCodecs-bridge tier (VP8/VP9/AV1, when a real-MSE `vp09`/`av01` stsd
+  // entry isn't supported, or never exists at all for VP8 — see
+  // decideUseBridge()). Runs entirely on the main thread: `MediaStreamTrackGenerator`
+  // is confirmed NOT constructible inside a dedicated Worker in at least one
+  // real Chromium build, despite the spec allowing that exposure. No MSE
+  // machinery (sourceBuffer/mediaSource above) is used in this mode at all —
+  // `videoElement.srcObject` is set directly from `bridgeTrackGenerator`,
+  // and decoded frames flow into it via `bridgeWriter`, bypassing the
+  // MP4-muxing path (createSampleFrameData/createVideoSample/createInitSegment)
+  // entirely.
+  private useBridge = false;
+  private bridgeDecoder: WebCodecsVideoDecoder | null = null;
+  private bridgeTrackGenerator: MediaStreamVideoTrackGenerator | null = null;
+  private bridgeWriter: WritableStreamDefaultWriter<VideoFrame> | null = null;
 
   private segmentArray: Uint8Array[] = [];
   private sequenseNum = 1;
@@ -401,6 +419,63 @@ export class VideoTagPlayer extends VideoPlayer {
     if (typeof (document as unknown as { webkitHidden?: unknown }).webkitHidden !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibilityChangeBound);
     }
+  }
+
+  /**
+   * Decides real-MSE vs. WebCodecs-bridge for VP8/VP9/AV1 (H264/H265/MJPEG
+   * always use real MSE, matching this class's pre-existing behavior). Uses
+   * `this.codec`, which `MediaRouter.handleVideoData` sets right before
+   * calling `init()` specifically so this decision can be made this early —
+   * before any `onVideoData` call, hence before any real keyframe has been
+   * parsed. Only a coarse, profile-0/8-bit `MediaSource.isTypeSupported`
+   * probe is possible at this point (see `defaultRealMseCodecString`); the
+   * *exact* codec string built from the real parsed keyframe (once
+   * available) is only needed later, for the real-MSE tier's actual
+   * `SourceBuffer` mimeCodec (setSourceBuffer()), which already reads
+   * `this.videoCodecInfo` — unaffected by this coarse probe.
+   */
+  private decideUseBridge(codecType: string | undefined): boolean {
+    const hasBridgeSupport = typeof MediaStreamTrackGenerator !== 'undefined';
+    if (codecType === 'VP8') {
+      // No real-MSE tier for VP8 at all — see defaultRealMseCodecString.
+      return hasBridgeSupport;
+    }
+    if (codecType === 'VP9' || codecType === 'AV1') {
+      const candidate = defaultRealMseCodecString(codecType);
+      const realMseSupported = candidate !== null && typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(`video/mp4;codecs="${candidate}"`);
+      return !realMseSupported && hasBridgeSupport;
+    }
+    return false;
+  }
+
+  private setupBridge(codecType: string): void {
+    this.bridgeTrackGenerator = new MediaStreamTrackGenerator({ kind: 'video' });
+    this.bridgeWriter = this.bridgeTrackGenerator.writable.getWriter();
+    this.bridgeDecoder = new WebCodecsVideoDecoder(codecType, {
+      outputMode: 'bridge',
+      onBridgeFrame: (frame) => {
+        this.bridgeWriter?.write(frame).catch(() => {
+          // The writer rejected (e.g. already closed/errored during
+          // teardown) — the stream never took ownership of this frame, so
+          // this class must close it itself to avoid leaking decoder
+          // resources.
+          frame.close();
+        });
+      }
+    });
+    (this.videoElement as HTMLVideoElement).srcObject = new MediaStream([this.bridgeTrackGenerator]);
+  }
+
+  private closeBridge(): void {
+    if (this.bridgeDecoder !== null) {
+      this.bridgeDecoder.close();
+      this.bridgeDecoder = null;
+    }
+    if (this.bridgeWriter !== null) {
+      this.bridgeWriter.close().catch(() => {});
+      this.bridgeWriter = null;
+    }
+    this.bridgeTrackGenerator = null;
   }
 
   private createMediaSource(): void {
@@ -935,7 +1010,18 @@ export class VideoTagPlayer extends VideoPlayer {
     array[index + 3] = size & 0xff;
   }
 
-  private createSampleFrameData(frameData: Uint8Array): Uint8Array {
+  private createSampleFrameData(frameData: Uint8Array, codecType: string): Uint8Array {
+    // VP8/VP9/AV1 have no Annex-B start-code/NAL-length layer at all — their
+    // ISOBMFF sample data is the raw coded bitstream as-is (per the WebM VP
+    // Codec and AV1 Codec ISOBMFF bindings). The NAL-length rewrite below is
+    // H264/H265-specific; running it unconditionally would corrupt these
+    // codecs' first 4 bytes (it always calls setNalLength at least once,
+    // even when no 0x00000001 start code was ever found, since
+    // `nalUnitIndex` starts at 0 rather than being left unset).
+    if (codecType !== 'H264' && codecType !== 'H265') {
+      return new Uint8Array(frameData);
+    }
+
     const length = frameData.byteLength;
     let nalUnitIndex = 0;
     let i = 0;
@@ -1083,7 +1169,7 @@ export class VideoTagPlayer extends VideoPlayer {
   private createVideoSample(streamData: VideoStreamData, videoInfo: VideoInfo): void {
     const sample: VideoSample = {
       size: streamData.frameData.byteLength,
-      frameData: this.createSampleFrameData(streamData.frameData),
+      frameData: this.createSampleFrameData(streamData.frameData, streamData.codecType),
       frameInfo: videoInfo,
       timeStamp: streamData.timeStamp as TimestampData,
       frameDuration: 0
@@ -1699,34 +1785,45 @@ export class VideoTagPlayer extends VideoPlayer {
     this.videoElement = element;
 
     this.elementSetting();
-    this.createMediaSource();
+    this.useBridge = this.decideUseBridge(this.codec);
+    if (this.useBridge) {
+      this.setupBridge(this.codec as string);
+    } else {
+      this.createMediaSource();
+    }
     this.instantplayback = false;
   }
 
   override onVideoData(playMode: string, streamData: VideoStreamData, videoInfo: VideoInfo): void {
     this.codec = streamData.codecType;
     this.videoSize = (videoInfo.width as number) * (videoInfo.height as number);
-    if (this.mediaSource !== null && this.mediaSource.readyState !== 'ended') {
-      if (playMode === 'Playback') {
-        this.playbackFlag = true;
-        if (this.deviceType === 'camera') {
-          this.checkPlaybackEnd(streamData.timeStamp as TimestampData);
-        }
-      }
 
+    if (playMode === 'Playback') {
+      this.playbackFlag = true;
+      if (this.deviceType === 'camera') {
+        this.checkPlaybackEnd(streamData.timeStamp as TimestampData);
+      }
+    }
+    this.receiveTimeStamp = streamData.timeStamp as TimestampData;
+
+    if (this.useBridge) {
+      // No MP4 muxing at all in this tier — the raw coded bitstream goes
+      // straight into the WebCodecs decoder, which writes decoded
+      // `VideoFrame`s into `bridgeTrackGenerator` (see setupBridge()).
+      this.bridgeDecoder?.decode({ frameType: videoInfo.frameType ?? 'P', frameData: streamData.frameData });
+    } else if (this.mediaSource !== null && this.mediaSource.readyState !== 'ended') {
       if (this.videoCodecInfo === null && videoInfo.frameType === 'I') {
         this.videoCodecInfo = videoInfo.codecInfo as string;
         this.setVideoInfo(videoInfo, streamData.codecType);
         this.initBaseNTPTimestamp(streamData.timeStamp as TimestampData);
         this.createInitSegment();
       }
-      this.receiveTimeStamp = streamData.timeStamp as TimestampData;
       this.createVideoSample(streamData, videoInfo);
+    }
 
-      if (this.minimapInfo.isUpdate && this.minimapInfo.element) {
-        this.minimapInfo.element.getContext('2d')?.drawImage(this.videoElement as HTMLVideoElement, 0, 0, this.minimapInfo.element.width, this.minimapInfo.element.height);
-        this.minimapInfo.isUpdate = false;
-      }
+    if (this.minimapInfo.isUpdate && this.minimapInfo.element) {
+      this.minimapInfo.element.getContext('2d')?.drawImage(this.videoElement as HTMLVideoElement, 0, 0, this.minimapInfo.element.width, this.minimapInfo.element.height);
+      this.minimapInfo.isUpdate = false;
     }
   }
 
@@ -1871,6 +1968,8 @@ export class VideoTagPlayer extends VideoPlayer {
           this.mediaSource.endOfStream();
         }
       }
+      this.closeBridge();
+      this.useBridge = false;
       // Previously left dangling after the removeSourceBuffer() above — a
       // stale reference to a SourceBuffer no longer attached to any
       // MediaSource, which throws "This SourceBuffer has been removed from
@@ -1893,6 +1992,7 @@ export class VideoTagPlayer extends VideoPlayer {
       if (this.videoElement !== undefined && this.videoElement !== null) {
         window.URL.revokeObjectURL(this.videoElement.src);
         this.videoElement.removeAttribute('src');
+        this.videoElement.srcObject = null;
 
         if (!this.playbackFlag) {
           this.videoElement.load();
@@ -2169,6 +2269,24 @@ export class VideoTagPlayer extends VideoPlayer {
     } else if (codecType === 'H265') {
       videoInfoBox.profileTierLevel = videoinfo.profileTierLevel;
       videoInfoBox.vps = [videoinfo.vpsPayload as Uint8Array | undefined];
+    } else if (codecType === 'VP9') {
+      videoInfoBox.profile = videoinfo.profile;
+      videoInfoBox.bitDepth = videoinfo.bitDepth;
+      videoInfoBox.colorSpace = videoinfo.colorSpace;
+      videoInfoBox.colorRange = videoinfo.colorRange;
+      videoInfoBox.subsamplingX = videoinfo.subsamplingX;
+      videoInfoBox.subsamplingY = videoinfo.subsamplingY;
+    } else if (codecType === 'AV1') {
+      videoInfoBox.profile = videoinfo.profile;
+      videoInfoBox.seqLevelIdx0 = videoinfo.seqLevelIdx0;
+      videoInfoBox.seqTier0 = videoinfo.seqTier0;
+      videoInfoBox.highBitdepth = videoinfo.highBitdepth;
+      videoInfoBox.twelveBit = videoinfo.twelveBit;
+      videoInfoBox.monoChrome = videoinfo.monoChrome;
+      videoInfoBox.chromaSubsamplingX = videoinfo.chromaSubsamplingX;
+      videoInfoBox.chromaSubsamplingY = videoinfo.chromaSubsamplingY;
+      videoInfoBox.chromaSamplePosition = videoinfo.chromaSamplePosition;
+      videoInfoBox.configObu = videoinfo.configObu;
     }
 
     this.videoInfoBox = videoInfoBox;

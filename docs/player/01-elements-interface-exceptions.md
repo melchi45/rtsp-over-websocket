@@ -105,6 +105,17 @@ their exact location rather than fixed silently (file header comment,
 - `updateRendering()` (private, `:2231-2327`) — builds the `.video-container` overlay (rewind/
   forward tap-notification DOM + styles) if not already built, appends `this.video` into the
   shared wrapper, and — if `autoplay` plus a resolved profile/device are present — calls `play()`.
+  Before appending, it sets an explicit `width: 100%; height: 100%; display: block;
+  margin-left/right: auto` inline style on `this.video` (`:2303-2311` area) so the canvas/video tag
+  always fits the `<rtsp-over-websocket>` host's own box. This matters because the canvas's
+  `width`/`height` *attributes* hold the decoded stream's intrinsic pixel buffer size (set to the
+  real resolution — e.g. 1920x1080 — by `CanvasRenderer`/`WebGLCanvas` once frames arrive), which
+  is unrelated to on-screen display size; without this CSS the canvas previously rendered at that
+  intrinsic size and overflowed a smaller host box (e.g. `width="800" height="480"`).
+  `onRTSPOverWebSocketVideoMode` (below) applies the same styling when it later swaps the tag on a
+  canvas↔video mode change, but that path only fires once `MediaRouter` selects a player and
+  depends on `id`/`rtsp-channel-mapped-id` matching — setting it here up front makes the fit
+  unconditional from initial attach.
 
 **`src` attribute / URL generation** (see "401 handling" below for the credential-retry piece)
 
@@ -212,7 +223,22 @@ their exact location rather than fixed silently (file header comment,
   events (`0x090B`). Everything else dispatches a generic `'error'` event.
 - `onRTSPOverWebSocketVideoMode(event)` (`:3375-3435`) — swaps `this.video` between `<canvas>`
   and `<video>` in the live DOM when `MediaRouter` decides the rendering mode should change.
-- `onRTSPOverWebSocketResize`, `onRTSPOverWebSocketMeta`, `onRTSPOverWebSocketMetaImage`,
+- `onRTSPOverWebSocketResize(event)` (`:3646-3663`) — re-dispatches a public `resize` event, updates
+  the statistics panel's resolution readout, and (re-)applies the fit-to-parent inline style
+  (`width/height: 100%; display: block; margin-left/right: auto`) onto whichever element
+  `event.tagmode`+`rtsp-channel-mapped-id` currently resolves to. Fires on every real resolution
+  change reported by `MediaRouter` (`VideoResizeInfo`, first fired on the stream's very first
+  keyframe), so in practice it's the *last* style write on the canvas/video tag before real
+  playback starts — it runs after, and overwrites, whatever `updateRendering()` set at initial
+  attach. It used to omit `width: 100%` specifically when `event.tagmode === 'canvas'` (on the
+  assumption a canvas would size itself off its own `width`/`height` attributes); those attributes
+  hold the decoded stream's *intrinsic pixel buffer* size, not a display size, and a replaced
+  element like `<canvas>` with only `height: 100%` set auto-computes its displayed width from that
+  intrinsic aspect ratio — overflowing a host box whose aspect ratio is narrower than the video's
+  (confirmed live: an 800x480 host, 5:3, with a 1920x1080/16:9 stream). Fixed to apply
+  `width: 100%` unconditionally, matching `updateRendering()`'s and
+  `onRTSPOverWebSocketVideoMode()`'s styling.
+- `onRTSPOverWebSocketMeta`, `onRTSPOverWebSocketMetaImage`,
   `onRTSPOverWebSocketTimestamp`, `onRTSPOverWebSocketStatistics`, `onRTSPOverWebSocketStep`,
   `onRTSPOverWebSocketCapture`, `onRTSPOverWebSocketInstantPlayback`,
   `onRTSPOverWebSocketBackup`, `onRTSPOverWebSocketRecv`, `onRTSPPacket` — each updates the

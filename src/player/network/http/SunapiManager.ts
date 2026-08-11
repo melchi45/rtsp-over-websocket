@@ -121,6 +121,49 @@ function unwrapResponse(response: unknown): Record<string, unknown> {
   return result as Record<string, unknown>;
 }
 
+/**
+ * `getVideoProfile`/`getVideoProfileAll`/`getVideoProfilePolicy`/
+ * `getVideoProfilePolicyAll` expect a flat array of
+ * `{ Channel, Profile, ...fields }` (the `VideoProfiles`/
+ * `VideoProfilePolicies` key on a modern JSON response). Some devices/
+ * firmware instead return the legacy `Channel.<n>.<Group>.<m>.<Field>=<value>`
+ * line format for these endpoints regardless of the `Accept: application/json`
+ * request header — SunapiClient.parseResponse() already parses that into a
+ * nested `{ Channel: { "<n>": { <Group>: { "<m>": { Field: value, ... } } } } }`
+ * object rather than throwing (`<Group>` is `Profile` for the plain video-profile
+ * endpoints — not verified for the *Policy variants, which may use a
+ * different group name, so it's read from whatever single key each
+ * `Channel.<n>` entry actually has rather than assumed), so this flattens
+ * *that* shape into the same flat-array shape the modern response would
+ * have had, instead of requiring every caller to handle both.
+ */
+function flattenChannelGroupedFields(data: Record<string, unknown>, wrapperKey: string): unknown {
+  const wrapped = data[wrapperKey];
+  if (wrapped !== undefined) {
+    return wrapped;
+  }
+  const channels = data.Channel as Record<string, Record<string, Record<string, Record<string, unknown>>>> | undefined;
+  if (typeof channels !== 'object' || channels === null) {
+    return undefined;
+  }
+  const flattened: Array<Record<string, unknown>> = [];
+  for (const channelKey of Object.keys(channels)) {
+    const channelEntry = channels[channelKey];
+    if (typeof channelEntry !== 'object' || channelEntry === null) continue;
+    // Whatever single key groups the per-index entries under this channel
+    // (e.g. "Profile") — not assumed by name, since it may differ between
+    // the plain video-profile and *Policy variants of this response shape.
+    for (const groupKey of Object.keys(channelEntry)) {
+      const group = channelEntry[groupKey];
+      if (typeof group !== 'object' || group === null) continue;
+      for (const indexKey of Object.keys(group)) {
+        flattened.push({ Channel: Number(channelKey), Profile: Number(indexKey), ...group[indexKey] });
+      }
+    }
+  }
+  return flattened;
+}
+
 export class SunapiManager {
   private _sunapiClient: SunapiClientLike | null = null;
   private device: SunapiManagerDeviceInfo = {
@@ -160,8 +203,15 @@ export class SunapiManager {
   init(info: SunapiManagerDeviceInfo): Promise<unknown> {
     this.device = info;
 
+    // Only sync device.protocol to the host page's own protocol when that
+    // page protocol is actually 'http'/'https' — matching the device's own
+    // origin to the page's is meaningful for a normal browser tab (avoids
+    // mixed-content issues), but window.location.protocol can be something
+    // else entirely for non-http(s) hosts (e.g. 'chrome-extension:' for a
+    // Chrome extension page), which is never a valid protocol to reach a
+    // SUNAPI device on and must not overwrite an explicit device.protocol.
     const splitProt = window.location.protocol.split(':');
-    if (this.device.protocol !== splitProt[0]) {
+    if ((splitProt[0] === 'http' || splitProt[0] === 'https') && this.device.protocol !== splitProt[0]) {
       this.device.protocol = splitProt[0];
     }
 
@@ -295,7 +345,7 @@ export class SunapiManager {
 
   getVideoProfileAll(): Promise<unknown> {
     return this.request(() => `/stw-cgi/${CGI.MEDIA_CGI}?msubmenu=${SUBMENU.VIDEO_PROFILE}&action=${ACTION.VIEW}`, 'getVideoProfileAll', {
-      extract: (data) => (data as { VideoProfiles?: unknown }).VideoProfiles
+      extract: (data) => flattenChannelGroupedFields(data, 'VideoProfiles')
     });
   }
 
@@ -309,13 +359,13 @@ export class SunapiManager {
         return sunapiURI;
       },
       'getVideoProfile',
-      { extract: (data) => (data as { VideoProfiles?: unknown }).VideoProfiles }
+      { extract: (data) => flattenChannelGroupedFields(data, 'VideoProfiles') }
     );
   }
 
   getVideoProfilePolicyAll(): Promise<unknown> {
     return this.request(() => `/stw-cgi/${CGI.MEDIA_CGI}?msubmenu=${SUBMENU.VIDEO_PROFILE_POLICY}&action=${ACTION.VIEW}`, 'getVideoProfilePolicyAll', {
-      extract: (data) => (data as { VideoProfilePolicies?: unknown }).VideoProfilePolicies
+      extract: (data) => flattenChannelGroupedFields(data, 'VideoProfilePolicies')
     });
   }
 
@@ -329,7 +379,7 @@ export class SunapiManager {
         return sunapiURI;
       },
       'getVideoProfilePolicy',
-      { extract: (data) => (data as { VideoProfilePolicies?: unknown }).VideoProfilePolicies }
+      { extract: (data) => flattenChannelGroupedFields(data, 'VideoProfilePolicies') }
     );
   }
 

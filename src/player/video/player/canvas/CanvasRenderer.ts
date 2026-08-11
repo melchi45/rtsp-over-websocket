@@ -154,6 +154,9 @@ export class CanvasRenderer {
       switch (this.codecType) {
         case 'H264':
         case 'H265':
+        case 'VP8':
+        case 'VP9':
+        case 'AV1':
           this.drawer = new YUVWebGLCanvas(
             this.canvasElement as HTMLCanvasElement,
             (this.canvasElement as HTMLCanvasElement).getContext('webgl') as WebGLRenderingContext,
@@ -246,6 +249,9 @@ export class CanvasRenderer {
         switch (this.codecType) {
           case 'H264':
           case 'H265':
+          case 'VP8':
+          case 'VP9':
+          case 'AV1':
             this.mapDrawer = new YUVWebGLCanvas(this.minimapInfo.element, this.minimapInfo.element.getContext('webgl') as WebGLRenderingContext, mapSize);
             break;
           case 'MJPEG':

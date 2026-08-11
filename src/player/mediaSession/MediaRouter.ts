@@ -1,5 +1,9 @@
 import { H264SPSParser } from '../util/H264SPSParser';
 import { H265SPSParser } from '../util/H265SPSParser';
+import { parseVP8FrameHeader } from '../util/VP8HeaderParser';
+import { parseVP9FrameHeader, type VP9FrameHeader } from '../util/VP9HeaderParser';
+import { parseAV1SequenceHeader, type AV1FrameHeader } from '../util/AV1HeaderParser';
+import { buildAV1CodecString, buildVP9CodecString, defaultRealMseCodecString } from '../util/codecString';
 import { getElementByAttributeValue } from '../util/getElementByAttributeValue';
 import { browserDetect } from '../util/BrowserDetect';
 import { RTSPOverWebSocketError } from '../exceptions/RTSPOverWebSocketError';
@@ -86,6 +90,24 @@ export interface VideoInfo {
   levelIdc?: unknown;
   profileTierLevel?: number[];
   playMode?: string;
+  /** Shared by VP9 and AV1 — the codec's own sequence/frame profile number. */
+  profile?: number;
+  /** VP9 only, from `VP9HeaderParser`'s `VP9FrameHeader`. */
+  bitDepth?: number;
+  colorSpace?: number;
+  colorRange?: number;
+  subsamplingX?: number;
+  subsamplingY?: number;
+  /** AV1 only, from `AV1HeaderParser`'s `AV1FrameHeader`. */
+  seqLevelIdx0?: number;
+  seqTier0?: number;
+  highBitdepth?: number;
+  twelveBit?: number;
+  monoChrome?: number;
+  chromaSubsamplingX?: number;
+  chromaSubsamplingY?: number;
+  chromaSamplePosition?: number;
+  configObu?: Uint8Array;
 }
 
 export interface AudioStreamData {
@@ -139,6 +161,11 @@ export interface VideoPlayerLike {
   playmode: string | undefined;
   channelId: number;
   deviceType?: string;
+  /** Set by `handleVideoData` right before `init()` — the only point
+   * `VideoTagPlayer.init()` can learn the codec before its first
+   * `onVideoData` call, which it needs to decide real-MSE vs. WebCodecs-
+   * bridge for VP8/VP9/AV1 (see `VideoTagPlayer.ts`'s `decideUseBridge`). */
+  codec?: string;
   boxsize: number;
   framedrop: boolean;
   speed: number;
@@ -528,22 +555,79 @@ export class MediaRouter {
     this.spsParser!.parse(sps);
   }
 
+  /** VP8/VP9/AV1 have no SPS-equivalent parameter set — each parses a
+   * different part of the codec's own self-describing keyframe header
+   * instead (see the three `util/*HeaderParser.ts` modules). Returns `null`
+   * on any non-keyframe/truncated input; that's the expected common case
+   * (this is called on every frame, not just keyframes), not an error. */
+  private parseNonSpsFrameSize(codecType: string, frameData: Uint8Array): VP9FrameHeader | AV1FrameHeader | { width: number; height: number } | null {
+    switch (codecType) {
+      case 'VP8':
+        return parseVP8FrameHeader(frameData);
+      case 'VP9':
+        return parseVP9FrameHeader(frameData);
+      case 'AV1':
+        return parseAV1SequenceHeader(frameData);
+      default:
+        return null;
+    }
+  }
+
   private getFrameSizeInfo(
     codecType: string,
-    videoInfo: VideoInfo
+    videoInfo: VideoInfo,
+    frameData: Uint8Array
   ): { width: number; height: number; decodeSize: number; cropWidth: number; cropHeight: number } {
-    let sizeInfo = { width: 0, height: 0, decodeSize: 0, cropWidth: 0, cropHeight: 0 };
-    if (codecType !== 'MJPEG') {
+    const sizeInfo = { width: 0, height: 0, decodeSize: 0, cropWidth: 0, cropHeight: 0 };
+    if (codecType === 'MJPEG') {
+      sizeInfo.width = videoInfo.width ?? 0;
+      sizeInfo.height = videoInfo.height ?? 0;
+      sizeInfo.decodeSize = (videoInfo.width ?? 0) * (videoInfo.height ?? 0);
+    } else if (codecType === 'VP8' || codecType === 'VP9' || codecType === 'AV1') {
+      const header = this.parseNonSpsFrameSize(codecType, frameData);
+      if (header !== null) {
+        sizeInfo.width = header.width;
+        sizeInfo.height = header.height;
+        sizeInfo.decodeSize = header.width * header.height;
+        videoInfo.width = sizeInfo.width;
+        videoInfo.height = sizeInfo.height;
+        videoInfo.cropWidth = 0;
+        videoInfo.cropHeight = 0;
+
+        if (codecType === 'VP9') {
+          const vp9Header = header as VP9FrameHeader;
+          videoInfo.profile = vp9Header.profile;
+          videoInfo.bitDepth = vp9Header.bitDepth;
+          videoInfo.colorSpace = vp9Header.colorSpace;
+          videoInfo.colorRange = vp9Header.colorRange;
+          videoInfo.subsamplingX = vp9Header.subsamplingX;
+          videoInfo.subsamplingY = vp9Header.subsamplingY;
+        } else if (codecType === 'AV1') {
+          const av1Header = header as AV1FrameHeader;
+          videoInfo.profile = av1Header.profile;
+          videoInfo.seqLevelIdx0 = av1Header.seqLevelIdx0;
+          videoInfo.seqTier0 = av1Header.seqTier0;
+          videoInfo.highBitdepth = av1Header.highBitdepth;
+          videoInfo.twelveBit = av1Header.twelveBit;
+          videoInfo.monoChrome = av1Header.monoChrome;
+          videoInfo.chromaSubsamplingX = av1Header.chromaSubsamplingX;
+          videoInfo.chromaSubsamplingY = av1Header.chromaSubsamplingY;
+          videoInfo.chromaSamplePosition = av1Header.chromaSamplePosition;
+          videoInfo.configObu = frameData.slice(av1Header.obuStart, av1Header.obuEnd);
+        }
+      }
+    } else {
       this.spsParse(videoInfo.spsPayload, codecType);
-      sizeInfo = this.spsParser!.getSizeInfo();
+      const parsedSizeInfo = this.spsParser!.getSizeInfo();
+      sizeInfo.width = parsedSizeInfo.width;
+      sizeInfo.height = parsedSizeInfo.height;
+      sizeInfo.decodeSize = parsedSizeInfo.decodeSize;
+      sizeInfo.cropWidth = parsedSizeInfo.cropWidth;
+      sizeInfo.cropHeight = parsedSizeInfo.cropHeight;
       videoInfo.width = sizeInfo.width;
       videoInfo.height = sizeInfo.height;
       videoInfo.cropWidth = sizeInfo.cropWidth;
       videoInfo.cropHeight = sizeInfo.cropHeight;
-    } else {
-      sizeInfo.width = videoInfo.width ?? 0;
-      sizeInfo.height = videoInfo.height ?? 0;
-      sizeInfo.decodeSize = (videoInfo.width ?? 0) * (videoInfo.height ?? 0);
     }
     return sizeInfo;
   }
@@ -627,7 +711,7 @@ export class MediaRouter {
     }
 
     if (videoInfo.frameType === 'I') {
-      sizeInfo = self.getFrameSizeInfo(streamData.codecType, videoInfo);
+      sizeInfo = self.getFrameSizeInfo(streamData.codecType, videoInfo, streamData.frameData);
 
       if ((playMode === 'Live' || playMode === 'Playback') && !self.isBackup) {
         if (
@@ -656,6 +740,7 @@ export class MediaRouter {
           self.player.playmode = playMode.toString().toLowerCase();
           self.player.channelId = self.channelId;
           self.player.deviceType = self.deviceType;
+          self.player.codec = streamData.codecType;
           self.player.setTimeStampCallback((ts: unknown) => self.sendTimeStamp(ts));
           if (self.errorCallback) self.player.setErrorCallback(self.errorCallback);
           if (self.resizeCallback) self.player.setResizeCallback(self.resizeCallback);
@@ -708,7 +793,7 @@ export class MediaRouter {
         }
       }
     } else {
-      sizeInfo = self.getFrameSizeInfo(streamData.codecType, videoInfo);
+      sizeInfo = self.getFrameSizeInfo(streamData.codecType, videoInfo, streamData.frameData);
       if (self.videoWidth !== null) {
         videoInfo.width = self.videoWidth;
         videoInfo.height = self.videoHeight ?? undefined;
@@ -718,11 +803,26 @@ export class MediaRouter {
     if (self.player !== null) {
       videoInfo.dropOut = self.dropOut;
       if (self.tagMode === 'video' && videoInfo.frameType === 'I') {
-        videoInfo.codecInfo = self.spsParser!.getCodecInfo();
-        if (streamData.codecType === 'H264') {
+        // VP9/AV1: no spsParser-equivalent instance to reuse (see
+        // parseNonSpsFrameSize) — the codec-info string is built directly
+        // from the fields getFrameSizeInfo already parsed onto videoInfo,
+        // via the same builder WebCodecsVideoDecoder-adjacent code uses.
+        if (streamData.codecType === 'VP9') {
+          videoInfo.codecInfo = buildVP9CodecString(videoInfo.profile ?? 0, videoInfo.bitDepth ?? 8);
+        } else if (streamData.codecType === 'AV1') {
+          const bitDepth = videoInfo.highBitdepth === 1 ? (videoInfo.twelveBit === 1 ? 12 : 10) : 8;
+          videoInfo.codecInfo = buildAV1CodecString(videoInfo.profile ?? 0, videoInfo.seqLevelIdx0 ?? 0, videoInfo.seqTier0 ?? 0, bitDepth);
+        } else if (streamData.codecType === 'VP8') {
+          // VP8 never reaches a real-MSE tier (no vp08 stsd branch in
+          // mp4Generator.js — VP8-in-MP4 was never a real browser-invested
+          // combination) — tagMode 'video' here means bridge-only, which
+          // doesn't need an MSE codecs string at all.
+        } else if (streamData.codecType === 'H264') {
+          videoInfo.codecInfo = self.spsParser!.getCodecInfo();
           videoInfo.profileIdc = (self.spsParser as H264SPSParser).getSpsValue('profile_idc');
           videoInfo.levelIdc = (self.spsParser as H264SPSParser).getSpsValue('level_idc');
         } else if (streamData.codecType === 'H265') {
+          videoInfo.codecInfo = self.spsParser!.getCodecInfo();
           videoInfo.profileTierLevel = (self.spsParser as H265SPSParser).getProfileTierLevel();
         }
       }
@@ -1357,6 +1457,23 @@ export class MediaRouter {
             this.tagMode = 'canvas';
           }
         }
+        break;
+      }
+      case 'VP9':
+      case 'AV1': {
+        const mediaSourceIsTypeSupported = (globalThis as unknown as { MediaSource?: { isTypeSupported(t: string): boolean } }).MediaSource
+          ?.isTypeSupported;
+        const hasBridgeSupport = typeof (globalThis as unknown as { MediaStreamTrackGenerator?: unknown }).MediaStreamTrackGenerator !== 'undefined';
+        const candidateCodec = defaultRealMseCodecString(codecType);
+        const realMseSupported = candidateCodec !== null && mediaSourceIsTypeSupported?.(`video/mp4;codecs="${candidateCodec}"`) === true;
+        this.tagMode = realMseSupported || hasBridgeSupport ? 'video' : 'canvas';
+        break;
+      }
+      case 'VP8': {
+        // No real-MSE tier for VP8 (see defaultRealMseCodecString) — only
+        // ever reaches 'video' via the WebCodecs-bridge tier.
+        const hasBridgeSupport = typeof (globalThis as unknown as { MediaStreamTrackGenerator?: unknown }).MediaStreamTrackGenerator !== 'undefined';
+        this.tagMode = hasBridgeSupport ? 'video' : 'canvas';
         break;
       }
       default:

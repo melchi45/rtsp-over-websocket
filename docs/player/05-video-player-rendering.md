@@ -16,10 +16,19 @@ Collaborators documented elsewhere, referenced here by name only:
   `() => new VideoTagPlayer()`).
 - **`PlaybackBufferManager`** (`mediaSession/videoSession/PlaybackBufferManager.ts`) — the
   H.265-playback reordering buffer `CanvasTagPlayer` creates and drives; see §4/§5 relations below.
-- **`H264Session`/`H265Session`/`MjpegSession`** (`mediaSession/videoSession/`) — upstream RTP
-  depacketizers that produce the `VideoStreamData`/`VideoInfo` objects this module consumes.
+- **`H264Session`/`H265Session`/`VP8Session`/`VP9Session`/`AV1Session`/`MjpegSession`**
+  (`mediaSession/videoSession/`) — upstream RTP depacketizers that produce the
+  `VideoStreamData`/`VideoInfo` objects this module consumes. `CanvasRenderer.setCanvas()`
+  recognizes all five non-MJPEG `codecType`s identically (`YUVWebGLCanvas`); VP8/VP9 are
+  confirmed rendering correctly end-to-end (screenshot-verified via the demo server), AV1 is
+  implemented identically but unverified end-to-end (this environment's `ffmpeg` can't produce a
+  live AV1 source — see `03-mediaSession-core-video.md`'s VP8/VP9/AV1 section for the full story,
+  including two real bugs the live-testing pass found and fixed: a `decoderWorker.ts` readiness
+  race, and a missing `UNPACK_ALIGNMENT` WebGL call).
 - **`decoderWorker`** (`worker/videoDecoder/decoderWorker.ts`) — the Web Worker `CanvasTagPlayer`
-  spawns to decode H264/H265 Annex-B NAL units into planar YUV420 frames off the main thread.
+  spawns to decode video off the main thread. Owns either an `AssemblyDecoder` (H264/H265, vendored
+  ffmpeg.wasm) or a `WebCodecsVideoDecoder` (VP8/VP9/AV1, browser-native WebCodecs `VideoDecoder`)
+  — see `07-talk-backup-worker.md`'s `AssemblyDecoder`/`WebCodecsVideoDecoder` sections.
 - **`CircularTypedArrayQueue`, `Median`, `Mean`, `IntervalTimer`, `Size`, `BrowserDetect`** (`util/`)
   — small standalone utilities consumed here; usage is described precisely below but their own
   implementations are documented in the `util/` reference.
@@ -212,7 +221,14 @@ MP4 directly and feeds it to a native `<video>` element via Media Source Extensi
   (`() => new CanvasTagPlayer()`), selected by `MediaRouter.selectVideoPlayer()` when `tagMode ===
   'canvas'` (MJPEG always, small/step-play H264, H265 whenever the browser's `MediaSource` can't
   handle the negotiated codec profile, or NVR/oversized H264 falls to `video` instead — see
-  `MediaRouter.ts:1308-1391`). `CanvasTagPlayer.init()` creates its own `CanvasRenderer` and
+  `MediaRouter.ts:1308-1391`). `VP8`/`VP9`/`AV1` aren't a case in that `switch` at all, so they fall
+  to `default: break` and land on `'canvas'` too — which is the *correct* outcome for them (not a
+  gap): `CanvasRenderer.setCanvas()`'s codec switch (below) and `decoderWorker`/
+  `WebCodecsVideoDecoder` do fully decode/render these three now (see
+  `03-mediaSession-core-video.md`'s VP8/VP9/AV1 section), and none of them would benefit from the
+  H264/H265-only MSE `<video>`-tag path this `switch` also decides between — WebCodecs decoder
+  output is raw frames, not encoded data MSE could consume, and `vendor/mp4Generator.js` has no
+  `vp08`/`vp09`/`av01` box-type support regardless. `CanvasTagPlayer.init()` creates its own `CanvasRenderer` and
   `StepBufferList`; `sendToBufferManager()` lazily creates its own `PlaybackBufferManager`
   (documented under `mediaSession`) — matching the README's class diagram, which shows
   `CanvasTagPlayer --> PlaybackBufferManager : creates`.

@@ -79,6 +79,16 @@ export class YUVWebGLCanvas extends WebGLCanvas {
       this.size.viewWidth !== undefined ? this.size.viewWidth : this.size.w,
       this.size.viewHeight !== undefined ? this.size.viewHeight : this.size.h
     );
+    // WebGL's default UNPACK_ALIGNMENT (4) assumes each row of pixel data is
+    // padded to a multiple of 4 bytes — true for H264/H265's macroblock-
+    // aligned (typically 16-multiple) widths, but not guaranteed for VP8/
+    // VP9/AV1, which have no such constraint on frame_size() (confirmed
+    // live: a real 854px-wide VP9 stream, 854 % 4 == 2, failed every
+    // `texImage2D` call with "ArrayBufferView not big enough for request" —
+    // WebGL was expecting 856-byte padded rows against this class's tightly
+    // packed `Uint8Array` planes). Declaring 1-byte alignment here matches
+    // what `Texture.fill()`/`drawCanvas()` actually provide for every codec.
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     this.YTexture = new Texture(gl, this.size);
     this.UTexture = new Texture(gl, this.size.getHalfSize());
     this.VTexture = new Texture(gl, this.size.getHalfSize());

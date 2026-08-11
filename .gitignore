@@ -14,3 +14,7 @@ node_modules
 # from `npm run build:server`'s tsc. Nothing under dist/ is hand-maintained
 # there directly (see src/index.html for the demo page source).
 /dist/
+# Local dev config loaded by scripts/loadEnv.js / src/server/loadEnv.ts —
+# machine-specific overrides, not meant to be checked in. .env.example
+# documents the available keys and stays tracked.
+/.env

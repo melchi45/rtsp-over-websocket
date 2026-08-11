@@ -370,7 +370,7 @@ sequenceDiagram
 
 ---
 
-## 3. `worker/videoDecoder` — H.264/H.265 WASM video decode worker
+## 3. `worker/videoDecoder` — video decode worker (WASM for H.264/H.265, WebCodecs for VP8/VP9/AV1)
 
 ```mermaid
 classDiagram
@@ -378,7 +378,9 @@ classDiagram
         <<Worker entry, onmessage shim>>
     }
     class AssemblyDecoder
-    decoderWorker ..> AssemblyDecoder : owns (one instance per Worker lifetime)
+    class WebCodecsVideoDecoder
+    decoderWorker ..> AssemblyDecoder : owns (H264/H265)
+    decoderWorker ..> WebCodecsVideoDecoder : owns (VP8/VP9/AV1)
 ```
 
 ### `AssemblyDecoder` (`worker/videoDecoder/AssemblyDecoder.ts`)
@@ -393,7 +395,14 @@ classDiagram
     (`worker/videoDecoder/AssemblyDecoder.ts:45-48`).
   - Constructor: `constructor(codecType: string, importScriptsFn = importScripts, fetchFn =
     fetch)` (`worker/videoDecoder/AssemblyDecoder.ts:50-82`) — `codecType === 'H264'` maps to
-    `ID = 264`, anything else to `ID = 265`. Sets `Module.onRuntimeInitialized` to `cwrap` the four
+    `ID = 264`, anything else maps to `ID = 265`. There is still no validation rejecting an
+    unrecognized `codecType` (a genuinely-mislabeled bitstream would silently decode as H.265), but
+    this is no longer reachable for VP8/VP9/AV1 in practice: `decoderWorker.ts`'s `'createDecoder'`
+    case now branches *before* construction (`'H264'`/`'H265'` → `AssemblyDecoder`, everything else
+    → `WebCodecsVideoDecoder`, see that class's section below and
+    `03-mediaSession-core-video.md`'s VP8/VP9/AV1 section for the full story of that fix) — this
+    class is only ever constructed with `'H264'`/`'H265'` now. Sets `Module.onRuntimeInitialized`
+    to `cwrap` the four
     native entry points, call `init_jsFFmpeg`, then `this.init()` and `this.setOutputSize(0)`.
     Immediately (not waiting for that callback) `fetch`es the vendored `vendor/ffmpeg.wasm`, sets
     `Module.wasmBinary` to the raw bytes (must happen **before** the glue script runs, since the
@@ -441,40 +450,121 @@ classDiagram
   reference to any main-thread class. Reachable only via the `postMessage` protocol described
   below.
 
+### `WebCodecsVideoDecoder` (`worker/videoDecoder/WebCodecsVideoDecoder.ts`)
+
+- **Structure** — decodes VP8/VP9/AV1 via the browser's native WebCodecs `VideoDecoder`, inside
+  this same Worker. Structurally parallel to `AssemblyDecoder` on purpose (`decode()`/`close()`/
+  `channelId`/`addListener('onDecoderReady', cb)`/a no-op `setOutputSize()` kept only for interface
+  parity) so `decoderWorker.ts` can hold either behind one `decoder` variable typed
+  `AssemblyDecoder | WebCodecsVideoDecoder | null`. Private fields: `decoder: VideoDecoder | null`,
+  `pending: Uint8Array[]` (the async→sync bridge queue, same pattern
+  `listen/decoder/OPUSAudioDecoder.ts` uses for WebCodecs `AudioDecoder` — see `06-listen-audio.md`),
+  `nextTimestampUs`, `closed`. `VideoDecoder`/`EncodedVideoChunk`/`VideoFrame` are referenced as
+  bare (unqualified) identifiers, not `self.VideoDecoder` — they're ordinary `dom`-lib ambient
+  globals (same mechanism `OPUSAudioDecoder.ts` relies on for `AudioDecoder`) and resolve correctly
+  through a Worker's global scope at runtime, the same way this file's own unqualified
+  `postMessage`/`MessageEvent` already do.
+- Constructor feature-detects via `typeof VideoDecoder === 'undefined'`, throwing
+  `RTSPOverWebSocketError` (`0x0312`) synchronously if unsupported — exact same pattern
+  `OPUSAudioDecoder.ts` uses for `window.AudioDecoder`. Then kicks off `configure()`
+  (fire-and-forget, `void this.configure()`) without blocking the constructor.
+- `configure()` (private, async) — tries an ordered candidate list of codec strings
+  (`candidateCodecStrings(codecType)`: `'vp8'` for VP8 — no profile/level suffix per spec; two
+  profile/bit-depth guesses each for VP9/AV1, since — unlike `AssemblyDecoder`'s static
+  `H264→264`/`H265→265` mapping — this class has no encoded frame available yet to derive the real
+  profile from: `decoderWorker.ts` only ever calls `decode()` once `onDecoderReady` has fired, and
+  frames arriving before that are buffered *outside* this class, in `decoderWorker.ts`'s own
+  `frameBuffer`), validating each with `VideoDecoder.isConfigSupported()` before committing via
+  `new VideoDecoder({ output, error })` + `.configure({ codec })`, then firing
+  `decoderReadyCallback()`. If no candidate is supported, logs via `console.error` and never fires
+  ready (frames stay buffered forever in `decoderWorker.ts` — same "silently never decodes" outcome
+  an unsupported codec has always had, not a regression).
+- `onDecodedOutput(frame)` (private, the WebCodecs `output` callback) — **two things confirmed only
+  by live testing against a real VP9 encoder, both load-bearing**:
+  1. Rejects any `frame.format !== 'I420'` up front (logs, closes, drops) rather than requesting a
+     conversion — Chrome's `copyTo()` rejects any *explicit* non-RGB `format` option outright
+     ("copyTo() doesn't support explicit copy to non-RGB formats"); I420 is by far the most common
+     native output for 8-bit VP8/VP9-profile-0/AV1-profile-0 decode, so this is the expected path,
+     not a workaround for a rare case.
+  2. Sizes the destination buffer from `frame.displayWidth`/`frame.displayHeight`, **not**
+     `frame.codedWidth`/`frame.codedHeight` — confirmed live that `codedWidth`/`codedHeight` can be
+     padded to the decoder's internal alignment (928×480 coded vs. 854×480 actually-encoded for a
+     real VP9 stream), while `displayWidth`/`displayHeight` is the unpadded real size, matching what
+     `VP8HeaderParser`/`VP9HeaderParser`/`AV1HeaderParser` (`03-mediaSession-core-video.md`) already
+     extracted from the bitstream and what `YUVWebGLCanvas`'s fixed-size textures were built for.
+     `copyTo()`'s default (no `rect`/`layout` options) already copies this unpadded region tightly
+     packed — confirmed via its resolved `PlaneLayout[]` (`{offset, stride}` per plane) matching
+     exactly a flat, no-padding buffer.
+  Always closes `frame` in a `finally`, mirroring `OPUSAudioDecoder.onDecodedOutput`'s
+  `AudioData.close()` — these hold GPU-backed resources.
+- `decode(data)` — builds `EncodedVideoChunk({ type: data.frameType === 'I' ? 'key' : 'delta',
+  timestamp: <synthetic, +1 per call>, data: data.frameData })`, calls `this.decoder.decode(chunk)`
+  in a try/catch (the underlying `VideoDecoder` can move to `'closed'` asynchronously between calls,
+  making `decode()` throw — caught and treated as `null`, matching `AssemblyDecoder`'s "nothing
+  ready yet" contract rather than crashing the worker's message handler), then returns
+  `this.pending.shift() ?? null`.
+- `close()` — closes the underlying `VideoDecoder` if not already closed, clears `pending`.
+
+- **RFC / Standard References** — no RFC of its own; decodes the same VP8/VP9/AV1 bitstreams
+  `VP8Session`/`VP9Session`/`AV1Session` (`03-mediaSession-core-video.md`) depacketize, via the
+  W3C WebCodecs API (`VideoDecoder`/`EncodedVideoChunk`/`VideoFrame`).
+
+- **Relations & Data Flow** — owned exclusively by `decoderWorker.ts`, same as `AssemblyDecoder`;
+  no reference to any main-thread class.
+
 ### `decoderWorker` (`worker/videoDecoder/decoderWorker.ts`)
 
-- **Structure** — module-level state (not a class): `decoder: AssemblyDecoder | null`, `frameRate`,
-  `decodedClock`, `usePacketDrop = true`, `isDecoderReady = false`, `decoderIndex = 0`, `playMode`,
+- **Structure** — module-level state (not a class): `decoder: AssemblyDecoder | WebCodecsVideoDecoder | null`,
+  `frameRate`, `decodedClock`, `usePacketDrop = true`, `isDecoderReady = false`, `decoderIndex = 0`,
   `toBeContinueDropFrameFlag = false`, `threshold`/`threshold2` (frame-drop time budgets in ms),
-  and a `frameBuffer: DecoderWorkerFrame[]` queue used while the WASM decoder is still booting
+  and a `frameBuffer: DecoderWorkerFrame[]` queue used while the decoder is still becoming ready
   (`worker/videoDecoder/decoderWorker.ts:63-73`). Pre-declares `globalThis.Module` so
   `AssemblyDecoder`'s constructor can assign `Module.onRuntimeInitialized` without a
-  `ReferenceError` before the Emscripten glue script has run.
+  `ReferenceError` before the Emscripten glue script has run — inert for the `WebCodecsVideoDecoder`
+  path, which never touches `Module`.
 
 - **Method Analysis** — message types handled by `receiveMessage(event)`
-  (`worker/videoDecoder/decoderWorker.ts:136-183`), each delegating to `AssemblyDecoder`:
-  - `'createDecoder'` — `decoder = new AssemblyDecoder(message.data)`; sets `decoder.channelId`;
-    registers `onDecoderReady` as the `'onDecoderReady'` listener.
+  (`worker/videoDecoder/decoderWorker.ts:136-183`), each delegating to whichever decoder is active:
+  - `'createDecoder'` — `decoder = message.data === 'H264' || message.data === 'H265' ? new
+    AssemblyDecoder(message.data) : new WebCodecsVideoDecoder(message.data)`; sets
+    `decoder.channelId`; registers `onDecoderReady` as the `'onDecoderReady'` listener. Everything
+    below this point is decoder-agnostic — confirmed live, no other branching needed anywhere in
+    this file.
   - `'terminate'` — `decoder.close()`, then posts `{ type: 'terminated', channelId }`.
   - `'setOutputSize'` — forwards to `decoder.setOutputSize(message.data)`.
   - `'setDecoderIndex'` — sets the module-level `decoderIndex` (used only in `lowPerformance`
     messages' payload, to identify which decoder instance is struggling).
   - `'useDropPacket'` — toggles `usePacketDrop`.
   - `'setFrameRate'` — updates `frameRate`/`threshold`, but **only if** `usePacketDrop` is true.
-  - `'playMode'` — records `playMode` (`'Playback'` vs. live).
+  - `'playMode'` — accepted but no longer stored (see the fixed bug below — the module-level
+    `playMode` variable this used to set became write-only once `onDecoderReady()`'s
+    `playMode === 'Playback'` check was removed). `data.playMode` on an individual
+    `DecoderWorkerFrame` (a *different*, per-message field, still read by `decodeLiveMessage`) is
+    unaffected.
   - `'decode'` — if `isDecoderReady`, calls `decodeLiveMessage(message.data)` directly; otherwise
     buffers the frame into `frameBuffer` for later replay by `onDecoderReady()`.
-  - This is the drop-frame performance heuristic layer *on top of* `AssemblyDecoder.decode()`:
+  - This is the drop-frame performance heuristic layer *on top of* `decoder.decode()`:
     `decodeLiveMessage`/`onDecoderReady`'s buffered-replay loop always decode I-frames
     unconditionally (tracking how long that took against a per-framerate `threshold`), but skip a
     subsequent P/B-frame if either the *previous* frame already tripped the threshold
     (`toBeContinueDropFrameFlag`) or the last measured decode time exceeds `threshold`. Both paths
     send a `'lowPerformance'` message back to the main thread when a frame decode is slow enough to
-    warrant reporting. A real latched-forever bug is preserved here: `isDecoderReady` only becomes
-    `true` inside `onDecoderReady()`'s `if (frameBuffer.length > 0 || playMode === 'Playback')`
-    guard, so if the WASM runtime finishes booting while the buffer is still empty and
-    `playMode` isn't yet `'Playback'`, every subsequent `'decode'` message queues forever
-    (`worker/videoDecoder/decoderWorker.ts:55-61` doc comment).
+    warrant reporting — though for `WebCodecsVideoDecoder` this heuristic effectively never fires,
+    since its `decode()` returns near-instantly (submits to an async/hardware queue and shifts a
+    *previously*-decoded frame off its own FIFO) rather than blocking like the WASM path; it's
+    measuring call overhead, not real decode latency, for VP8/VP9/AV1 — accepted, not a bug to chase.
+    **A real latched-forever bug here was fixed** (not preserved) after live VP9 testing surfaced
+    it: `isDecoderReady` used to only become `true` inside `onDecoderReady()`'s
+    `if (frameBuffer.length > 0 || playMode === 'Playback')` guard, so if the decoder finished
+    becoming ready while the buffer was still empty and `playMode` wasn't yet `'Playback'`, every
+    subsequent `'decode'` message queued forever, no error. `AssemblyDecoder`'s WASM load (network
+    fetch + instantiate) was slow enough that `frameBuffer` always had a queued frame by the time
+    `onDecoderReady` fired, so this never manifested there — but `WebCodecsVideoDecoder.configure()`
+    resolves near-instantly, hitting the empty-buffer trap on essentially every Live-mode session
+    (confirmed live: permanently blank canvas, zero errors). The guard's own asymmetry — Playback
+    mode already bypassed it unconditionally — was the tell that this was a latent bug the WASM
+    path's timing happened to never trigger, not a deliberate invariant; removed rather than kept
+    (`worker/videoDecoder/decoderWorker.ts`'s `onDecoderReady()` doc comment has the full writeup).
   - `sendMessage(type, data)` — thin `self.postMessage({ type, data })` wrapper used by every
     outbound message below.
 
@@ -1216,7 +1306,13 @@ classDiagram
     `worker/backup/BackupSession.ts:222-271`) — on the very first video frame, lazily creates
     `fileInfo = { pos: 4, tailSize: 0 }` and immediately sends a `'backupResult'` message with
     `errorCode: 0x0600` ("backup started"); normalizes codec names (`MJPEG -> 'MJPG'`, `H264 ->
-    'H264'`, `H265 -> 'HEVC'`); computes `sourceInputMs` from the RTP timestamp fields (seconds +
+    'H264'`, `H265 -> 'HEVC'` — there is no `else` branch, so a `'VP8'`/`'VP9'`/`'AV1'`
+    `data.codectype` leaves `this.videoFrame.codectype` `undefined` rather than being rejected or
+    passed through; local-backup/export (AVI file writing) for these three codecs remains
+    unimplemented — a separate, still-open gap from live decode/render (§3's
+    `AssemblyDecoder`/`WebCodecsVideoDecoder`, which *does* now handle all five video codecs);
+    computes `sourceInputMs` from
+    the RTP timestamp fields (seconds +
     microseconds, rounded down to the nearest 10ms); records `startDate`/`endDate` and sends a
     `'timestamp'` progress message whenever real timestamp fields are present; on the first frame
     only, calls `createAviFile.initHeader('video', videoFrame)`.
@@ -1393,5 +1489,6 @@ sequenceDiagram
 | AVI container | Microsoft RIFF/AVI | Vendor (Microsoft) | No IETF/ITU standard exists; `AviFormatWriter`/`AviFileWriter`/`AudioHeader`/`VideoHeader`/`BackupSession` |
 | ZIP archive | PKWARE .ZIP spec | Vendor (PKWARE) | No IETF/ITU standard exists; `zipWorker.ts` |
 | Video codecs in backup/decode | H.264, H.265 | ITU-T / ISO-IEC | `AssemblyDecoder`, `VideoHeader`'s `aviHandler` field |
+| VP8/VP9/AV1 decode | W3C WebCodecs (`VideoDecoder`/`EncodedVideoChunk`/`VideoFrame`) | W3C | `WebCodecsVideoDecoder` — no vendored WASM decoder for these, decoded natively by the browser; backup/export (AVI) still unimplemented for these three, unlike decode |
 | Audio codec in backup transcode | AAC | ISO/IEC | `AssemblyTranscoder`, `AudioHeader.settingAAC` |
 | Worker message passing (all workers) | — | — | Internal plain-data protocol, no external standard |

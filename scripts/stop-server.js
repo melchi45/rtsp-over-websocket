@@ -2,13 +2,22 @@
 // Stops whatever src/server (npm run start:server) left listening on its
 // REST/ws(s) ports — same RTSP_WS_HTTP_PORT/RTSP_WS_HTTPS_PORT env vars as
 // src/server/config.ts, so this targets the right ports even if they were
-// overridden at start time.
+// overridden at start time. Also stops MediaMTX, but *only* if it was
+// started by this repo's own scripts/ensure-mediamtx.js (tracked via the pid
+// file it writes) — a MediaMTX instance this repo didn't start (e.g. run
+// manually, or shared with something else) is left running untouched.
 'use strict';
 
 const { execSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+require('./loadEnv').loadEnv();
 
 const HTTP_PORT = Number(process.env.RTSP_WS_HTTP_PORT) || 4000;
 const HTTPS_PORT = Number(process.env.RTSP_WS_HTTPS_PORT) || 4001;
+const MEDIAMTX_PID_FILE = path.join(os.tmpdir(), 'rtsp-over-websocket-mediamtx.pid');
 
 function pidsListeningOn(port) {
   try {
@@ -25,6 +34,39 @@ function pidsListeningOn(port) {
 function sleep(ms) {
   execSync(`sleep ${ms / 1000}`);
 }
+
+function processCommand(pid) {
+  try {
+    return execSync(`ps -p ${pid} -o comm=`, { encoding: 'utf8' }).trim();
+  } catch {
+    return null; // no such pid
+  }
+}
+
+/** Only kills the pid recorded in MEDIAMTX_PID_FILE, and only if that pid is
+ * still actually a mediamtx process (guards against a stale pid file
+ * outliving a reboot and getting reused by an unrelated process). Always
+ * removes the pid file afterward so a dead/stale entry doesn't linger. */
+function stopOwnedMediaMtx() {
+  if (!fs.existsSync(MEDIAMTX_PID_FILE)) return;
+  const pid = Number(fs.readFileSync(MEDIAMTX_PID_FILE, 'utf8').trim());
+  const command = pid && processCommand(pid);
+  if (!command) {
+    console.log(`[stop-server] ${MEDIAMTX_PID_FILE} pid ${pid || '(invalid)'} is no longer running — removing stale pid file`);
+  } else if (!command.includes('mediamtx')) {
+    console.log(`[stop-server] pid ${pid} in ${MEDIAMTX_PID_FILE} is now '${command}', not mediamtx — leaving it alone`);
+  } else {
+    try {
+      process.kill(pid, 'SIGTERM');
+      console.log(`[stop-server] sent SIGTERM to mediamtx pid ${pid}`);
+    } catch {
+      // already gone
+    }
+  }
+  fs.unlinkSync(MEDIAMTX_PID_FILE);
+}
+
+stopOwnedMediaMtx();
 
 const pids = Array.from(new Set([...pidsListeningOn(HTTP_PORT), ...pidsListeningOn(HTTPS_PORT)]));
 

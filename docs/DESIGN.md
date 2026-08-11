@@ -58,6 +58,22 @@ justification of each):
   `ffmpeg`'s stdin sidesteps this entirely.
 - **Source format selection prefers `avc1` (H.264)** over VP9/AV1 sources at the same height, independent of the
   *output* codec — this build's `ffmpeg` AV1 decoder is unreliable on YouTube's AV1 formats.
+- **`-strict experimental` on VP9 *and* AV1 *output*** (a separate concern from the source-decode note above) —
+  ffmpeg's RTP muxer marks both payloaders experimental and refuses to write the output header without it (confirmed
+  live: `Packetizing VP9/AV1 is experimental ... Please set -strict experimental`).
+- **AV1 *output* needs ffmpeg 9+ — it's a real version floor, not just a missing flag.** ffmpeg 4.4.2 and 7.1.1 have
+  no `a=rtpmap` entry for AV1 in the RTP muxer at all (confirmed by dumping the actual SDP via `-loglevel debug` —
+  bare `m=video 0 RTP/AVP 96`, no rtpmap line — and by grepping `libavformat.so`'s compiled
+  `a=rtpmap:%d <CODEC>/<rate>` string table), so MediaMTX correctly rejects it as invalid SDP (`Server returned 400
+  Bad Request`; MediaMTX logs `invalid SDP: media 1 is invalid: clock rate not found`) and `-strict experimental`
+  has no effect there — the feature is simply absent, not gated. ffmpeg 9.0 (`ppa:ubuntuhandbook1/ffmpeg9`) *does*
+  have the rtpmap entry (exact version it landed in is unconfirmed; ffmpeg 8 untested) — on 9.0, AV1 output works
+  exactly like VP9: needs `-strict experimental` and nothing else. Confirmed live end-to-end on ffmpeg 9.0 through
+  the real REST API (session reaches `status: "live"`, publishes real AV1 frames to MediaMTX). See `README.md`'s
+  "External tools" section for the full investigation, including two earlier wrong guesses corrected in sequence —
+  first "needs ffmpeg 6.0+", then "no ffmpeg version fixes this at all". `codecCapabilities.ts`'s `getVideoEncoder`
+  only probes `ffmpeg -encoders` (which does list `libaom-av1`/`libsvtav1`), not RTP-muxer capability or version, so
+  an AV1 session on a pre-9.0 ffmpeg still isn't caught until the session actually runs.
 - **`--merge-output-format mp4`, not `mkv`**, because only `mp4`'s fallback (an MPEG-TS-compatible bytestream for
   non-seekable pipe output) actually produces bytes over a stdout pipe; `mkv` silently emits zero bytes in this
   mode.
