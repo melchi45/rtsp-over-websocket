@@ -18,4 +18,4 @@ limitations under the License.
 Total Plugin-Free Web Browser Viewer Framework
 https://www.hanwhavision.com
 
-Security Solution Development Division / Web Software Development Team
+Development Center / Device Software Development Team
