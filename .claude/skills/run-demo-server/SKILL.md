@@ -74,3 +74,6 @@ npm run test:player
 Most failures in a fresh checkout are `ENOENT` on `legacy-player/...` — that's the legacy-parity test submodule not
 being checked out, not a real regression. Only treat a failure as a real problem if its error is something other
 than that `ENOENT`.
+
+`SunapiManager.live.test.ts` is unrelated and always skipped in this run — it only activates with
+`RUN_LIVE_DEVICE_TEST=1` set (a manual test against a real camera; see the README).

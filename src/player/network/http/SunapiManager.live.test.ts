@@ -1,19 +1,30 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { SunapiManager } from './SunapiManager';
+import { loadEnv } from './loadEnv';
 
 /**
  * Manual/local-only smoke test against a real camera on the tester's LAN.
  * Skipped by default — it needs network access to a specific device and
  * will just fail (timeout/connection refused) anywhere else (CI, other
- * machines). Opt in explicitly, supplying the device's own credentials via
- * environment variables (never hardcode a real device's credentials here —
- * this file is committed to source control):
+ * machines). Opt in by supplying the device's own credentials, either via
+ * the repo-root `.env` (copy `.env.example` to `.env` — see the
+ * RTSP_LIVE_TEST_* entries there) or real environment variables (these
+ * always win over `.env`, matching loadEnv()'s usual convention). Never
+ * hardcode a real device's credentials directly in this file — it's
+ * committed to source control.
  *
- *   RUN_LIVE_DEVICE_TEST=1 \
- *   RTSP_LIVE_TEST_HOSTNAME=192.168.x.x \
- *   RTSP_LIVE_TEST_USERNAME=admin \
- *   RTSP_LIVE_TEST_PASSWORD=... \
+ *   # .env (once):
+ *   RUN_LIVE_DEVICE_TEST=1
+ *   RTSP_LIVE_TEST_HOSTNAME=192.168.x.x
+ *   RTSP_LIVE_TEST_USERNAME=admin
+ *   RTSP_LIVE_TEST_PASSWORD=...
+ *
+ *   npx vitest run SunapiManager.live.test.ts
+ *
+ *   # or, without touching .env:
+ *   RUN_LIVE_DEVICE_TEST=1 RTSP_LIVE_TEST_HOSTNAME=192.168.x.x \
+ *   RTSP_LIVE_TEST_USERNAME=admin RTSP_LIVE_TEST_PASSWORD=... \
  *   npx vitest run SunapiManager.live.test.ts
  *
  * RTSP_LIVE_TEST_PORT (default 443) and RTSP_LIVE_TEST_PROTOCOL (default
@@ -24,7 +35,18 @@ import { SunapiManager } from './SunapiManager';
  * the device via the browser `XMLHttpRequest` global, which only jsdom
  * provides.
  */
-const describeLive = process.env.RUN_LIVE_DEVICE_TEST === '1' ? describe : describe.skip;
+loadEnv();
+
+// `describe.skip(name, fn)` still calls `fn()` synchronously during test
+// collection (that's how it discovers the `it()`s inside to report as
+// skipped) — only the `it()` bodies themselves are skipped. So the
+// credentials guard below must itself be gated on `runLive`, not just
+// wrapped in `describeLive`/`describe.skip` — otherwise it throws during
+// collection on every `npm run test:player` run everywhere credentials
+// aren't set (i.e. everywhere except a deliberately-configured local
+// machine), defeating the entire "skipped by default" point of this file.
+const runLive = process.env.RUN_LIVE_DEVICE_TEST === '1';
+const describeLive = runLive ? describe : describe.skip;
 
 describeLive('SunapiManager against a real device (manual)', () => {
   // The device uses a self-signed TLS certificate; Node's default HTTPS
@@ -36,7 +58,7 @@ describeLive('SunapiManager against a real device (manual)', () => {
   const hostname = process.env.RTSP_LIVE_TEST_HOSTNAME ?? '';
   const username = process.env.RTSP_LIVE_TEST_USERNAME ?? '';
   const password = process.env.RTSP_LIVE_TEST_PASSWORD ?? '';
-  if (!hostname || !username || !password) {
+  if (runLive && (!hostname || !username || !password)) {
     throw new Error(
       'RUN_LIVE_DEVICE_TEST=1 requires RTSP_LIVE_TEST_HOSTNAME/RTSP_LIVE_TEST_USERNAME/RTSP_LIVE_TEST_PASSWORD to be set — see this file\'s top comment.'
     );

@@ -38,6 +38,10 @@ npm run test:player            # vitest run
 - **`src/player`'s parity tests need a `legacy-player` git submodule** (the original legacy source) that isn't
   always checked out. Failures there are `ENOENT`, not a real regression — check the error text before assuming a
   change broke something.
+- **`src/player/network/http/SunapiManager.live.test.ts`** is a separate, deliberately-skipped-by-default live test
+  against a real camera — unrelated to the `legacy-player` submodule gap above. It only runs (and only fails loudly,
+  demanding `RTSP_LIVE_TEST_HOSTNAME`/`_USERNAME`/`_PASSWORD`) when `RUN_LIVE_DEVICE_TEST=1` is explicitly set; leave
+  it alone otherwise. See the README's "Live-device smoke test" section.
 - **AV1 *output* sessions need ffmpeg 9+ and `-strict experimental` — both are required, neither alone is enough.**
   ffmpeg 4.4.2 (Ubuntu 22.04 apt) and 7.1.1 (`ppa:ubuntuhandbook1/ffmpeg7`) fail identically (`Server returned 400
   Bad Request`; MediaMTX logs `invalid SDP: media 1 is invalid: clock rate not found`) because ffmpeg's RTP muxer

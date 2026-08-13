@@ -813,3 +813,181 @@ when there isn't" guard already used for the analogous case in the `src`-attribu
 `docs/player/01-elements-interface-exceptions.md`'s updated class-level lifecycle-callback bullet
 and new `disconnectedCallback()` Method Analysis bullet for the full writeup — that doc's own prior
 note about the missing callback is what pointed straight at the fix once the root cause was known.
+
+## Ported `XmlParser`/`AttributeService`/`ProfileConfig` from `react-wisenet-player`'s legacy jQuery services
+
+`react-wisenet-player` (the Chrome-extension consumer this library's `react/Player.tsx` was
+originally adapted from) still had a legacy, jQuery-dependent SUNAPI capability-flags layer
+(`sunapi/XmlParser.jsx`/`AttributeService.jsx`/`ProfileConfig.jsx`) that had never been ported to
+this repo's TypeScript rewrite. Ported all three into `src/player/network/http/` — `XmlParser.ts`
+(native `DOMParser`/`querySelector` instead of jQuery's `$.parseXML`/`.find()`/`.attr()`, verified
+the attribute-name CSS selectors translate directly with no behavior change), `AttributeService.ts`
+(5,516 lines — the ~250-call capability-flag derivation service, plus ~17 `parse*CgiAttributes`
+methods), and `ProfileConfig.ts` (a small static lookup table, unchanged). See
+`docs/player/02-network.md`'s new `XmlParser`/`AttributeService`/`ProfileConfig` sections for the
+full per-class writeup, including every preserve-vs-fix judgment call made during the port.
+
+**One fix found and applied during porting, not just preserved**: legacy's local `paserXML` helper
+(used by all 17 `parse*CgiAttributes` methods, ~2800 lines) was `function paserXML(obj, target) {
+return paserXML(obj, target); }` — an unconditional self-recursive stub, reassigned nowhere
+(confirmed via grep), that stack-overflows the instant any of those methods actually runs. Every
+call site's arguments matched `XmlParser.parseCgiSection`'s signature exactly, so this port's
+`private paserXML(...)` delegates there instead — the same judgment `SunapiManager.ts` already
+applied to its own confirmed-dead `sunapiClient.join()` chain (see that entry above): faithfully
+porting guaranteed-crash dead code would make 17 methods permanently unusable, not "a complete,
+usable port." A few small, unambiguous bugs (two `initialize()` fetches silently skipped because
+their callbacks were pushed as bare function references instead of being invoked; an
+undeclared-`deferred`-variable reference in `getAppStatus` that wouldn't even compile in TS) were
+fixed the same way. Angular-app-shell-dependent `login()`/`loginBypass()`/`checkInitPw()` were not
+ported — no reachable equivalent exists in this pure network/protocol library.
+
+**Not yet wired into anything live**: `AttributeService`/`XmlParser` exist as standalone,
+constructible classes but aren't called from `SunapiManager`, `Player.tsx`, or
+`RTSPOverWebSocket.ts` — `SunapiManager.getAttributes()` still returns raw, unparsed XML text to
+any current caller (confirmed: real devices answer `/stw-cgi/attributes.cgi/attributes` with XML,
+not JSON — `SunapiClient.parseResponse()` hands back the response text as-is whenever
+`xhr.responseXML !== null`). Wiring this capability layer into the live connection flow is
+deliberate follow-up work.
+
+Alongside the port, added a manual/local-only live-device smoke test
+(`network/http/SunapiManager.live.test.ts`, `@vitest-environment jsdom` override since
+`SunapiClient` needs a real `XMLHttpRequest` global) covering `SunapiManager.init()` +
+`getAttributes()` against a real camera — gated behind `RUN_LIVE_DEVICE_TEST=1` so it's skipped
+(not failed) in every other environment, including CI. Credentials are never hardcoded in the
+test file itself (it's committed to source control) — read from `RTSP_LIVE_TEST_HOSTNAME`/
+`_USERNAME`/`_PASSWORD` env vars, loadable via a new `network/http/loadEnv.ts` (a copy of
+`scripts/loadEnv.js`/`src/server/loadEnv.ts`'s minimal dependency-free `.env` parser, kept separate
+because `src/player` compiles to ESM with no native `__dirname` — uses `import.meta.url` +
+`fileURLToPath` instead). `.env.example` documents the new keys.
+
+## `react/Player.tsx`'s raw-attribute SUNAPI path had a real login/`play()` race — fixed with an opt-in `useSunapi` flag
+
+Live-tested against a real camera through `react-wisenet-player` (the Chrome-extension consumer):
+the raw-attribute approach (`<rtsp-over-websocket password=... autoplay />`, relying entirely on
+the element's own `connectedCallback()`) connected *intermittently* — sometimes fine, sometimes
+"device refuse the connection" or corrupted RTSP/RTP data. Root cause: `connectedCallback()` calls
+`updateSunapiManager()` (asynchronous — a real HTTP round trip) and, separately, `play()`
+(synchronous, if the `autoplay` attribute is present) in the same pass — nothing sequences one
+after the other, so `play()` routinely fires before the SUNAPI login it needs has actually
+finished, racing an authenticated stream open against a login that's still in flight.
+
+Fixed at the call site, not by changing `connectedCallback()`'s own timing (a broader, riskier
+change): `react/Player.tsx` now does the SUNAPI login itself first (`SunapiManager.init()`),
+assigns the result to `sunapiClient` only on success, and calls `play()` explicitly only after
+that — removing the race by construction, matching how `react-wisenet-player`'s own `Player.tsx`
+was subsequently fixed to match (that fix flowed the other direction: this library's already-
+working `react/Player.tsx` was the reference implementation `react-wisenet-player`'s broken one was
+brought in line with). Added `useSunapi?: boolean` (`IDevice`, default `true`) so a consumer can
+still opt into the raw-attribute path deliberately (for comparison/testing — see `src/index.html`'s
+React panel's "Connect via SUNAPI Manager" checkbox) without it being the default, race-prone
+behavior. See `docs/player/01-elements-interface-exceptions.md`'s `Player` Method Analysis for the
+full per-mode writeup.
+
+Separately found in the same investigation: `statistics`/`https` were passed as the empty-string/
+`undefined` "boolean HTML attribute" idiom (matching how `autoplay` is correctly handled), but
+`RTSPOverWebSocket.ts` has *real* property setters for both (`set statistics(v: boolean)`/
+`set https(v: boolean)`) that React assigns to directly rather than via `setAttribute` for a
+custom element — and both throw `RTSPOverWebSocketError` ("this value need to a boolean type") on
+anything that isn't strictly `typeof v === 'boolean'`. An empty string satisfied neither. Fixed by
+passing real `!!`-coerced booleans for just those two props; `autoplay` correctly keeps the
+bare-flag idiom, since it has no matching property setter and *is* read via `getAttribute`.
+
+## Stale `StreamPlayer` never rebuilt after a late SUNAPI login — a second, independent bug behind "SUNAPI login succeeds, RTSP still 401s"
+
+Follow-up to the entry above, found while porting the same SUNAPI-login-then-play pattern into
+`src/index.html`'s demo panels (which — unlike `react/Player.tsx` — can legitimately call `play()`
+more than once on the same element: an initial raw/unauthenticated attempt that gets challenged,
+then a SUNAPI login supplied afterward in response). After that login succeeded and
+`sunapiClient` was attached, the *next* `play()` still produced the exact same RTSP-level 401.
+
+Root cause: `play()` only ever constructs `this.player` (`new StreamPlayer(info, sunapiClient)`)
+once per element lifetime — `if (this.player === undefined || this.player === null)` — and
+**nothing in `RTSPOverWebSocket.ts` ever resets it back to `null`**, not even `stop()` (which only
+sends a close command through the existing player, keeping the reference). So the *first* `play()`
+call permanently bakes in whatever `sunapiClient` was attached at that exact moment — if that was
+before a SUNAPI login supplied credentials, every subsequent `play()` keeps reusing that same
+no-sunapiClient `StreamPlayer`/`RtspClient`, answering the digest challenge without one regardless
+of anything attached afterward. `react/Player.tsx` never hits this (it only ever calls `play()`
+once, after login) — which is exactly why this second bug went unnoticed until the demo panels'
+two-attempt flow exercised it.
+
+Fixed at the `sunapiClient` setter: if `this.player` already exists when a client is attached,
+stop it and discard the reference (`this.player = null`) so the next `play()` rebuilds one with
+the client that was just attached. A no-op for the common (`react/Player.tsx`) case where
+`this.player` is still null at that point. See
+`docs/player/01-elements-interface-exceptions.md`'s `sunapiClient`-setter Method Analysis bullet
+for the full writeup.
+
+Same investigation also found `buildAbsoluteRTSPURL()` (the purely-for-display URL reflected onto
+`src` and dispatched via `'generatertspurl'`) unconditionally included `username`/`password` in
+the shown URL whenever they happened to be set on the element — misleading and an unnecessary
+credential leak once a `sunapiClient` is attached, since SUNAPI-authenticated sessions answer the
+RTSP challenge out of band and don't need (or want) plaintext credentials in a URL used only for
+observation. Fixed by skipping that whole authority segment whenever `this.sunapiClient !== null`.
+
+## `src/index.html` demo panels redesigned around a "SUNAPI-first" connect flow
+
+Both the React and RTSP URL demo panels gained a "Connect via SUNAPI Manager" checkbox — in the
+RTSP URL panel specifically, moved into the main connect form (decided *before* the first connect
+attempt) rather than only appearing inside the post-401 "Credentials required" step, since the
+whole point is to attempt the SUNAPI login *first*, not only as a fallback once plain RTSP auth
+fails.
+
+When checked, the RTSP URL panel no longer assigns `.src` directly (which unconditionally calls
+`play()` immediately for an already-connected element — `applySrcAttribute()`'s
+`if (this.isConnected) { ...; this.play(); }`, exactly the ordering this flow needs to avoid).
+Instead it parses the pasted URL itself (`parseSrcUrl()`, a trimmed standalone reimplementation of
+`applySrcAttribute()`'s path/query parsing — necessary since that method can't be invoked directly
+and reflects `.src` as a side effect that would trigger the very `play()` call being avoided),
+sets the non-credential attributes, and attempts a standalone `SunapiManager` login
+(`attemptSunapiConnect()`) before ever calling `play()`. A URL with no (or wrong) credentials 401s
+immediately — same "Credentials required" UI either way, whether reached via a SUNAPI REST 401 or
+(SUNAPI unchecked) a real RTSP-level challenge; retrying re-runs the same `attemptSunapiConnect()`
+with the entered username/password, using a `pendingSrcInfo` var to carry hostname/port/device
+across from the initial parse (falling back to the element's own current attributes if the retry
+is reached without that initial SUNAPI-first attempt having run — e.g. SUNAPI was only checked
+after already hitting the default RTSP-level 401 path).
+
+**A related, non-obvious JS gotcha found while wiring this up**: `SunapiManager.init()` isn't
+declared `async`, so when it constructs its internal `SunapiClient` synchronously — which
+validates username/password up front and throws `RTSPOverWebSocketError`/`AuthError` right there
+for an empty one — that throw happens *before* there's a `Promise` to attach `.catch()` to at all.
+It escaped as a plain uncaught synchronous exception (visible for the very first connect attempt,
+most of the time, since the URL usually has no password yet) instead of being caught by the
+`.catch()` chained onto `sunapiManager.init(...)`'s return value. Fixed by wrapping the `init(...)`
+call itself in `try`/`catch` and funneling both the synchronous throw and the normal async
+rejection into the same `Promise.reject(...)`-then-`.catch()` path, so "empty credentials" is
+handled identically to a real 401 from the device.
+
+## `.env` support extended to `src/player`'s live-device test
+
+`network/http/SunapiManager.live.test.ts` (added alongside the port above) now loads
+`RTSP_LIVE_TEST_HOSTNAME`/`_USERNAME`/`_PASSWORD`/`_PORT`/`_PROTOCOL` from the repo-root `.env` via
+the new `network/http/loadEnv.ts`, matching the existing `.env` convention `src/server`/
+`scripts/` already use (real env vars still win over `.env`, same as everywhere else). Kept as a
+*third* copy of the minimal dependency-free loader (alongside `scripts/loadEnv.js`/
+`src/server/loadEnv.ts`) rather than a shared module, for the same reason those two are already
+separate: `src/player` is yet another distinct build target (ESM output, no native `__dirname` —
+uses `import.meta.url`/`fileURLToPath` instead) that a CJS-assuming shared implementation
+wouldn't work under.
+
+**Follow-up bug, found immediately after wiring `.env` support up and confirmed live**: the
+credentials guard (`if (!hostname || !username || !password) throw new Error(...)`) was written
+assuming it only ran when actually opted in, guarded by sitting inside
+`describeLive(...)`/`describe.skip(...)`'s callback — but Vitest (like Jest) still **calls that
+callback synchronously during test collection even for `describe.skip`**, specifically so it can
+discover the `it()`s inside to report them as skipped; only the `it()` *bodies* are actually
+skipped. That means the guard threw unconditionally on every single `npm run test:player` run
+anywhere `RTSP_LIVE_TEST_*` wasn't set — i.e. everywhere except a machine with real credentials
+already configured — the exact opposite of "skipped by default," and silently contradicted this
+file's own top comment plus the README/CLAUDE.md text describing it. Not caught immediately
+because the failure *looked* identical to the intended "you opted in but forgot credentials"
+error, just always active. Found via a real live-testing round-trip: the user filled in their own
+`.env` for real (device `192.168.214.40`), which is what actually exposed the *next* bug this
+guard had been masking (`runLive`-gated network attempt itself hanging against a device
+unreachable from an agent sandbox, expected) — going back to verify the plain "skip, no `.env`"
+path still worked (it didn't) is what surfaced this one. Fixed by gating the throw itself on
+`runLive` (the same flag that picks `describe`/`describe.skip`), not just on being inside the
+`describeLive(...)` call — confirmed via a temporary `.env` move-aside-and-restore round trip: 2
+tests correctly skip (not fail) with no `.env` present, and correctly attempt a real connection
+once it's back.

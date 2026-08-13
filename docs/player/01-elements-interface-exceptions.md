@@ -76,7 +76,8 @@ their exact location rather than fixed silently (file header comment,
   `<video>` (or back) at runtime by `onRTSPOverWebSocketVideoMode()` (`:3375-3435`) in response to
   `MediaRouter`'s rendering-mode decision.
 - **`_sunapiMng = new SunapiManager()`** (`:90`) — owns the optional SUNAPI REST/digest-auth
-  client; `sunapiClient` get/set (`:1293-1306`) proxies to it.
+  client; `sunapiClient` get/set (`:1320-1356`) proxies to it. The setter also discards a stale
+  `this.player` if one already exists — see its own Method Analysis bullet below for why.
 - A large block of `?HTMLElement`/`?SVGPolylineElement` fields (`:144-215`) for the statistics
   panel, network-state dot, context menu, and gesture-notification overlays — all lazily created
   by the private DOM-builder methods (`statisticsDiv()`, `networkstateDiv()`, `contextmenuDiv()`,
@@ -177,9 +178,14 @@ their exact location rather than fixed silently (file header comment,
   `buildAbsoluteRTSPURL()` to get a full `rtsp://` URL, reflects that back onto the `src`
   attribute (guarded by `_reflectingSrc`), and dispatches a `'generatertspurl'` event — this runs
   on every `play()`/`resume()`/`pause()`/`seek()`/etc., not just on real external `src` changes.
-- `buildAbsoluteRTSPURL(pathPart)` (private, `:4578-4592`) — joins `username`/`password`/
+- `buildAbsoluteRTSPURL(pathPart)` (private, `:4673-4692`) — joins `username`/`password`/
   `hostname`/`port` (from the live accessors, not raw fields) with `generateRTSPURL()`'s path into
-  one `rtsp://[user[:pass]@]host[:port]/{path}` string, purely for display/observation.
+  one `rtsp://[user[:pass]@]host[:port]/{path}` string, purely for display/observation. Skips the
+  `username[:password]@` authority segment entirely whenever `this.sunapiClient !== null` — a
+  SUNAPI-authenticated session answers the RTSP digest challenge out of band (see `RtspClient`'s
+  `sunapiClient` branch in `docs/player/02-network.md`, only reachable when the raw password is
+  empty), so this purely-for-display URL no longer leaks a plaintext username/password once one is
+  attached, regardless of whether `username`/`password` still happen to be set on the element.
 
 **Playback control** (all public; all throw `RTSPOverWebSocketError` with `errorCode: 0x1000` if
 `this.player` doesn't exist yet)
@@ -231,6 +237,20 @@ their exact location rather than fixed silently (file header comment,
   doc comment (`:2193-2204`) spells out the intended caller flow: on a `0x0206` ("credentials
   rejected") or `0x0403` ("no credentials to answer the challenge with") `error` event, prompt the
   user and call this instead of `stop()`+`play()`.
+- `sunapiClient` setter (`:1320-1356`) — the *other* way a caller supplies late credentials: attach
+  a SUNAPI-authenticated `SunapiClient` (via a standalone `SunapiManager.init()`, not this
+  element's own attributes) instead of answering the RTSP-level 401 with a raw password. Beyond
+  attaching it to `_sunapiMng`, it also discards `this.player` (calling `stop()` first if one
+  exists) whenever one is already present — a fix, not original behavior. `play()` only ever
+  constructs `this.player` once per element lifetime (`if (this.player === undefined || this.player
+  === null)`, `:4191-4193`; nothing else in this file ever resets it back to `null`), baking in
+  whatever `_sunapiMng.getSunapiClient()` returned *at that moment*. Without this reset, a
+  sunapiClient attached *after* an earlier `play()` attempt (e.g. a raw/unauthenticated first try
+  that got challenged, then credentials arrived and produced this sunapiClient) would silently have
+  no effect: the next `play()` call would keep reusing the stale, no-sunapiClient player, and the
+  caller would see the exact same 401 again despite a successful SUNAPI login. A no-op for the
+  common case where a sunapiClient is attached *before* the first `play()` ever runs (`this.player`
+  is still `null`, e.g. `react/Player.tsx`'s `useSunapi` flow, which never hits this at all).
 - `play()` no longer validates username/password up front (see above) — the actual `0x0403`
   error now originates deeper, in `RtspClient`'s digest-auth header builder, and surfaces to this
   element the same way any other connection error does: via the ordinary `error` callback /
@@ -775,7 +795,8 @@ Not a class — a small module exporting `Player` (re-exported from `Player.tsx`
 
 Type-only — `IDevice` (the flat device-connection shape `Player` expects: `id`, `hostname`,
 `port`, `username`, `password`, `profile`, `channel`, `device`, `autoplay`, `statistics`,
-`https`) and `PlayerProps { device: IDevice }`. Adapted from `react-wisenet-player`'s
+`https`, and optional `useSunapi?: boolean`, default `true` when omitted — see `Player`'s Method
+Analysis below) and `PlayerProps { device: IDevice }`. Adapted from `react-wisenet-player`'s
 `Constant.tsx`, keeping only the subset `Player.tsx` actually needs (the original's device-
 management-UI types and unused statistics-event payload types are not ported).
 
@@ -791,31 +812,53 @@ element to its own caller. Instead it declares its own module-level JSX typing
 (`RTSPOverWebSocketElementAttributes extends React.HTMLAttributes<RTSPOverWebSocket>`, augmenting
 the global `JSX.IntrinsicElements` map, `:13-33`) so `<rtsp-over-websocket {...} />` type-checks
 as a real intrinsic element, then renders that tag directly with props mapped from `IDevice`
-(`hostname`, `username`, `port` (stringified), `profile`, `channel` (stringified), `device`,
-`statistics`/`https` as bare-flag-or-`undefined` boolean attributes — no `password` attribute is
-ever passed to the DOM element, by design: credentials go through the SUNAPI login flow, not a
-plaintext `password` attribute). Internally it holds `playerRef`
+(`hostname`, `username`, `port` (stringified), `profile`, `channel` (stringified), `device`). Two
+of the JSX props need real typed values, not the empty-string/`undefined` "boolean HTML attribute"
+idiom `autoplay` (see below) uses: `statistics`/`https` are passed as actual `!!`-coerced
+booleans, because `RTSPOverWebSocket.ts` has real property setters for both
+(`set statistics(v: boolean)`/`set https(v: boolean)`) that React assigns to directly rather than
+via `setAttribute` — and both throw `RTSPOverWebSocketError` if the incoming value isn't strictly
+`typeof v === 'boolean'`, which an empty string is not. Internally it holds `playerRef`
 (`useRef<RTSPOverWebSocket|null>`, resolved post-mount via `document.getElementById`, not a
 React ref callback), `sunapiManagerRef` (`useRef<SunapiManager|null>`), and `playState`/
-`loginError` component state.
+`loginError` component state, plus a derived `useSunapi = props.device.useSunapi !== false`
+(defaults to the SUNAPI-login flow when the prop is omitted).
 
 **Method Analysis (component behavior, not class methods).** On mount (`useEffect`, empty dep
-array, `:210-323`): looks up the element by `id`, constructs a `SunapiManager`, logs in via
-`sunapiManager.init(deviceInfo)` (REST + digest auth — the "real device integration" flow, unlike
-this library's own YouTube-transcode demo server which has no SUNAPI endpoint), and only on
-success assigns `playerRef.current.sunapiClient = sunapiManager.sunapiClient` and (if
-`device.autoplay`) calls `player.play()`; on failure sets `loginError` for the rendered error
-banner. Registers ~20 native `CustomEvent` listeners on the element (`error`, `meta`, `resize`,
-`statechange`, `timestamp`, `capture`, `statistics`, `backupstatechange`, `changeplayermode`,
-`instantplayback`, `waiting`, `metaImage`, plus every `change*` attribute-change event) — mostly
-`console.log` observability handlers, except `onChannelNumberChanged`/`onHostnameChanged`, which
-actively `stop()`+`play()` the element in response to a live channel/hostname change, and
-`onResize`, which force-sets `video.style.width/height` to `100%`. Registers a `beforeunload`
-window listener that force-`stop()`s the player before unload. Cleanup (the effect's return
-function) stops the player if playing, detaches the `SunapiManager`, and removes the
-`beforeunload` listener.
+array, `:210-323`), branching on `useSunapi`:
 
-**Call Stack.**
+- **`useSunapi` true (default)** — looks up the element by `id`, constructs a `SunapiManager`,
+  logs in via `sunapiManager.init(deviceInfo)` (REST + digest auth — the "real device integration"
+  flow, unlike this library's own YouTube-transcode demo server which has no SUNAPI endpoint), and
+  only on success assigns `playerRef.current.sunapiClient = sunapiManager.sunapiClient` and (if
+  `device.autoplay`) calls `player.play()` — explicitly, never via an `autoplay` attribute; on
+  failure sets `loginError` for the rendered error banner. No `password`/`autoplay` attribute is
+  ever passed to the DOM element in this mode, by design: credentials go through this login flow,
+  not a plaintext `password` attribute or the element's own attribute-driven `connectedCallback`
+  path (see the `sunapiClient`-setter note in this file's `RTSPOverWebSocket` section for exactly
+  why calling `play()` only *after* login matters, not just before it).
+- **`useSunapi` false** — skips the SUNAPI login entirely; the JSX instead includes real
+  `password`/`autoplay` attributes (`password={props.device.password}`,
+  `autoplay={props.device.autoplay ? '' : undefined}` — the bare-flag idiom, since `autoplay` has
+  no property setter and *is* read via `getAttribute`), letting `RTSPOverWebSocket.ts`'s own
+  `connectedCallback()`/`updateSunapiManager()` drive the connection from those raw attributes
+  instead. Exists to reproduce/compare against that raw-attribute behavior (see
+  `src/index.html`'s React panel's "Connect via SUNAPI Manager" checkbox) — not the recommended
+  mode for a real integration.
+
+Both modes register the same ~20 native `CustomEvent` listeners on the element (`error`, `meta`,
+`resize`, `statechange`, `timestamp`, `capture`, `statistics`, `backupstatechange`,
+`changeplayermode`, `instantplayback`, `waiting`, `metaImage`, plus every `change*`
+attribute-change event) — mostly `console.log` observability handlers, except
+`onChannelNumberChanged`/`onHostnameChanged`, which actively `stop()`+`play()` the element in
+response to a live channel/hostname change, and `onResize`, which force-sets
+`video.style.width/height` to `100%`. Registers a `beforeunload` window listener that
+force-`stop()`s the player before unload. Cleanup (the effect's return function) stops the player
+if playing, detaches the `SunapiManager` (a no-op if `useSunapi` was false and one was never
+created), and removes the `beforeunload` listener.
+
+**Call Stack** (the default `useSunapi: true` path — see the Method Analysis above for how the
+`false` path differs).
 
 ```mermaid
 sequenceDiagram

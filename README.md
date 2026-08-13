@@ -228,6 +228,23 @@ Most of `src/player`'s test suite consists of parity tests that diff the new Typ
 legacy player's source, loaded from a `legacy-player` git submodule at the repo root. That submodule isn't checked
 out in every environment — tests that depend on it will fail with `ENOENT` until it's present.
 
+### Live-device smoke test (manual/local only)
+
+`src/player/network/http/SunapiManager.live.test.ts` exercises `SunapiManager.init()` +
+`getAttributes()` against a **real** camera/NVR on your LAN — skipped by default (not part of the
+regular `npm run test:player` run) since it needs network access to a specific device and would
+just fail everywhere else (CI, other machines). Opt in by copying [.env.example](.env.example) to
+`.env` and filling in the `RTSP_LIVE_TEST_*` keys (`HOSTNAME`/`USERNAME`/`PASSWORD` required,
+`PORT`/`PROTOCOL` optional — default `443`/`https`), or pass them as real env vars instead:
+
+```
+RUN_LIVE_DEVICE_TEST=1 RTSP_LIVE_TEST_HOSTNAME=192.168.x.x RTSP_LIVE_TEST_USERNAME=admin \
+RTSP_LIVE_TEST_PASSWORD=... npx vitest run SunapiManager.live.test.ts   # from src/player
+```
+
+Never hardcode real device credentials directly in that test file — it's committed to source
+control; `.env` itself is gitignored.
+
 ## Milestones
 
 - **Upgrade `three` past `0.84.0` (pending).** `three@0.84.0` has a known high-severity denial-of-service advisory,

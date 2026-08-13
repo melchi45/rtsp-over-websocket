@@ -14,6 +14,9 @@ Covered here:
 - `network/transport/Transport.ts` — `Transport`
 - `network/http/SunapiClient.ts` — `SunapiClient`
 - `network/http/SunapiManager.ts` — `SunapiManager`
+- `network/http/XmlParser.ts` — `XmlParser`
+- `network/http/AttributeService.ts` — `AttributeService`
+- `network/http/ProfileConfig.ts` — `ProfileConfig`
 - `network/http/SunapiRestClient.ts` — `SunapiRestClient`
 - `network/http/SunapiException.ts` — `SunapiException`
 - `network/http/HttpStatusCode.ts` — `HTTP_STATUS_CODES`
@@ -811,7 +814,14 @@ over `SunapiClient`, exposing one method per SUNAPI endpoint.
   `getVideoProfilePolicyAll()`/`getVideoProfilePolicy()`, `getRtspStreamURL()` — each builds one
   `/stw-cgi/<cgi>?msubmenu=<x>&action=view[...]` URI and delegates to the shared private
   `request()` helper, optionally extracting a sub-field (`data.VideoProfiles`, etc.) from the
-  response.
+  response. **`getAttributes()` specifically** hits `/stw-cgi/attributes.cgi/attributes`, which
+  real devices answer with **XML**, not JSON (`SunapiClient.parseResponse()` hands back the raw
+  response text unparsed whenever `xhr.responseXML !== null` — see that class's section above) —
+  `SunapiManager` itself does nothing further with it. `XmlParser`/`AttributeService` (new sections
+  immediately below) exist specifically to parse that XML into structured capability data, ported
+  from `react-wisenet-player`'s legacy jQuery-based equivalents, but as of this writing neither is
+  wired into `SunapiManager`/`Player.tsx` yet — `getAttributes()`'s return value is still raw XML
+  text to any current caller.
 - `getSnapshot(profile?, channel?)` — builds `/stw-cgi/video.cgi?msubmenu=snapshot&action=view`
   with validated numeric `Profile`/`Channel` query params (throwing `RTSPOverWebSocketError`
   `0x0409` for non-integer input — note a copy-paste bug preserved from legacy where the
@@ -884,6 +894,169 @@ classDiagram
 `SunapiManager` is constructed directly by the `<rtsp-over-websocket>` custom element
 (`_sunapiMng = new SunapiManager()`) as a sibling facility to the RTSP stream, not something
 `StreamPlayer`/`RtspClient` depend on for playback itself.
+
+---
+
+## `XmlParser` (`src/player/network/http/XmlParser.ts`)
+
+Ported from the legacy player's `sunapi/XmlParser` — pure XML-string-in/JS-value-out parsing, no
+network calls of its own. Parses two distinct SUNAPI response shapes: the "CGI section"
+(`GET /stw-cgi/attributes.cgi/cgis` — a schema describing every CGI/submenu/action/parameter and
+its expected data type) and the "attribute section" (`GET /stw-cgi/attributes.cgi/attributes` —
+the device's actual capability-flag *values*, optionally split per channel).
+
+### Structure
+
+- No network/DOM-registration side effects — a plain class, one instance per `AttributeService`
+  (see below), constructed with no arguments.
+- **Cache fields**: `cgiSectionXML`/`parsedCgiSection` and `attributeSectionXML`/
+  `parsedAttributeSection` — the last-parsed XML string and its `DOMParser`-parsed `Document`, so a
+  repeated call with the same input string skips re-parsing. `parseAttributeSection` and
+  `parseAttributeSectionByChannel` intentionally share the same attribute-section cache fields
+  (via a shared `getAttributeSectionDoc()` helper), matching legacy's module-level-closure
+  behavior where both functions read/wrote the same two variables — a call to either method can
+  serve as the other's cache hit.
+- Legacy was built on jQuery (`$.parseXML` + `.find()`/`.filter()`/`.attr()`/`.children()`/
+  `.each()`/`.not()`). This port drops jQuery entirely for native `DOMParser` +
+  `Element.querySelector`/`querySelectorAll` — legacy's attribute-name selectors (e.g.
+  `"cgi[name='x']"`) are valid CSS attribute selectors and translate directly, no behavior change.
+
+### Method Analysis
+
+- `parseCgiSection(iXML, inputStr, options?)` — `inputStr` is a `/`-delimited path
+  (`cginame/submenu/action/parameter/datatype`, `cginame/submenu/parameter/datatype`,
+  `submenu/parameter/datatype`, or `parameter/datatype` — token count selects which), walked
+  against the parsed `<cgi>/<submenu>/<action>/<parameter>` tree. Returns a shape depending on the
+  parameter's declared `dataType`: `string` → `{minLength?, maxLength?, formatInfo?, format?}`,
+  `int`/`float` → `{minValue?, maxValue?}`, `enum`/`csv` → an array of `<entry value="...">` values,
+  `bool` → `true`. `options.parseRequest` additionally reads the node's own `request` attribute
+  into `.isRequest`.
+- `parseAttributeSectionByChannel(iXML, inputStr, maxChannel)` — `inputStr` is
+  `groupName/categoryName/.../attrName`; walks to that `<group>/<category>`, then either a single
+  `<attribute>` (no `<channel>` children — result is a length-1 array) or one entry per
+  `<channel number="N">` (result indexed by channel number).
+- `parseAttributeSection(iXML, inputStr)` — same path convention (1-3 tokens:
+  `attributeName`, `categoryName/attributeName`, or `groupName/categoryName/attributeName`) for a
+  single attribute value, no per-channel split. Value coercion (both methods, shared private
+  `stringToJsonAttributes`): `type="bool"` → `value === 'True'`; `type="int"` → `parseInt`;
+  `type="enum"`/`"csv"` → `value.split(',')`; anything else → `undefined`.
+
+### RFC / Standard References
+
+None — SUNAPI is a Hanwha-vendor HTTP/XML API, not an IETF/W3C standard. `DOMParser`/
+`Element.querySelector` are standard Web APIs, used here in their ordinary documented way.
+
+### Relations & Data Flow
+
+```mermaid
+classDiagram
+    class XmlParser
+    class AttributeService
+    AttributeService --> XmlParser : creates, calls per attribute/CGI-parameter lookup
+```
+
+Consumed only by `AttributeService` (below) as of this writing — not called directly by
+`SunapiManager`/`Player.tsx`/`RTSPOverWebSocket.ts`.
+
+---
+
+## `AttributeService` (`src/player/network/http/AttributeService.ts`)
+
+Ported from the legacy player's `sunapi/AttributeService` — a capability-flags service that
+fetches a device's `/stw-cgi/attributes.cgi/attributes` (and `/cgis`) XML once, then derives a
+large capability-flag bag (`MaxChannel`, `PTZSupport`, `IRLedSupportByChannel`, ...) from it via
+~250 `XmlParser.parseAttributeSection`/`parseAttributeSectionByChannel` calls, plus ~17
+`parse*CgiAttributes` methods deriving finer-grained per-CGI option/limit metadata from the
+`/cgis` schema. See the class's own top-of-file doc comment for the full, itemized list of what
+was preserved vs. fixed vs. deliberately not ported during the port — summarized here rather than
+duplicated in full.
+
+### Structure
+
+- Constructed with a `SunapiClientLike` (this repo's real `SunapiClient.get()` signature,
+  structurally declared rather than importing the concrete class — matching `SunapiManager.ts`'s
+  own pattern) and an `AttributeServiceOptions` (currently just `isAdmin?: () => boolean`, default
+  `() => true` — legacy's Angular-`AccountService`-backed admin check, adapted to an injectable
+  predicate since this library has no session/account layer of its own).
+- `private xmlParser = new XmlParser()` — one instance per service.
+- `attributes` getter (and legacy-named `getAttributes()` method) exposes the internal capability
+  bag, typed `Record<string, any>` — a deliberate, narrow exception to this codebase's usual
+  `unknown`-by-default convention: ~250+ dynamically-shaped flags (bool/number/string[]/nested
+  object, chosen per XML path at runtime) have no practical 1:1 TypeScript interface, and every
+  legacy consumer read them the same untyped way.
+
+### Method Analysis
+
+- `getDeviceInfo()`/`getWebHiddenInfo()`/`getAiVersionInfo()`/`getEventSourceOptions()` — each one
+  REST call (`/stw-cgi/system.cgi`/`eventsources.cgi`), populating a handful of top-level flags
+  directly from the JSON response (no XML/`XmlParser` involvement).
+- `getAttributeSection()` — the large one: fetches `/stw-cgi/attributes.cgi/attributes` once, then
+  runs the ~250 `XmlParser.parseAttributeSection`/`parseAttributeSectionByChannel` calls against
+  that single response to populate the capability bag. Ported near-verbatim from legacy path-for-
+  path, for confidence that a port this large didn't silently change which flag reads which XML
+  path.
+- `getCgiSection()` + the 17 `parse*CgiAttributes()` methods (`parseSystemCgiAttributes`,
+  `parseMediaCgiAttributes`, `parseSecurityCgiAttributes`, `parseEventSourceCgiAttributes`,
+  `parsePTZCgiAttributes`, ... — one per SUNAPI CGI group) — fetch `/stw-cgi/attributes.cgi/cgis`
+  and derive parameter-level option/limit metadata via the private `paserXML()` helper.
+  **`paserXML()` is a from-scratch fix, not a straight port**: legacy's own `paserXML` was an
+  unconditional self-recursive stub (`function paserXML(obj, target) { return paserXML(obj,
+  target); }`, reassigned nowhere) that stack-overflows the instant any of these ~2800 lines
+  actually runs — confirmed via grep that `xmlParser.parseCgiSection` (the method every call site's
+  arguments unambiguously match) was never called anywhere in the legacy source either. This port's
+  `private paserXML(...)` delegates to `this.xmlParser.parseCgiSection(...)` instead, the same
+  judgment call `SunapiManager.ts` applied to its own confirmed-broken `sunapiClient.join()` chain.
+- `initialize()` — `Promise.all(...)` of the fetch methods above, gated on `options.isAdmin()` for
+  admin-only ones. Fixed during porting: legacy pushed bare `this.getPTZModeInfo`/
+  `this.getCropChannelOptions` function *references* into the list instead of invoking them, so
+  those two fetches silently never ran.
+- `getAppStatus()` — fixed during porting: legacy's success callback called
+  `deferred.resolve(appStatus)` where `deferred` was never declared (a `ReferenceError` at
+  runtime there; a compile error here) — corrected to the executor's own `resolve`.
+- `login()`/`loginBypass()`/`checkInitPw()` — **not ported**: built entirely on Angular
+  app-shell services (`$location`, `$state`, `$q`, session/language/account managers) with no
+  reachable equivalent in this pure network/protocol library, which already owns its own
+  device-connection entry point via `SunapiManager.init()`.
+- Every XHR success callback's `try { ...; resolve(x); } catch { throw new
+  RTSPOverWebSocketError(...) }` pattern (~30 call sites) is **preserved, not fixed**: because the
+  callback runs asynchronously (invoked later by the XHR handler, not synchronously inside the
+  `new Promise(executor)` call), the `throw` doesn't reject the promise — it becomes an uncaught
+  exception, and the promise is left permanently pending. Same category of bug `SunapiManager.ts`
+  documents preserving in its own `getSnapshot()`; left as-is here rather than guessed at across
+  ~30 near-identical sites with no real device available to verify intended behavior against.
+
+### RFC / Standard References
+
+None beyond what `SunapiClient`/`XmlParser` already provide — this class adds no protocol logic
+of its own, only capability-flag derivation from their responses.
+
+### Relations & Data Flow
+
+```mermaid
+classDiagram
+    class AttributeService
+    class SunapiClient
+    class XmlParser
+    class ProfileConfig
+
+    AttributeService --> SunapiClient : uses (constructor-injected)
+    AttributeService --> XmlParser : creates, parses attribute/CGI XML
+    AttributeService ..> ProfileConfig : (no current reference — see ProfileConfig section)
+```
+
+Not yet constructed/called by `SunapiManager`, `Player.tsx`, or `RTSPOverWebSocket.ts` — wiring
+this capability layer into the live connection flow is deliberate follow-up work, not part of this
+port.
+
+---
+
+## `ProfileConfig` (`src/player/network/http/ProfileConfig.ts`)
+
+Ported from the legacy player's `sunapi/ProfileConfig` — a small, static lookup table (`DIS`/
+`DPTZ`/`DEFAULT`/`MULTI`, each `{ index: number }`) mapping named video-profile *kinds* to their
+index. Logic unchanged from legacy, only typed (`ProfileConfigEntry`/`ProfileConfigTable`). No
+current reference from `AttributeService`/`SunapiManager`/`Player.tsx` — ported for parity/
+completeness alongside the other two files, not because something already needs it.
 
 ---
 
