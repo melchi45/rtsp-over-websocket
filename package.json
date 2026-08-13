@@ -1,6 +1,6 @@
 {
     "name": "@melchi45/rtsp-over-websocket",
-    "version": "1.0.17",
+    "version": "1.1.0",
     "author": {
         "name": "Youngho Kim",
         "email": "melchi45@gmail.com",
@@ -19,6 +19,16 @@
     "homepage": "http://ctf.ep.hanwha.com/sf/projects/web_mobile_technical_part/",
     "main": "dist/player/rtsp-over-websocket.esm.js",
     "types": "dist/types/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/types/index.d.ts",
+            "import": "./dist/player/rtsp-over-websocket.esm.js"
+        },
+        "./react": {
+            "types": "./dist/types/react/index.d.ts",
+            "import": "./dist/react/index.js"
+        }
+    },
     "files": [
         "dist"
     ],
@@ -50,8 +60,8 @@
         "vitest": "^3.0.0"
     },
     "peerDependencies": {
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0"
+        "react": "^18.2.0 || ^19.0.0",
+        "react-dom": "^18.2.0 || ^19.0.0"
     },
     "peerDependenciesMeta": {
         "react": {
@@ -68,7 +78,7 @@
         "rollup": "npm:@rollup/wasm-node@4.62.3"
     },
     "scripts": {
-        "build:player": "cd src/player && tsc -b && vite build && vite build --config vite.react.config.ts && cd ../.. && npm run build:demo",
+        "build:player": "cd src/player && tsc -b && vite build && vite build --config vite.react.config.ts && vite build --config vite.react-lib.config.ts && cd ../.. && npm run build:demo",
         "build:demo": "mkdir -p dist && cp src/index.html dist/index.html",
         "build:server": "cd src/server && tsc -b",
         "test:player": "cd src/player && vitest run",

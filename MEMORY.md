@@ -991,3 +991,50 @@ path still worked (it didn't) is what surfaced this one. Fixed by gating the thr
 `describeLive(...)` call — confirmed via a temporary `.env` move-aside-and-restore round trip: 2
 tests correctly skip (not fail) with no `.env` present, and correctly attempt a real connection
 once it's back.
+
+## Added a real `./react` export — the package had no import path for a consumer with its own React
+
+Prompted by a plan to replace `react-wisenet-player`'s entire local, increasingly-redundant
+`src/components/rtsp-over-websocket/` copy (Player.tsx, SunapiManager/SunapiClient/XmlParser/
+AttributeService/ProfileConfig — all already superseded by ported equivalents in this repo) with
+this package directly. Surfaced a real gap while planning that: **there was no way for an app with
+its own React to actually import `react/Player.tsx`.** `main` (`dist/player/
+rtsp-over-websocket.esm.js`) is the base library — `player/index.ts` never re-exports `react/` at
+all. The *only* existing build of `react/index.ts` was `vite.react.config.ts`'s
+`rtsp-over-websocket-react.esm.js`, deliberately built with React/ReactDOM bundled in (its own doc
+comment: for `src/index.html`'s no-bundler `<script type="module">` demo). That bundle is exactly
+wrong for a real app — it would load a second, independent copy of React alongside the app's own.
+
+Added a *third* build of the same `react/index.ts` entry: `vite.react-lib.config.ts` →
+`dist/react/index.js`, with `react`/`react-dom`/`react-dom/client`/`react/jsx-runtime` all
+external rather than bundled. Exposed via a new `package.json` `"exports"` field (previously
+absent — only bare `main`/`types`) as the `"./react"` subpath, alongside the existing default
+export; `dist/types/react/index.d.ts` needed no new work, since `src/player/tsconfig.json`
+already emits declarations for everything under `react/` as part of its ordinary `emitDeclarationOnly`
+pass. Also widened `peerDependencies`/`peerDependenciesMeta` (already present, already optional)
+from `"^18.2.0"` to `"^18.2.0 || ^19.0.0"` — `react-wisenet-player` is on React 19.
+
+**One non-obvious build detail**: externalizing `'react-dom'` alone wasn't enough.
+`react/index.ts` imports `createRoot` from the **subpath** `'react-dom/client'`, which Rollup
+doesn't automatically treat as covered by an `external: ['react-dom']` entry — instead it inlined
+a hand-reconstructed `createRoot`/`hydrateRoot` shim (built from `react-dom`'s own
+`__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED`, mirroring what `react-dom/client`'s real
+source does) that also carried in a raw, never-replaced `process.env.NODE_ENV` check — no
+`process` global to read it from in a real browser bundle. Fixed by externalizing
+`'react-dom/client'` explicitly too; confirmed by grepping the built output for
+`process.env.NODE_ENV`/`__SECRET_INTERNALS` (zero matches after the fix, vs. present before it)
+and checking the file's actual `import` lines resolve cleanly to `react`/`react-dom/client`/
+`react/jsx-runtime` with no inlined interop glue.
+
+Wired into `build:player` (existing `tsc -b && vite build && vite build --config
+vite.react.config.ts` gained a fourth step); the two builds don't collide since
+`vite.react.config.ts` still writes into `dist/player/` (`emptyOutDir: false`) while this one owns
+its own `dist/react/` directory (`emptyOutDir: true`). Verified via `npm pack --dry-run` that the
+new `dist/react/index.js` and `dist/types/react/*.d.ts` files are actually included in what gets
+published (`files: ["dist"]` already covers them, no change needed there).
+
+Publishing itself goes through the existing `.github/workflows/publish-player.yml` (triggered by
+a GitHub Release or manual `workflow_dispatch`, using the workflow's own `GITHUB_TOKEN` against
+GitHub Packages) rather than a local `npm publish` — it already runs this repo's own
+`build:player` script, so it picks up the new build step automatically with no workflow changes
+needed.
