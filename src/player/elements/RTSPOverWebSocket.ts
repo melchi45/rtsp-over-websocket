@@ -1330,6 +1330,30 @@ export class RTSPOverWebSocket extends HTMLElement {
     if (this.info.device.ClientIPAddress === '127.0.0.1') {
       this.getClientIp();
     }
+
+    // play() only ever constructs `this.player` once per element lifetime
+    // (`if (this.player === undefined || this.player === null)` — never
+    // reset back to null anywhere else in this file) and bakes in whatever
+    // sunapiClient was attached *at that moment*. A no-op here for the
+    // common case (sunapiClient attached before the first play(), e.g.
+    // react/Player.tsx's useSunapi flow — `this.player` is still null so
+    // there's nothing to discard) — but if play() already ran once (e.g. a
+    // raw/unauthenticated attempt that got challenged, then credentials
+    // arrived and produced this sunapiClient), the *next* play() would
+    // otherwise keep reusing that stale player, which was built with no
+    // sunapiClient — so it answers the RTSP digest challenge without one
+    // regardless of this attach, and the caller sees the exact same 401
+    // again despite a successful SUNAPI login. Discarding it here makes the
+    // next play() rebuild one with *this* client instead.
+    if (this.player !== undefined && this.player !== null) {
+      try {
+        this.stop();
+      } catch (error) {
+        // Already stopped/torn down — fine, just discard the stale
+        // reference below either way.
+      }
+      this.player = null;
+    }
   }
 
   get startTime(): string | undefined {
@@ -4648,7 +4672,14 @@ export class RTSPOverWebSocket extends HTMLElement {
    * the only place those get joined back into one full URL string. */
   private buildAbsoluteRTSPURL(pathPart: string): string {
     let authority = '';
-    if (this.username !== null && this.username !== '') {
+    // A SUNAPI-authenticated session answers the RTSP digest challenge out
+    // of band (see RtspClient.ts's `sunapiClient` branch, which is only
+    // reachable when `this.pw` is empty) — this URL is purely for display/
+    // observation (reflected onto `src`, dispatched via 'generatertspurl'),
+    // so it should never expose a plaintext username/password once a
+    // sunapiClient is attached, whether or not those properties still
+    // happen to be set on the element.
+    if (this.sunapiClient === null && this.username !== null && this.username !== '') {
       authority += encodeURIComponent(this.username);
       if (this.password !== null && this.password !== '') {
         authority += ':' + encodeURIComponent(this.password);

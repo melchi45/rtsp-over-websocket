@@ -18,6 +18,9 @@ export interface IDevice {
   autoplay: boolean;
   statistics: boolean;
   https: boolean;
+  /** Defaults to `true` when omitted. See Player.tsx's useEffect for what
+   * each mode does. */
+  useSunapi?: boolean;
 }
 
 export interface PlayerProps {

@@ -19,8 +19,14 @@ interface RTSPOverWebSocketElementAttributes extends React.HTMLAttributes<RTSPOv
   channel?: string;
   device?: string;
   autoplay?: string;
-  statistics?: string;
-  https?: string;
+  // Real properties on the element (`set statistics(v: boolean)` / `set
+  // https(v: boolean)`, see RTSPOverWebSocket.ts) — React assigns these via
+  // property, not setAttribute, so they must be real booleans, not the
+  // empty-string/undefined "boolean HTML attribute" idiom `autoplay` above
+  // uses (which has no matching property setter, so it *is* set via
+  // setAttribute, where that idiom is correct).
+  statistics?: boolean;
+  https?: boolean;
 }
 
 declare global {
@@ -64,6 +70,7 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
   const sunapiManagerRef = useRef<SunapiManager | null>(null);
   const [playState, setPlayState] = useState<RTSPOverWebSocketPlayState>(RTSPOverWebSocketPlayState.STOPPED);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const useSunapi = props.device.useSunapi !== false;
 
   const onError = (event: Event): void => {
     const detail = (event as CustomEvent).detail;
@@ -223,54 +230,72 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
     const player = playerRef.current;
     let cancelled = false;
 
-    // Ported from react-wisenet-player's pages/App/Playground.tsx's
-    // `connectSunapi()`: log into the device over SUNAPI (REST, digest
-    // auth) first, then hand the authenticated client to the element
-    // instead of a raw password — matching how a real device integration
-    // (vs. this library's own YouTube-transcode demo server, which has no
-    // SUNAPI endpoint to log into at all) is expected to drive this
-    // element. `hostname`/`username` are duplicated onto `cameraIp`/`user`
-    // because `SunapiManager.init()` overwrites the former FROM the latter
-    // for any non-'nvr' deviceType — supplying both sidesteps needing to
-    // know which branch it'll take.
-    const sunapiManager = new SunapiManager();
-    sunapiManagerRef.current = sunapiManager;
-    const deviceInfo: SunapiManagerDeviceInfo = {
-      ClientIPAddress: '127.0.0.1',
-      hostname: props.device.hostname,
-      cameraIp: props.device.hostname,
-      username: props.device.username,
-      user: props.device.username,
-      password: props.device.password,
-      port: props.device.port,
-      protocol: props.device.https ? 'https' : 'http',
-      deviceType: props.device.device,
-      serverType: 'grunt',
-      timeout: 10000,
-      debug: true,
-      async: false
-    };
-    sunapiManager
-      .init(deviceInfo)
-      .then(() => {
-        if (cancelled || playerRef.current === null) return;
-        setLoginError(null);
-        // Cast needed because RTSPOverWebSocket.ts's own `sunapiClient` setter
-        // and SunapiManager.ts's `SunapiClientLike` are two nominally distinct
-        // (structurally near-identical) interfaces — RTSPOverWebSocket.ts's
-        // own internal `this.sunapiClient = v` call into its private
-        // SunapiManager does the exact same cast for the same reason.
-        playerRef.current.sunapiClient = sunapiManager.sunapiClient as unknown as RTSPOverWebSocket['sunapiClient'];
-        if (props.device.autoplay) {
-          playerRef.current.play();
-        }
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        const message = error instanceof Error ? error.message : String(error);
-        console.error('SUNAPI login failed: ' + message);
-        setLoginError(message);
-      });
+    if (useSunapi) {
+      // Ported from react-wisenet-player's pages/App/Playground.tsx's
+      // `connectSunapi()`: log into the device over SUNAPI (REST, digest
+      // auth) first, then hand the authenticated client to the element
+      // instead of a raw password — matching how a real device integration
+      // (vs. this library's own YouTube-transcode demo server, which has no
+      // SUNAPI endpoint to log into at all) is expected to drive this
+      // element. `hostname`/`username` are duplicated onto `cameraIp`/`user`
+      // because `SunapiManager.init()` overwrites the former FROM the latter
+      // for any non-'nvr' deviceType — supplying both sidesteps needing to
+      // know which branch it'll take.
+      //
+      // This is the default (and the only mode this component supported
+      // before `useSunapi` existed) because the alternative — setting a raw
+      // `password` attribute and letting the element's own connectedCallback
+      // drive both `autoplay` and its own internal, asynchronous
+      // `updateSunapiManager()` — races `play()` against that login: `play()`
+      // fires immediately (synchronous, attribute-driven), while the login is
+      // still in flight, so playback can start before the device even has an
+      // authenticated SUNAPI session. Doing the login here first and calling
+      // `play()` only after it resolves removes that race. `useSunapi: false`
+      // exists to reproduce/compare against the element's own raw-attribute
+      // behavior (see src/index.html's React panel).
+      const sunapiManager = new SunapiManager();
+      sunapiManagerRef.current = sunapiManager;
+      const deviceInfo: SunapiManagerDeviceInfo = {
+        ClientIPAddress: '127.0.0.1',
+        hostname: props.device.hostname,
+        cameraIp: props.device.hostname,
+        username: props.device.username,
+        user: props.device.username,
+        password: props.device.password,
+        port: props.device.port,
+        protocol: props.device.https ? 'https' : 'http',
+        deviceType: props.device.device,
+        serverType: 'grunt',
+        timeout: 10000,
+        debug: true,
+        async: false
+      };
+      sunapiManager
+        .init(deviceInfo)
+        .then(() => {
+          if (cancelled || playerRef.current === null) return;
+          setLoginError(null);
+          // Cast needed because RTSPOverWebSocket.ts's own `sunapiClient` setter
+          // and SunapiManager.ts's `SunapiClientLike` are two nominally distinct
+          // (structurally near-identical) interfaces — RTSPOverWebSocket.ts's
+          // own internal `this.sunapiClient = v` call into its private
+          // SunapiManager does the exact same cast for the same reason.
+          playerRef.current.sunapiClient = sunapiManager.sunapiClient as unknown as RTSPOverWebSocket['sunapiClient'];
+          if (props.device.autoplay) {
+            playerRef.current.play();
+          }
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          const message = error instanceof Error ? error.message : String(error);
+          console.error('SUNAPI login failed: ' + message);
+          setLoginError(message);
+        });
+    }
+    // useSunapi === false: no manual login, no manual play() — the `password`
+    // and `autoplay` attributes set in the JSX below (only in this mode) let
+    // the element's own connectedCallback/updateSunapiManager() drive both,
+    // races and all.
 
     player.addEventListener('error', onError);
     player.addEventListener('meta', onMeta);
@@ -338,8 +363,14 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
         profile={props.device.profile}
         channel={String(props.device.channel)}
         device={props.device.device}
-        statistics={props.device.statistics ? '' : undefined}
-        https={props.device.https ? '' : undefined}
+        statistics={!!props.device.statistics}
+        https={!!props.device.https}
+        {...(useSunapi
+          ? {}
+          : {
+              password: props.device.password,
+              autoplay: props.device.autoplay ? '' : undefined
+            })}
       />
     </div>
   );

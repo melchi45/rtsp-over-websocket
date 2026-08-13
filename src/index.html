@@ -662,6 +662,10 @@
                 <input id="fr-statistics" type="checkbox" checked />
                 Show statistics panel
               </label>
+              <label class="checkbox-field">
+                <input id="fr-use-sunapi" type="checkbox" checked />
+                Connect via SUNAPI Manager
+              </label>
 
               <div class="actions">
                 <button id="btn-react-connect" type="button">Connect</button>
@@ -699,8 +703,12 @@
                     placeholder="rtsp://user:pass@host:port/1/profile1/media.smp?device=camera&statistics&controls"
                   />
                 </label>
+                <label class="checkbox-field">
+                  <input id="srcurl-use-sunapi" type="checkbox" />
+                  Connect via SUNAPI Manager
+                </label>
                 <div class="actions">
-                  <button id="btn-srcurl-set" type="button">Set src</button>
+                  <button id="btn-srcurl-set" type="button">Connect</button>
                   <button id="btn-srcurl-stop" type="button" disabled>Stop</button>
                 </div>
               </div>
@@ -713,7 +721,7 @@
 
             <section class="card">
               <h2 class="card-title">Parsed back from the element after src was applied</h2>
-              <p class="hint" id="srcurl-parsed" style="margin-top: 0">Set src to see what applySrcAttribute() derived.</p>
+              <p class="hint" id="srcurl-parsed" style="margin-top: 0">Connect to see what applySrcAttribute() derived.</p>
               <p class="hint" id="srcurl-resolved" style="margin-top: 0" hidden></p>
             </section>
 
@@ -732,11 +740,12 @@
                  new WebSocket, and no risk of repeatedly tripping the
                  camera's own account-lockout threshold the way tearing down
                  and reopening the connection on every attempt would.
-                 "Connect via SUNAPI Manager" is opt-in (checkbox) for cases
-                 that specifically need the heavier SUNAPI-authenticated
-                 session (updateSunapiManager(), which does reconnect) instead
-                 — the same one connectedCallback already establishes
-                 automatically when username/password are known up front. -->
+                 "Connect via SUNAPI Manager" (checkbox, set up front in the
+                 RTSP URL form above — it's opt-in, decided before the first
+                 connect attempt, not something you'd only discover here) is
+                 for cases that specifically need the heavier SUNAPI-
+                 authenticated login (a standalone SunapiManager login, see
+                 the click handler below) instead. -->
             <section class="card" id="srcurl-credentials" hidden>
               <h2 class="card-title">Credentials required</h2>
               <p class="hint" style="margin-top: 0">The src URL didn't include a valid username/password. Enter them to answer the server's challenge.</p>
@@ -748,10 +757,6 @@
                 <label
                   >Password
                   <input id="srcurl-password" type="password" />
-                </label>
-                <label class="checkbox-field">
-                  <input id="srcurl-use-sunapi" type="checkbox" />
-                  Connect via SUNAPI Manager
                 </label>
                 <div class="actions">
                   <button id="btn-srcurl-credentials-connect" type="button">Connect</button>
@@ -1354,7 +1359,8 @@
           channel: document.getElementById('fr-channel'),
           profile: document.getElementById('fr-profile'),
           device: document.getElementById('fr-device'),
-          statistics: document.getElementById('fr-statistics')
+          statistics: document.getElementById('fr-statistics'),
+          useSunapi: document.getElementById('fr-use-sunapi')
         };
         // Same shared dev NVR default as the Player tab (see that tab's
         // wiring script for why) — this file has no build step / env
@@ -1427,7 +1433,8 @@
               device: form.device.value,
               autoplay: true,
               statistics: form.statistics.checked,
-              https: window.location.protocol === 'https:'
+              https: window.location.protocol === 'https:',
+              useSunapi: form.useSunapi.checked
             });
 
             // React's own effect (Player.tsx's useEffect) mounts
@@ -1467,6 +1474,11 @@
         var btnSrcurlCredentialsConnect = document.getElementById('btn-srcurl-credentials-connect');
 
         var srcurlPlayerEl = null;
+        // Set by the SUNAPI-first Connect flow (see parseSrcUrl() below) so
+        // the Credentials-required retry — which only has username/password
+        // inputs, not the original URL — can still rebuild the same login
+        // request.
+        var pendingSrcInfo = null;
 
         var SRCURL_READY_STATE_PLAYING = 1;
 
@@ -1532,6 +1544,143 @@
           srcurlParsed.textContent = parts.length ? parts.join(', ') : '(no attributes derived from src yet)';
         }
 
+        // A trimmed-down, standalone re-implementation of the path/query
+        // parsing RTSPOverWebSocket.ts's applySrcAttribute() does — needed
+        // here because that method can't be called directly, and assigning
+        // `.src` on an already-connected element immediately calls play()
+        // over the raw/direct RTSP path (see its own
+        // `if (this.isConnected) { ...; this.play(); }`), which is exactly
+        // what the SUNAPI-first flow below needs to avoid until *after* a
+        // SunapiManager login succeeds.
+        function parseSrcUrl(urlStr) {
+          var url;
+          try {
+            url = new URL(urlStr);
+          } catch (error) {
+            return null;
+          }
+          var deviceType = (url.searchParams.get('device') || 'camera').toLowerCase();
+          var segments = url.pathname.split('/').filter(function (segment) {
+            return segment.length > 0;
+          });
+          if (segments.length > 0 && /\.smp$/i.test(segments[segments.length - 1])) {
+            segments.pop();
+          }
+          if (segments[0] === 'multicast') {
+            segments.shift();
+          }
+          var channel = null;
+          if (segments[0] !== undefined) {
+            var channelWire = Number(segments[0]);
+            if (!isNaN(channelWire)) channel = channelWire + 1;
+          }
+          var profile = null;
+          var profileNumber = null;
+          if (deviceType === 'camera' && segments[1] !== undefined) {
+            var profileMatch = /^profile(\d+)$/i.exec(segments[1]);
+            if (profileMatch !== null) {
+              profileNumber = profileMatch[1];
+            } else {
+              profile = segments[1];
+            }
+          }
+          return {
+            username: url.username ? decodeURIComponent(url.username) : '',
+            password: url.password ? decodeURIComponent(url.password) : '',
+            hostname: url.hostname,
+            port: url.port,
+            device: deviceType,
+            channel: channel,
+            profile: profile,
+            profileNumber: profileNumber,
+            statistics: url.searchParams.has('statistics'),
+            controls: url.searchParams.has('controls'),
+            secure: url.searchParams.has('https') || url.searchParams.has('secure')
+          };
+        }
+
+        // Shared by both the initial (SUNAPI-first) Connect click and the
+        // Credentials-required retry: log into the device over SUNAPI (the
+        // password is used only for this one REST call, never stored on the
+        // element — see RTSPOverWebSocket.ts's buildAbsoluteRTSPURL(), which
+        // stops including credentials in the displayed/reflected URL once a
+        // sunapiClient is attached) and only call play() once that succeeds.
+        // A 401 here (wrong or, on the very first attempt, simply *no*
+        // credentials yet) surfaces as a rejection — same "Credentials
+        // required" UI either way, just reached via a SUNAPI REST call
+        // instead of an RTSP-level challenge.
+        function attemptSunapiConnect(username, password) {
+          srcurlStatusError.hidden = true;
+          // Falls back to the element's own current attributes if this is
+          // reached without an initial SUNAPI-first Connect having run
+          // first (e.g. SUNAPI was only checked after already hitting the
+          // default RTSP-level 401 path) — pendingSrcInfo won't have been
+          // set in that case.
+          var info = pendingSrcInfo || {
+            hostname: srcurlPlayerEl.hostname,
+            port: srcurlPlayerEl.port,
+            device: srcurlPlayerEl.device,
+            secure: srcurlPlayerEl.https
+          };
+          import('./player/rtsp-over-websocket.esm.js').then(function (mod) {
+            var sunapiManager = new mod.SunapiManager();
+            var initPromise;
+            try {
+              // SunapiManager.init() isn't declared `async`, so when it
+              // constructs its internal SunapiClient synchronously (before
+              // ever returning a Promise) — which validates username/
+              // password up front and throws RTSPOverWebSocketError/
+              // AuthError right there for an empty one — that throw happens
+              // *before* there's a Promise to attach .catch() to at all,
+              // escaping past it as a plain synchronous exception instead of
+              // a rejection. Wrapping the call itself in try/catch and
+              // funneling both into the same rejected-Promise path is what
+              // lets a single .catch() below handle "empty credentials"
+              // (the very first attempt, most of the time) exactly like a
+              // 401 from the device — same "Credentials required" outcome
+              // either way, matching what a real missing/wrong password
+              // should do.
+              initPromise = sunapiManager.init({
+                ClientIPAddress: '127.0.0.1',
+                hostname: info.hostname,
+                cameraIp: info.hostname,
+                username: username,
+                user: username,
+                password: password,
+                port: info.port,
+                protocol: info.secure ? 'https' : 'http',
+                deviceType: info.device,
+                serverType: 'grunt',
+                timeout: 10000,
+                debug: true,
+                async: false
+              });
+            } catch (error) {
+              initPromise = Promise.reject(error);
+            }
+            initPromise
+              .then(function () {
+                srcurlPlayerEl.username = username;
+                srcurlPlayerEl.sunapiClient = sunapiManager.sunapiClient;
+                srcurlCredentials.hidden = true;
+                srcurlShowParsedAttributes(srcurlPlayerEl);
+                try {
+                  srcurlPlayerEl.play();
+                } catch (error) {
+                  srcurlHandleError({ detail: { message: error && error.message } });
+                }
+              })
+              .catch(function (error) {
+                srcurlStatusError.hidden = false;
+                srcurlStatusError.textContent = 'Error: ' + ((error && error.message) || 'SUNAPI login failed');
+                if (username) srcurlUsernameInput.value = username;
+                srcurlCredentials.hidden = false;
+                srcurlPasswordInput.value = '';
+                srcurlPasswordInput.focus();
+              });
+          });
+        }
+
         btnSrcurlSet.addEventListener('click', function () {
           var url = srcurlInput.value.trim();
           if (!url) return;
@@ -1554,11 +1703,41 @@
             btnSrcurlStop.disabled = false;
           }
 
-          // The one call this whole panel exists to exercise: applying `src`
-          // parses it into hostname/username/password/channel/profile/
-          // device/statistics/controls/... and connects (or reconnects, if
-          // already playing) automatically — see applySrcAttribute() in
-          // RTSPOverWebSocket.ts.
+          if (srcurlUseSunapiCheckbox.checked) {
+            // SUNAPI-first: parse the URL ourselves and attempt a
+            // standalone SunapiManager login *before* the element's own
+            // connection attributes are ever set — see parseSrcUrl()'s doc
+            // comment for why `.src` itself can't be used for this. A URL
+            // with no (or wrong) credentials 401s immediately, same as it
+            // would over plain RTSP — attemptSunapiConnect() shows
+            // "Credentials required" either way.
+            pendingSrcInfo = parseSrcUrl(url);
+            if (pendingSrcInfo === null) {
+              srcurlStatusError.hidden = false;
+              srcurlStatusError.textContent = 'Error: invalid RTSP URL';
+              return;
+            }
+            srcurlPlayerEl.setAttribute('hostname', pendingSrcInfo.hostname);
+            if (pendingSrcInfo.port) srcurlPlayerEl.setAttribute('port', pendingSrcInfo.port);
+            srcurlPlayerEl.setAttribute('device', pendingSrcInfo.device);
+            if (pendingSrcInfo.channel !== null) srcurlPlayerEl.setAttribute('channel', String(pendingSrcInfo.channel));
+            if (pendingSrcInfo.profileNumber !== null) {
+              srcurlPlayerEl.setAttribute('profile_number', pendingSrcInfo.profileNumber);
+            } else if (pendingSrcInfo.profile !== null) {
+              srcurlPlayerEl.setAttribute('profile', pendingSrcInfo.profile);
+            }
+            if (pendingSrcInfo.statistics) srcurlPlayerEl.setAttribute('statistics', '');
+            if (pendingSrcInfo.controls) srcurlPlayerEl.setAttribute('controls', '');
+            if (pendingSrcInfo.username) srcurlUsernameInput.value = pendingSrcInfo.username;
+            srcurlShowParsedAttributes(srcurlPlayerEl);
+            attemptSunapiConnect(pendingSrcInfo.username, pendingSrcInfo.password);
+            return;
+          }
+
+          // Default (SUNAPI unchecked): applying `src` parses it into
+          // hostname/username/password/channel/profile/device/statistics/
+          // controls/... and connects (or reconnects, if already playing)
+          // automatically — see applySrcAttribute() in RTSPOverWebSocket.ts.
           srcurlPlayerEl.src = url;
 
           srcurlShowParsedAttributes(srcurlPlayerEl);
@@ -1581,24 +1760,14 @@
           srcurlStatusError.hidden = true;
 
           if (srcurlUseSunapiCheckbox.checked) {
-            // Opt-in, heavier path: establishes a fresh SUNAPI HTTP
-            // digest-auth session and reconnects through it (a new
-            // WebSocket), rather than just re-answering the RTSP-level
-            // challenge in place.
-            srcurlPlayerEl.username = username;
-            srcurlPlayerEl.password = password;
-            srcurlShowParsedAttributes(srcurlPlayerEl);
-            try {
-              srcurlPlayerEl.updateSunapiManager();
-            } catch (error) {
-              srcurlHandleError({ detail: { message: error && error.message } });
-              return;
-            }
-            try {
-              srcurlPlayerEl.play();
-            } catch (error) {
-              srcurlHandleError({ detail: { message: error && error.message } });
-            }
+            // Retry the same standalone-SunapiManager login
+            // attemptSunapiConnect() already tried once (with whatever the
+            // URL provided, possibly nothing) — using `pendingSrcInfo` for
+            // hostname/port/device/secure, since only username/password
+            // come from this form. Set by the Connect click above; SUNAPI
+            // mode always goes through that path first, so it's never null
+            // here.
+            attemptSunapiConnect(username, password);
             return;
           }
 

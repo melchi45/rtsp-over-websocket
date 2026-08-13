@@ -25,5 +25,8 @@ export {
   type XhrFactory
 } from './http/SunapiClient';
 export { SunapiManager, type SunapiManagerDeviceInfo, type SunapiManagerError } from './http/SunapiManager';
+export { XmlParser, type CgiParameterValue, type AttributeValue, type ParseCgiSectionOptions } from './http/XmlParser';
+export { ProfileConfig, type ProfileConfigEntry, type ProfileConfigTable } from './http/ProfileConfig';
+export { AttributeService, type AttributeServiceOptions } from './http/AttributeService';
 export * from './transport';
 export * from './rtspOverWebsocket';
