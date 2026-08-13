@@ -34,6 +34,32 @@ actually wired up for the `'AAC'` codec branch; `AudioPlayerGxx` handles AAC (an
 AAC playback path preserved from the legacy port. It is documented in full below regardless, since
 it's one of the files in scope.
 
+## Where this subsystem fits: canvas-tag vs. video-tag audio routing
+
+Everything in this file is reachable from exactly one of the two audio-dispatch branches in
+`MediaRouter.handleAudioData` (documented in full in `03-mediaSession-core-video.md`): it either
+forwards the frame to `player.onAudioData` — implemented only by `VideoTagPlayer`
+(`05-video-player-rendering.md`), which muxes real audio directly into its own fMP4
+`SourceBuffer` and needs none of this subsystem — or, when the active player has no
+`onAudioData` of its own, falls back to a standalone `AudioPlayerGxx` (this file), decoding
+frame-by-frame to PCM and playing it through the Web Audio API instead.
+
+`CanvasTagPlayer` (`05-video-player-rendering.md`) is the only other `VideoPlayerLike`
+implementation, and it declares no `onAudioData` at all — so in practice this whole subsystem
+(`AudioPlayerGxx` and every decoder below) is **canvas-tag-mode-only** audio: MJPEG, small/
+step-play H264, H265 profiles the browser's `MediaSource` can't accept, and VP8/VP9/AV1 (see
+`MediaRouter.selectVideoPlayer` in file 03 for exactly which combinations land on canvas mode).
+Whenever `VideoTagPlayer` is the active player, `AudioPlayerGxx` is never even constructed —
+audio for that session is entirely file 05's concern, muxed alongside video into the same MP4
+container the `<video>` element plays.
+
+```mermaid
+flowchart LR
+    MR["MediaRouter.handleAudioData"] -->|"player.onAudioData exists?"| Q{"video-tag mode?"}
+    Q -->|"yes: VideoTagPlayer.onAudioData"| VTP["VideoTagPlayer<br/>(muxes into its own fMP4 SourceBuffer — file 05)"]
+    Q -->|"no: CanvasTagPlayer has no onAudioData"| Gxx["AudioPlayerGxx (this file)<br/>decode() to PCM, play via Web Audio API"]
+```
+
 ```mermaid
 classDiagram
     class AudioDecoder {
@@ -785,7 +811,10 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
   `MediaRouterFactories.createAudioPlayer`, referenced through `MediaRouter`'s `AudioPlayerLike`
   interface — `MediaRouter` never imports it directly), driven by `MediaRouter.handleAudioData()`
   for every codec, and itself constructs (and owns the lifecycle of) whichever concrete
-  `AudioDecoderLike` implementation matches the negotiated codec.
+  `AudioDecoderLike` implementation matches the negotiated codec. Only reached in the first place
+  when `handleAudioData` finds no `player.onAudioData` to forward to instead — i.e. canvas-tag
+  mode (`CanvasTagPlayer`, file 05); see "Where this subsystem fits" at the top of this file.
+  `VideoTagPlayer` sessions never construct an `AudioPlayerGxx` at all.
 
   ```mermaid
   flowchart TD

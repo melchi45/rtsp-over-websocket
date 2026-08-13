@@ -26,14 +26,17 @@ export default defineConfig({
   base: './',
   // vendor/runtime/ (ffmpeg.js/.wasm, ffmpegAAC.transcoder.js/.wasm,
   // minizip-asm.js — the classic-script Emscripten/UMD bundles the worker
-  // entries below `importScripts()`/`fetch()` at runtime) is copied
-  // *verbatim* into dist/player/ root via publicDir instead of going
-  // through Vite's normal asset pipeline — see the `worker:` block below
-  // for why that distinction matters. Only the actual runtime-loaded files
-  // live under runtime/; vendor/'s .d.ts files and mp4Generator.js (a
-  // normally `import`ed, directly-bundled module, not one of these
-  // classic-script loads) stay out of it deliberately, so dist/player/
-  // doesn't ship type declarations or test files alongside the real build
+  // entries below `importScripts()`/`fetch()` at runtime; plus
+  // ffmpegAAC.decoder.js, loaded main-thread-side via a `<script>` tag by
+  // elements/RTSPOverWebSocket.ts's loadFfmpegAACDecoder() for
+  // AudioPlayerGxx's AAC decode path) is copied *verbatim* into dist/player/
+  // root via publicDir instead of going through Vite's normal asset pipeline
+  // — see the `worker:` block below for why that distinction matters. Only
+  // the actual runtime-loaded files live under runtime/; vendor/'s .d.ts
+  // files and mp4Generator.js (a normally `import`ed, directly-bundled
+  // module, not one of these classic-script loads) stay out of it
+  // deliberately, so dist/player/ doesn't ship type declarations or test
+  // files alongside the real build
   // output.
   publicDir: resolve(__dirname, 'vendor/runtime'),
   build: {

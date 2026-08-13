@@ -12,6 +12,38 @@ import type { StreamPlayerInfo } from '../interface/StreamPlayer';
 import { RTSPOverWebSocketPlayType, RTSPOverWebSocketPlayState, RTSPOverWebSocketBestshotFilter, RTSPOverWebSocketPlaySpeed, type RTSPOverWebSocketPlaySpeedEntry } from './RTSPOverWebSocketTypes';
 import * as panelStyles from './panelStyles';
 
+let ffmpegAACDecoderLoadPromise: Promise<void> | null = null;
+
+/**
+ * `ffmpegAAC.decoder.js` (see `AACAudioDecoder.ts`'s doc comment) is a
+ * classic-script asm.js build that attaches a bare global `Module` when
+ * executed — it decodes AAC audio (`AudioPlayerGxx`'s canvas-tag audio path)
+ * synchronously on the *main* thread, unlike `ffmpeg.js`/
+ * `ffmpegAAC.transcoder.js` (loaded inside their own worker threads via
+ * `importScripts`, each with an isolated `Module`), so it needs a real
+ * document-level `<script>` tag instead. `AACAudioDecoder`'s constructor
+ * calls `Module.cwrap(...)` immediately/synchronously (asm.js has no
+ * separate async WASM-compile step the way the other two vendor builds do),
+ * so this must be kicked off well before the first AAC audio frame arrives,
+ * not lazily inside `audioInit()` itself. Cached module-wide (not
+ * per-element) since every `RTSPOverWebSocket` instance on the page shares
+ * one `Module` global; safe to call redundantly from multiple instances'
+ * `connectedCallback` — later calls reuse the same in-flight/settled
+ * promise.
+ */
+function loadFfmpegAACDecoder(): Promise<void> {
+  if (ffmpegAACDecoderLoadPromise === null) {
+    ffmpegAACDecoderLoadPromise = new Promise<void>((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = new URL('./ffmpegAAC.decoder.js', import.meta.url).href;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new RTSPOverWebSocketError({ errorCode: fromHex('0x0313'), place: 'RTSPOverWebSocket.ts:loadFfmpegAACDecoder', message: 'Failed to load ffmpegAAC.decoder.js' }));
+      document.head.appendChild(script);
+    });
+  }
+  return ffmpegAACDecoderLoadPromise;
+}
+
 /**
  * Ported from the legacy player's custom-element class, registered here as
  * `RTSPOverWebSocket` (a
@@ -672,6 +704,14 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   connectedCallback(): void {
     try {
+      // Kick off the AAC audio decoder's classic-script Module load now,
+      // well before the RTSP session negotiates codecs and any AAC frame
+      // could arrive (audioInit() constructs AACAudioDecoder synchronously —
+      // see loadFfmpegAACDecoder()'s doc comment above). Fire-and-forget:
+      // a real failure here only matters once AAC audio is actually
+      // attempted, where it will surface again via that codec path.
+      loadFfmpegAACDecoder().catch((error: unknown) => console.error(error));
+
       // channel_div/.statistics/.video-container (and the network-state dot,
       // minimap, contextmenu) are all `position: absolute` overlays meant to
       // sit within this element's own box. Without a positioned ancestor

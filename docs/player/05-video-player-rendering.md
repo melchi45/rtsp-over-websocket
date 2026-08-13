@@ -247,7 +247,10 @@ MP4 directly and feeds it to a native `<video>` element via Media Source Extensi
   `vp08`/`vp09`/`av01` box-type support regardless. `CanvasTagPlayer.init()` creates its own `CanvasRenderer` and
   `StepBufferList`; `sendToBufferManager()` lazily creates its own `PlaybackBufferManager`
   (documented under `mediaSession`) — matching the README's class diagram, which shows
-  `CanvasTagPlayer --> PlaybackBufferManager : creates`.
+  `CanvasTagPlayer --> PlaybackBufferManager : creates`. **Video only** — this class declares no
+  `onAudioData`, so `MediaRouter.handleAudioData` falls back to a standalone `AudioPlayerGxx` for
+  audio whenever `CanvasTagPlayer` is active; that decode/playback subsystem is documented
+  separately in `06-listen-audio.md` (see its "Where this subsystem fits" section).
 
 ```mermaid
 flowchart LR
@@ -827,7 +830,12 @@ sequenceDiagram
   never touches `PlaybackBufferManager` (its own MSE `SourceBuffer` *is* its buffer) and never
   constructs a `CanvasRenderer`/`WebGLCanvas`/`YUVWebGLCanvas` — its only non-`VideoPlayer`
   collaborators are the vendored `mp4Generator` module and the small `util/` helpers
-  (`CircularTypedArrayQueue`, `Median`, `Mean`, `IntervalTimer`).
+  (`CircularTypedArrayQueue`, `Median`, `Mean`, `IntervalTimer`). **Video and audio together** —
+  its `onAudioData` (`:1915`, above) is what `MediaRouter.handleAudioData` checks for to route
+  audio here instead of to the standalone `AudioPlayerGxx` decode/playback subsystem
+  (`06-listen-audio.md`); real AAC/Opus/G711/G726 audio gets muxed straight into this class's own
+  fMP4 `SourceBuffer` alongside video, so that subsystem is never even constructed for a
+  `VideoTagPlayer` session.
 
 - **B-frame reordering: composition-time-offset (CTS).** Unlike `CanvasTagPlayer` (whose WASM
   decoder reorders B-frames internally as ordinary decoder behavior, via `PlaybackBufferManager`'s

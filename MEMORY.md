@@ -1038,3 +1038,47 @@ a GitHub Release or manual `workflow_dispatch`, using the workflow's own `GITHUB
 GitHub Packages) rather than a local `npm publish` — it already runs this repo's own
 `build:player` script, so it picks up the new build step automatically with no workflow changes
 needed.
+
+## `AACAudioDecoder`'s vendor script was never actually loaded — `Module` undefined on every real AAC-audio canvas-tag playback
+
+Found while live-debugging `react-wisenet-player` (post-migration to this package's `react/`
+export) reporting a black canvas with H264 video + AAC audio (`mpeg4-generic` RTP payload) RTP
+packets flowing continuously but no visible frames. `AACAudioDecoder.ts`'s own doc comment already
+flagged the gap: it "assumes `Module` is already loaded" and says wiring that load step into
+`elements/RTSPOverWebSocket.ts` is that file's job, "not something this class does itself" — but
+grepping the actual `RTSPOverWebSocket.ts` source turned up **no script-tag injection, no
+`globalThis.Module` assignment, nothing** — the wiring was never actually written. `AudioPlayerGxx.
+audioInit()`'s `'AAC'` branch (`src/player/listen/renderer/AudioPlayerGxx.ts:166-168`) constructs
+`new AACAudioDecoder()` unconditionally for AAC audio, whose constructor calls `Module.cwrap(...)`
+synchronously in the first line of its body — with `Module` never set, this throws immediately,
+every single time, for every consumer, whenever the audio codec is AAC and the canvas tag (not
+video-tag/MSE) path is active. `ffmpegAAC.decoder.js` (the vendor asm.js build this decoder wraps,
+872KB, confirmed via `AACAudioDecoder.ts`'s own comment: "wraps the vendored ffmpegAAC.js asm.js
+build") sat in `vendor/` as a plain file, outside `vendor/runtime/` (the directory `vite.config.ts`
+copies verbatim into `dist/player/` via `publicDir`) — so even a correctly-written loader would
+have had nothing to load.
+
+Two-part fix: (1) moved `vendor/ffmpegAAC.decoder.js` → `vendor/runtime/ffmpegAAC.decoder.js` so
+it's copied to `dist/player/ffmpegAAC.decoder.js`, same as `ffmpeg.js`/`ffmpegAAC.transcoder.js`;
+(2) added `loadFfmpegAACDecoder()` to `elements/RTSPOverWebSocket.ts` — a page-wide-cached
+(module-level `Promise`, not per-instance) loader that injects a real `<script src="...">` tag,
+since unlike `ffmpeg.js`/`ffmpegAAC.transcoder.js` (each loaded inside their own **worker** thread
+via `importScripts`, with an isolated `Module` global per worker) this decoder runs synchronously
+on the **main thread** alongside `AudioPlayerGxx`, and needs a real document-level script element,
+not `importScripts`. Called as the very first statement in `connectedCallback()` (fire-and-forget,
+`.catch(console.error)`) — must start well before the RTSP session negotiates codecs and any AAC
+frame could arrive, since `AACAudioDecoder`'s constructor has no async-ready gate the way the
+WASM-based decoders do (`Module.onRuntimeInitialized`): asm.js has no separate WASM-compile step,
+so `Module.cwrap` is expected to already be callable the instant the class is constructed.
+
+Confirmed via rebuild: `new URL("./ffmpegAAC.decoder.js", import.meta.url)` gets the same "doesn't
+exist at build time, remains unchanged to be resolved at runtime" Vite warning as the other three
+vendor files (expected — same unresolvable-at-build-time pattern, satisfied by the `publicDir`
+copy), and `dist/player/ffmpegAAC.decoder.js` exists post-build and is included in `npm pack
+--dry-run`'s file list. **Not yet confirmed against the real camera** — this was found while
+chasing a *different*, still-unexplained symptom (a recurring `onStateChanged` "Cannot find module
+'chrome-extension://.../<hash>.js'" message tracing to the audio**transcoder** worker chunk, which
+per source should only ever be constructed by `VideoTagPlayer`, yet the user confirmed only
+`<canvas>` — not `<video>` — exists in the DOM, i.e. `CanvasTagPlayer` should be the active
+renderer). That contradiction is still open; this AAC-decoder gap is a separate, independently-real
+bug found along the way, not a confirmed fix for the black-canvas report itself.
