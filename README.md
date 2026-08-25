@@ -89,6 +89,31 @@ sequence diagrams.
 | [docs/TC.md](docs/TC.md) | Test case catalog for the Player and Server, mapped to SRS requirement IDs |
 | [docs/test-script.md](docs/test-script.md) | Step-by-step manual/automated procedures for executing the test cases |
 
+## Installing this package in another project
+
+This package is published as **`@melchi45/rtsp-over-websocket`** to **GitHub
+Packages** (`.github/workflows/publish-player.yml`), not the public npm
+registry — GitHub Packages requires an authenticated token for `npm
+install` regardless of whether the package/repo is public or private, so
+every consumer needs a token even just to install:
+
+1. Create a [personal access token](https://github.com/settings/tokens) with
+   `read:packages` scope.
+2. In the consuming project, add a `.npmrc` (don't commit the token itself —
+   use an env var):
+   ```
+   @melchi45:registry=https://npm.pkg.github.com
+   //npm.pkg.github.com/:_authToken=${GH_PACKAGES_TOKEN}
+   ```
+3. `npm install @melchi45/rtsp-over-websocket`
+
+If `npm install` fails with `EALLOWREMOTE`, the `.npmrc` above is either
+missing or wasn't in place before you ran `npm install` — npm 11+'s
+`allow-remote: none` default blocks the dependency's tarball fetch unless
+the `@melchi45:registry` line is configured first, since without it npm
+compares the tarball's host (`npm.pkg.github.com`) against the default
+registry (`registry.npmjs.org`) instead.
+
 ## Building
 
 ```
