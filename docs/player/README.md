@@ -1,5 +1,22 @@
 # `src/player` — Per-Class Reference Documentation
 
+*Index and reading guide for the 8-file, per-class reference doc set covering every subsystem under `src/player`
+— structure, method analysis, call stacks, RFC/standard references, and relations/data flow, one file per
+subsystem.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` and link them from `src/player/README.md` (initial version) |
+| 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-26 | Add file 09 (MP4 container generation) to the index, RFC map, and discrepancies list |
+
+---
+
 This directory is a deep, per-class reference for every subsystem under `src/player`: for each
 class it records **Structure**, **Method Analysis**, **Call Stack** (real invocation chains traced
 from the code), **RFC / Standard References**, and **Relations & Data Flow** to other classes.
@@ -14,7 +31,7 @@ It complements two existing documents rather than replacing them:
 
 ## How the set is organized
 
-The library is documented in 8 files, split by subsystem so each stays a manageable read. Files
+The library is documented in 9 files, split by subsystem so each stays a manageable read. Files
 cross-reference each other by class name only — a class documented in file *N* that collaborates
 with a class in file *M* is named, not re-explained.
 
@@ -28,6 +45,7 @@ with a class in file *M* is named, not re-explained.
 | [06-listen-audio.md](06-listen-audio.md) | Audio decode + playback | `AudioDecoder` hierarchy (AAC/G711/G726x/OPUS), `AudioPlayer`, `AudioPlayerAAC`, `AudioPlayerGxx` |
 | [07-talk-backup-worker.md](07-talk-backup-worker.md) | Two-way audio, client-side backup, Web Workers | `Talk`, `G711AudioEncoder`, `BackupProvider`, `FileMaker`, `AssemblyDecoder`, `AssemblyTranscoder`, `MjpegDepacketizer`, `SunapiRequestTask`, `AviFormatWriter`/`AviFileWriter`, `BackupSession` |
 | [08-util.md](08-util.md) | Stand-alone utilities | `BufferList`, `CircularTypedArrayQueue`, `Mean`/`Median`, `IntervalTimer`, `Fisheye3D`/`Fisheye3DMulti`, misc. helpers |
+| [09-mp4-container-generation.md](09-mp4-container-generation.md) | Box-level fMP4/ISOBMFF generation (vendored, not a class) | `vendor/mp4Generator.js` — `ftyp`/`moov`/`moof`/`mdat` box tree, per-codec `stsd` entries |
 
 ## End-to-end flow across the documents
 
@@ -96,7 +114,7 @@ sections; this is a quick index of which standard governs which part of the wire
 | RFC 3640 (MPEG-4 generic / AAC RTP payload) | `AACSession` AU-header parsing | 04, 06 |
 | RFC 7587 (Opus RTP payload) / RFC 6716 (Opus codec) | `OPUSSession`, `OPUSAudioDecoder` (delegates to the browser's native WebCodecs `AudioDecoder`) | 04, 06 |
 | ITU-T G.711 / G.726 | Codec bitstream itself (not an RFC) | 04, 06 |
-| W3C Media Source Extensions + ISO/IEC 14496-12 (ISOBMFF/fMP4) | `VideoTagPlayer`'s muxing into a `SourceBuffer` | 05 |
+| W3C Media Source Extensions + ISO/IEC 14496-12 (ISOBMFF/fMP4) | `VideoTagPlayer`'s muxing into a `SourceBuffer`; box-level detail in `mp4Generator` | 05, 09 |
 | WebGL (Khronos/W3C) | `WebGLCanvas`/`YUVWebGLCanvas` rendering path | 05 |
 | Microsoft RIFF/AVI (no IETF/ITU standard) | `AviFormatWriter`/`AviFileWriter` local recording | 07 |
 | PKWARE .ZIP spec (no IETF/ITU standard) | `zipWorker` local export | 07 |
@@ -135,3 +153,7 @@ maintainer's attention:
   `RTSPOverWebSocket` `codec` attribute allow-list (file 01, REQ-PLY-027) still doesn't list these
   three — that attribute isn't actually required for playback to work (confirmed live), so it's a
   documentation/API-surface gap, not a functional one.
+- `vendor/mp4Generator.js`'s MJPEG `stsd` branch references `types.mpv4`, which doesn't exist in its
+  own `types` table (only `mp4v` does) — an undefined-FourCC bug, but confirmed unreachable:
+  `MediaRouter.selectVideoPlayer()` always forces `tagMode = 'canvas'` for MJPEG, so `VideoTagPlayer`
+  (and this branch) never runs for it (see file 09).

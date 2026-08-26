@@ -1,5 +1,23 @@
 # 05. Video Player Rendering (`src/player/video/player`)
 
+*Per-class reference for the rendering hierarchy that turns a decoded (or, for MJPEG, still-encoded JPEG) video
+frame into visible pixels: the canvas/WebGL pipeline and the `<video>`-tag/MSE pipeline.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
+| 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
+| 2026-08-11 | Add real B-frame support to `VideoTagPlayer` via ISOBMFF composition-time-offsets |
+| 2026-08-11 | Guard `VideoTagPlayer.createAudioSample()` against undefined `frameData` |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-26 | Cross-link the new box-level MP4 container generation doc (file 09) |
+
+---
+
 This document covers the rendering hierarchy that turns a decoded (or, for MJPEG, still-encoded
 JPEG) video frame into visible pixels: the `VideoPlayer` abstract base and its two concrete
 strategies — the canvas/WebGL pipeline (`CanvasTagPlayer` + `CanvasRenderer` + the `webgl/`
@@ -939,6 +957,10 @@ Supporting types (`Mp4TimeStamp`, `Mp4Sample`, `Mp4VideoTrackInfo`, `Mp4AudioTra
 `Mp4BoxInfo`) describe exactly the shapes `VideoTagPlayer` constructs and passes in — not the full
 internal box-building surface of the underlying JS. See `VideoTagPlayer`'s section above for how
 each of these three functions is actually invoked.
+
+For the actual box tree these three functions build inside `mp4Generator.js` — the `ftyp`/`moov`/
+`stsd`/`moof`/`traf`/`trun` structure, every codec's sample-entry/config-box byte layout, and known
+dead-code quirks — see [09-mp4-container-generation.md](09-mp4-container-generation.md).
 
 ---
 

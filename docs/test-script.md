@@ -1,5 +1,20 @@
 # Test Script
 
+*Concrete, runnable procedures for executing the manual cases in [TC.md](TC.md).*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-04 | Add a React wrapper (Player.tsx) and demo panel, rename `custom/` to `elements/` (initial version) |
+| 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-26 | Note `mp4Generator.test.ts` coverage in §1; add an optional fMP4 container check to §3 step 6 |
+
+---
+
 Concrete, runnable procedures for executing the cases in [TC.md](TC.md). Section numbers below correspond to the
 "Coverage" column references there (e.g. "see test-script §3").
 
@@ -33,6 +48,12 @@ Expected: all suites pass. Two known non-regressions, per `CLAUDE.md`:
   gotchas" for the fix.
 
 To watch a single file while iterating: `npm run test:player:watch -- RTSPOverWebSocket`.
+
+This suite includes `vendor/mp4Generator.test.ts`, covering VP9/AV1 `stsd` sample-entry byte packing and the
+version-1 composition-time-offset `trun` layout — see
+[docs/player/09-mp4-container-generation.md](player/09-mp4-container-generation.md#testing) for what is and
+isn't covered there (the `moov`/`stbl` tree and H264/H265/MJPEG `stsd` branches are only exercised indirectly,
+via the manual check in step 6 below).
 
 ## 2. Server build sanity
 
@@ -77,6 +98,11 @@ this exact flow — otherwise, or to verify by hand, follow these steps:
    - Video renders within a couple seconds of clicking Play.
    - The statistics overlay (if enabled) shows non-zero frame rate / bitrate / RTP-received counters.
    - Audio is audible unless muted.
+   - **Optional container check**: if the session negotiated `video`-tag/MSE mode (H.265, or H.264 above the
+     size threshold — see `MediaRouter.selectVideoPlayer()`), open `chrome://media-internals` in a second tab
+     *before* connecting, find this player's `<video>` entry, and confirm `SourceBuffer` append events succeed
+     with no `AppendBuffer` errors — a real-world smoke test of the fMP4 boxes
+     [09-mp4-container-generation.md](player/09-mp4-container-generation.md) documents.
 
 7. **Exercise playback controls (TC-PLY-022, TC-PLY-024):** Click **Pause**, confirm the frame freezes; click
    **Play** again, confirm it resumes; toggle mute/volume if exposed in the panel; click **Stop**, confirm

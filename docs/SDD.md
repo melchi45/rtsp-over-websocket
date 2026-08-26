@@ -1,10 +1,33 @@
 # Software Design Description — `src/player` Classes
 
+*An IEEE 1016-style Software Design Description (SDD) covering every class defined in `src/player` — structure,
+responsibilities, public interface, and design notes, one entry per class.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim · **Milestone:** —
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Document the `src` attribute and 401 retry redesign (initial version) |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-26 | Point `VideoTagPlayer`'s entry at the new box-level MP4 container generation doc |
+| 2026-08-26 | Note the PO Token/`deno`/`mweb`-client YouTube fetch changes (`e9a7e70`) as out of this document's scope |
+
+---
+
 An IEEE 1016-style Software Design Description (SDD) covering every class defined in `src/player`
 (97 classes across 63 files). This is the class-level companion to
 [README.md](../src/player/README.md) (which gives the same inventory as inheritance/composition
 diagrams) and [DESIGN.md](DESIGN.md) (which covers state machines, protocols, and algorithms) —
 start there for the big picture; use this document to look up one class's contract in detail.
+
+**Out of scope**: this document covers `src/player` classes only. Server-side changes — such as the YouTube
+PO Token provider (`bgutil-ytdlp-pot-provider`) and `deno` JS-runtime setup that `src/server/services/
+transcodeSession.ts` now depends on to fetch modern YouTube videos without a `403` (commit `e9a7e70`) — touch no
+`src/player` class and are intentionally not documented here. See `CLAUDE.md`'s "Environment gotchas" section,
+`README.md`'s "External tools" section, and `MEMORY.md`'s `yt-dlp-po-token-provider-final-fix` entry for the
+full install/decision history instead.
 
 ## How to read an entry
 
@@ -1817,6 +1840,7 @@ Drives a `<video>` element via MediaSource Extensions: demuxes RTP-depacketized 
 - The first audio sample after (re)init is seeded with a fallback `duration` (`audioInfo.samplingDuration`) rather than left unset — an MP4 sample with duration 0 crashes Chrome's MSE audio decoder and kills playback after the first frame.
 - `digitalZoom`/`bufferingVideoData`/`controlStepPlay`/`sendToBufferManager` are provably unreachable in the real wired-up system (MediaRouter always guards these behind `tagMode === 'canvas'`), but are stubbed to throw (matching legacy's real `TypeError` crash) purely so the class structurally satisfies `VideoPlayerLike`.
 - Several legacy fields/branches confirmed 100% dead (write-only or unreachable, e.g. `getAudioFrameDuration`, `changeSourceBuffer`, `isCanPlay`, `videoSizeCallback`, `addBuffer`/`buildWaveHeader` WAV recorder) were dropped rather than ported as inert weight — see in-file NOTE comments.
+- Box-level detail of the fMP4/ISOBMFF segments this class builds via `vendor/mp4Generator` (not itself a class, so out of this SDD's per-class scope) is documented separately in [docs/player/09-mp4-container-generation.md](player/09-mp4-container-generation.md).
 
 ---
 
