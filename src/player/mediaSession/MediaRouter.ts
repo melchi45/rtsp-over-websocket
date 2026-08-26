@@ -1455,7 +1455,12 @@ export class MediaRouter {
             this.tagMode = 'video';
           }
         } else {
-          if ((codecType === 'H264' && size > FHD_SIZE) || (codecType === 'H265' && (this.spsParser as H265SPSParser).getProfileName() !== 'Main')) {
+          if (this.defaultVideoTagMode !== null) {
+            this.tagMode = this.defaultVideoTagMode as 'canvas' | 'video';
+          } else if (
+            (codecType === 'H264' && size > FHD_SIZE) ||
+            (codecType === 'H265' && (this.spsParser as H265SPSParser).getProfileName() !== 'Main')
+          ) {
             this.errorCallback?.({
               errorCode: fromHex('0x0301'),
               oldErrorCode: '996',
