@@ -26,6 +26,10 @@ export interface MediaRouterLike {
   onAudioData?: (...args: unknown[]) => void;
   onMetadata?: (...args: unknown[]) => void;
   gotAudioSupport(supported: boolean): void;
+  /** Learned from SDP, before any RTP data arrives — see MediaRouter's
+   * `audioCodecHint` field comment for why this needs to be known ahead of
+   * the reactive per-packet `onAudioData` codec discovery. */
+  setAudioCodecHint(codecType: string): void;
   addListener(type: 'rtpClient', callback: (msgType: MediaRouterMessageType, data: unknown) => void): void;
   /**
    * Resolves with the negotiated sample rate. The callback receives raw
@@ -162,6 +166,7 @@ export class RtpClient {
             session.init({ clockFreq: Number(entry.ClockFreq), bitrate: entry.Bitrate || 64 });
             session.mime = entry.codecMime ?? '';
             rtpSession = session;
+            this.mediaRouter.setAudioCodecHint('G711');
           } else {
             this.audioTalkSession = new AudioTalkSession(entry.RtpInterlevedID!);
             this.mediaRouter
@@ -183,6 +188,7 @@ export class RtpClient {
             });
             session.mime = entry.codecMime ?? '';
             rtpSession = session;
+            this.mediaRouter.setAudioCodecHint('G726');
           }
           break;
         }
@@ -195,6 +201,7 @@ export class RtpClient {
             });
             session.mime = entry.codecMime ?? '';
             rtpSession = session;
+            this.mediaRouter.setAudioCodecHint('OPUS');
           }
           break;
         }
@@ -211,6 +218,7 @@ export class RtpClient {
             });
             session.mime = entry.codecMime ?? '';
             rtpSession = session;
+            this.mediaRouter.setAudioCodecHint('AAC');
           }
           break;
         }

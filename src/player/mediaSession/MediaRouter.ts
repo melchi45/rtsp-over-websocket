@@ -166,6 +166,9 @@ export interface VideoPlayerLike {
    * `onVideoData` call, which it needs to decide real-MSE vs. WebCodecs-
    * bridge for VP8/VP9/AV1 (see `VideoTagPlayer.ts`'s `decideUseBridge`). */
   codec?: string;
+  /** Set right before init(), same as `codec` above — see MediaRouter's
+   * `audioCodecHint` field comment and `setAudioCodecHint()`. */
+  audioCodecHint?: string;
   boxsize: number;
   framedrop: boolean;
   speed: number;
@@ -368,6 +371,14 @@ export class MediaRouter {
 
   private audioPlayer: AudioPlayerLike | null = null;
   private audioCodec: string | null = null;
+  // Learned from SDP (RtpClient.sendSdpInfo(), well before any RTP data
+  // arrives) via setAudioCodecHint() — unlike `audioCodec` above, which is
+  // only set reactively from the first real onAudioData call. Passed to a
+  // newly-created VideoPlayerLike right before init() so it can make a
+  // SourceBuffer-codecs decision (Opus vs. AAC-shaped) that doesn't depend
+  // on whether the first video I-frame or the first audio packet happens to
+  // arrive first — see VideoTagPlayer.ts's init()/setAudioInfo().
+  private audioCodecHint: string | null = null;
   private audioBitrate: number | null = null;
   private audioTalker: TalkLike | null = null;
 
@@ -741,6 +752,7 @@ export class MediaRouter {
           self.player.channelId = self.channelId;
           self.player.deviceType = self.deviceType;
           self.player.codec = streamData.codecType;
+          self.player.audioCodecHint = self.audioCodecHint ?? undefined;
           self.player.setTimeStampCallback((ts: unknown) => self.sendTimeStamp(ts));
           if (self.errorCallback) self.player.setErrorCallback(self.errorCallback);
           if (self.resizeCallback) self.player.setResizeCallback(self.resizeCallback);
@@ -1537,7 +1549,16 @@ export class MediaRouter {
     this.player = null;
     this.videoSize = null;
     this.videoCodec = null;
+    this.audioCodecHint = null;
     this.tagMode = 'canvas';
+  }
+
+  /** Learned from SDP (well before any RTP data arrives) — see the
+   * `audioCodecHint` field comment. `codecType` matches the strings
+   * `AudioStreamData.codecType`/`setAudioInfo()` use ('OPUS'/'AAC'/'G711'/
+   * 'G726'), not the raw SDP codec name. */
+  setAudioCodecHint(codecType: string): void {
+    this.audioCodecHint = codecType;
   }
 
   stepRequest(): void {

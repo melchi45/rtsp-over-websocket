@@ -118,6 +118,14 @@ export abstract class VideoPlayer {
     this.codecValue = v;
   }
 
+  // Set from SDP (see MediaRouter's audioCodecHint) before the first
+  // onVideoData/onAudioData call, so a SourceBuffer-codecs-string decision
+  // that has to be made at first-video-I-frame time (VideoTagPlayer's
+  // addSourceBuffer()) doesn't have to guess whether audio is Opus based on
+  // arrival order — see VideoTagPlayer.ts's init()/setAudioInfo(). Plain
+  // field, not an accessor: no side effect needed, matching `type` above.
+  audioCodecHint: string | undefined;
+
   get rfps(): number | undefined {
     return this.rfpsValue;
   }

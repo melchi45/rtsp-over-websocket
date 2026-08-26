@@ -264,6 +264,16 @@ export class VideoTagPlayer extends VideoPlayer {
   // — see mp4Generator.js's opusSample()/dOps()), so this is really just
   // "is the current audio track Opus" rather than "real vs. transcoded".
   private opusActive = false;
+  // True when opusActive above was pre-seeded from audioCodecHint (see
+  // init()) rather than confirmed by a real onAudioData call yet. Needed as
+  // an extra switchingCodec input in setAudioInfo() so the *first* real Opus
+  // audio-info call still runs its normal population branch (real
+  // channelCount/sampleRate, createInitSegment()) — without this, comparing
+  // only against opusActive would see "no change" (it already matches, from
+  // the hint) and wrongly skip that branch. Only affects the Opus path;
+  // AAC/G711/G726 are unaffected (their switchingCodec check never depended
+  // on this).
+  private opusActiveIsHintOnly = false;
   // What setSourceBuffer()/addSourceBuffer() actually declared the
   // SourceBuffer's audio codecs string as, at the moment it was created —
   // see setAudioInfo()'s use of this: MSE doesn't allow changing a
@@ -1867,6 +1877,23 @@ export class VideoTagPlayer extends VideoPlayer {
 
     this.videoElement = element;
 
+    // Seed opusActive from the SDP-derived hint (see VideoPlayer.ts's
+    // audioCodecHint field) so the *first* SourceBuffer creation — which
+    // happens at the first video I-frame in onVideoData(), not necessarily
+    // after the first audio packet — already declares the right MSE codecs
+    // string. Without this, a video I-frame arriving before the first Opus
+    // audio packet locks the SourceBuffer into a non-Opus ('mp4a.40.2')
+    // declaration that setAudioInfo() can then never switch away from (MSE
+    // forbids changing a SourceBuffer's codecs after creation), silently and
+    // permanently dropping audio for the rest of the connection — see
+    // setAudioInfo()'s codec-mismatch guard. `opusActiveIsHintOnly` (see
+    // setAudioInfo()) still forces the first real Opus setAudioInfo() call to
+    // run its normal audioInfo-population branch even though opusActive
+    // already matches here, so real channelCount/sampleRate values are never
+    // skipped.
+    this.opusActive = this.audioCodecHint === 'OPUS';
+    this.opusActiveIsHintOnly = this.opusActive;
+
     this.elementSetting();
     this.useBridge = this.decideUseBridge(this.codec);
     if (this.useBridge) {
@@ -2062,6 +2089,7 @@ export class VideoTagPlayer extends VideoPlayer {
       this.sourceBufferAudioIsOpus = false;
       this.realAacActive = false;
       this.opusActive = false;
+      this.opusActiveIsHintOnly = false;
 
       this.videoCodecInfo = null;
       this.audioCodecInfo = { codecType: 0, bitrate: 0 };
@@ -2254,16 +2282,21 @@ export class VideoTagPlayer extends VideoPlayer {
     // 'mp4a.40.2', so switching between those two never needs this check).
     // MSE doesn't allow changing a SourceBuffer's codecs after creation, and
     // unlike the video codec (already known before the SourceBuffer is
-    // first created), there's no guarantee the real audio codec is known
-    // that early too — if the buffer's already been created for the other
-    // one, there's no safe way to switch mid-stream (attempting a
-    // remove+recreate here previously wedged the whole MediaSource — see
-    // git history), so this stream's audio is dropped rather than crash
-    // video along with it.
+    // first created), the real audio codec used to only be knowable once the
+    // first RTP audio packet arrived — init() now pre-seeds opusActive from
+    // audioCodecHint (SDP, known well before either the first video I-frame
+    // or the first audio packet), so in the normal case this guard's two
+    // sides already agree and it's a no-op. It still matters as a fallback
+    // for a missing/wrong hint, or if this stream's audio codec genuinely
+    // isn't decided until mid-connection: if the buffer's already been
+    // created for the other one, there's no safe way to switch mid-stream
+    // (attempting a remove+recreate here previously wedged the whole
+    // MediaSource — see git history), so this stream's audio is dropped
+    // rather than crash video along with it.
     if (this.sourceBuffer !== null && isOpus !== this.sourceBufferAudioIsOpus) {
       return;
     }
-    const switchingCodec = isRealAac !== this.realAacActive || isOpus !== this.opusActive;
+    const switchingCodec = isRealAac !== this.realAacActive || isOpus !== this.opusActive || (isOpus && this.opusActiveIsHintOnly);
     if (switchingCodec) {
       this.appendSegmentToSourceBuffer();
 
@@ -2305,6 +2338,7 @@ export class VideoTagPlayer extends VideoPlayer {
       }
       this.realAacActive = isRealAac;
       this.opusActive = isOpus;
+      this.opusActiveIsHintOnly = false;
 
       this.segmentArray = [];
       this.audioSamples = [];

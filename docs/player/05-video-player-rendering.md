@@ -110,8 +110,13 @@ MP4 directly and feeds it to a native `<video>` element via Media Source Extensi
 
 - **Structure.** Abstract base class (`VideoPlayer.ts:46`). Plain fields: `boxsize`, `currentFrameCount`,
   `previousFrameCount`, `framedrop`, `type`, `frameRate`, `minRemainTime`, `minTimerInterval`,
-  `maxdelay`, `currentdelay`, plus optional callbacks `errorCallback`/`eventStatisticsCallback`/
-  `eventCaptureCallback`/`eventInstantPlaybackCallback` (`:47-69`). Backing-field-driven getter/setter
+  `maxdelay`, `currentdelay`, `audioCodecHint` (real bug fix: set by `MediaRouter.handleVideoData`
+  from SDP — see `MediaRouter`'s `setAudioCodecHint()` in `03-mediaSession-core-video.md` — right
+  before `init()`, alongside `codec`, so a subclass can know the audio codec *before* its first
+  `onVideoData`/`onAudioData` call rather than only reactively; `VideoTagPlayer` is the only current
+  consumer, see its `init()`/`setAudioInfo()` entries below), plus optional callbacks
+  `errorCallback`/`eventStatisticsCallback`/`eventCaptureCallback`/`eventInstantPlaybackCallback`
+  (`:47-69`). Backing-field-driven getter/setter
   pairs (real TS accessors, not plain fields) for `channelId`, `playmode`, `instantplayback`,
   `deviceType`, `codec`, `rfps`, `audioshift`, `speed` (`:81-175`) — ported from legacy's
   `Object.defineProperty` calls on `VideoPlayer`'s prototype so both subclasses inherit the exact
@@ -623,7 +628,10 @@ flowchart TD
     `sequenseNum`, `videoSamples`/`audioSamples` (pending per-track sample queues), `baseVideoTime`/
     `baseAudioTime`/`baseNTPTimestamp` (decode-time bases), `boxStartTime`, `lastBoxSize`,
     `audioInfo: Mp4AudioTrackInfo`, `videoInfoBox: Mp4VideoTrackInfo | null`, `dummyAudio`,
-    `realAacActive`/`opusActive` (which real audio codec is currently muxed).
+    `realAacActive`/`opusActive` (which real audio codec is currently muxed), `opusActiveIsHintOnly`
+    (true when `opusActive` was pre-seeded from `audioCodecHint` — inherited from `VideoPlayer`,
+    set by `MediaRouter` from SDP — rather than confirmed by a real `onAudioData` call yet; see
+    `init()`/`setAudioInfo()` below).
   - **Timing/statistics**: `bufferedFrameCount`, `defaultDelay`/`delay` (browser-tiered — Chrome/
     Windows, Safari/Mac ≥10.13, and a generic-other bucket each get different
     `*_DEFAULT_FRAME_BUFFER_COUNT`/`*_DEFAULT_DELAY_TIME` constants, chosen in the constructor via
@@ -641,12 +649,15 @@ flowchart TD
     inspects `getBrowserInfo()` to select buffering constants (throwing `RTSPOverWebSocketError
     0x090D` for unsupported old-Safari/OSX-10.7 combinations), and eagerly spawns the audio
     transcoder worker with its `onmessage → audiotranscoderWorkerMessage`.
-  - `init(element)` (`:1681-1704`) — registers a `beforeunload` handler that flushes the
+  - `init(element)` (`:1860-1905`) — registers a `beforeunload` handler that flushes the
     `MediaSource` via `endOfStream()` before calling `close()`; sets `background_img` (loading
-    spinner asset, jQuery-detection-adjusted); calls `elementSetting()` (wires the full
-    `<video>` event-listener set — `playing`/`pause`/`canplay`/`waiting`/`seeking`/`seeked`/
-    `timeupdate`/etc., `:302-311`) and `createMediaSource()` (constructs a `new MediaSource()`,
-    assigns it to `videoElement.src` via `URL.createObjectURL`, and listens for `sourceopen`).
+    spinner asset, jQuery-detection-adjusted); seeds `opusActive` (and `opusActiveIsHintOnly`) from
+    `this.audioCodecHint` — set by `MediaRouter` from SDP, before either the first video I-frame or
+    the first audio packet arrives, see `setAudioInfo()`'s doc entry below for why; calls
+    `elementSetting()` (wires the full `<video>` event-listener set —
+    `playing`/`pause`/`canplay`/`waiting`/`seeking`/`seeked`/`timeupdate`/etc., `:302-311`) and
+    `createMediaSource()` (constructs a `new MediaSource()`, assigns it to `videoElement.src` via
+    `URL.createObjectURL`, and listens for `sourceopen`).
   - `mediaSourceEventListener('sourceopen')` (`:327-340`) → `setSourceBuffer()` (`:1376-1398`) —
     on first call, builds the MIME/codecs string
     `video/mp4;codecs="${videoCodecInfo}, ${opusActive ? 'opus' : 'mp4a.40.2'}"`, checks
@@ -723,13 +734,36 @@ flowchart TD
     'canvas'`/`stepFlag` checks that are provably always false when a `VideoTagPlayer` is active
     — so in the real wired-up system these are unreachable, but the throw preserves the genuine
     legacy crash if something ever did call them.
-  - `setAudioInfo(audioinfo)` (`:2051-2130`) — the audio-codec-switch handler: refuses to switch
+  - `setAudioInfo(audioinfo)` (`:2262-2347`) — the audio-codec-switch handler: refuses to switch
     (drops the new codec's audio silently) if the `SourceBuffer` was already created for the other
     Opus-vs-non-Opus family (MSE can't change codecs string post-creation); otherwise flushes
     pending segments, rebuilds `this.audioInfo` (real AAC uses actual `sampleRate`/
     `channelCount`/`samplingFrequencyIndex`; Opus uses a native-mux config with no
     `audioobjecttype`; G711/G726 keeps a fixed 8kHz-mono AAC-transcode target), and calls
     `createInitSegment()` again to re-declare the init segment with the new track config.
+    **Real-camera bug, fixed**: the very first `SourceBuffer` is created at the first video
+    I-frame (`onVideoData()`, not here), using whatever `opusActive` happens to be *at that
+    moment* to pick `'opus'` vs. `'mp4a.40.2'` in the MIME string. On a real camera it's a genuine
+    race which arrives first — the first video I-frame or the first audio RTP packet — and
+    `opusActive` used to default to `false` until an actual `onAudioData` call ran. If the video
+    I-frame won the race (confirmed live: reproduced with a real H.264+Opus camera — 1 frame
+    renders, then playback freezes forever while RTP keeps arriving, because the `<video>`
+    element's `buffered` range is the *intersection* across tracks and the Opus audio track never
+    receives a single sample after this point), the `SourceBuffer` would lock in `'mp4a.40.2'`,
+    and the moment the real Opus `onAudioData` call arrived, this method's mismatch guard above
+    would silently and permanently drop that stream's audio — with the practical effect of
+    stalling video too, not just losing sound. Fixed by having `init()` (see above) pre-seed
+    `opusActive` from `audioCodecHint`, which `MediaRouter` learns from SDP (`RtpClient.
+    sendSdpInfo()`) well before any RTP data flows either direction — so the first `SourceBuffer`
+    is now created with the right codecs string regardless of video/audio arrival order. The new
+    `opusActiveIsHintOnly` field (cleared inside this method's `switchingCodec` branch) exists
+    only so the *first* real Opus `setAudioInfo()` call still runs its population branch even
+    though `opusActive` already matches from the hint — without it, the equality would look like
+    "no change" and the real `channelCount`/`sampleRate`-derived fields would never get filled in.
+    AAC/G711/G726 are unaffected by this fix or the bug: they all share the same `'mp4a.40.2'`
+    MIME string regardless of arrival order, so the mismatch guard never triggers for them (and
+    the field's real-camera default of `false` already matches `opusActive`'s default). The mismatch
+    guard above is kept as a fallback for a missing/wrong SDP hint.
   - `setVideoInfo(videoinfo, codecType)` (`:2315-`) — **the actual root cause of a VP9/AV1
     `onAudioData ... byteLength` crash**, isolated via a temporary diagnostic
     `console.error(err.stack)` at the `MediaRouter.onAudioData` catch site (the two fixes below

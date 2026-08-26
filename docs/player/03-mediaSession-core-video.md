@@ -273,12 +273,23 @@ indexed **by interleaved channel ID**, not by track index; `sendAudioTalkDataCal
   - `'VP9'` → `new VP9Session()`, same framerate wiring.
   - `'AV1'` → `new AV1Session()`, same framerate wiring.
   - `'JPEG'` → `new MjpegSession()`, `init()` (no framerate call).
-  - `'G.711'` → if `trackID` does **not** contain `trackID=t` (talk) or `trackID=back` (backup), creates `G711Session` with `{ clockFreq, bitrate }`; otherwise (talk track) creates `AudioTalkSession` and kicks off `mediaRouter.startAudioTalk(...)` to bridge Web Audio capture → RTP encoding.
-  - `'G.726-16'|'G.726-24'|'G.726-32'|'G.726-40'` → (non-talk/backup tracks only) `G726Session` with bitrate parsed either from `entry.Bitrate` or from the codec-name's numeric suffix (`substr(6,2)`).
-  - `'OPUS'` → (non-talk/backup) `OPUSSession` with `{ clockFreq, bitrate }`.
-  - `'mpeg4-generic'` → (non-talk/backup) `AACSession` with `{ config, clockFreq, bitrate, sizeLength, indexLength, indexDeltaLength }` — the RFC 3640 (MPEG-4 generic / AAC-hbr) fmtp parameters.
+  - `'G.711'` → if `trackID` does **not** contain `trackID=t` (talk) or `trackID=back` (backup), creates `G711Session` with `{ clockFreq, bitrate }` and calls `mediaRouter.setAudioCodecHint('G711')`; otherwise (talk track) creates `AudioTalkSession` and kicks off `mediaRouter.startAudioTalk(...)` to bridge Web Audio capture → RTP encoding.
+  - `'G.726-16'|'G.726-24'|'G.726-32'|'G.726-40'` → (non-talk/backup tracks only) `G726Session` with bitrate parsed either from `entry.Bitrate` or from the codec-name's numeric suffix (`substr(6,2)`), and `mediaRouter.setAudioCodecHint('G726')`.
+  - `'OPUS'` → (non-talk/backup) `OPUSSession` with `{ clockFreq, bitrate }`, and `mediaRouter.setAudioCodecHint('OPUS')`.
+  - `'mpeg4-generic'` → (non-talk/backup) `AACSession` with `{ config, clockFreq, bitrate, sizeLength, indexLength, indexDeltaLength }` — the RFC 3640 (MPEG-4 generic / AAC-hbr) fmtp parameters — and `mediaRouter.setAudioCodecHint('AAC')`.
   - `'MetaData'` → `new MetaSession()`, `init()`.
   - default: no session created for this entry.
+
+  The `setAudioCodecHint(codecType)` calls above (real bug fix — see `MediaRouter.handleVideoData`
+  and `VideoTagPlayer.setAudioInfo()`'s doc entries in `05-video-player-rendering.md`) exist so the
+  audio codec is known to `MediaRouter` from SDP *before* any RTP data flows either direction, since
+  `sendSdpInfo` runs once at `SETUP` time, well ahead of both the first video and first audio
+  packet. Without it, `VideoTagPlayer`'s first `SourceBuffer` (created reactively at the first video
+  I-frame) could only guess the audio codec from a hardcoded default, and on a real camera where the
+  first Opus audio packet loses the race against the first video I-frame, that guess is wrong and
+  MSE then forbids ever correcting it — silently and permanently dropping that connection's audio
+  (and, in practice, stalling video too, since `<video>`'s playable range is gated on every declared
+  track having data).
 
   If a session was created, it also unconditionally creates a companion `RTCPSession`
   (`rtcpSession.interleavedId = entry.RtcpInterlevedID`, `deviceType`, `channelId`, `type =
@@ -501,9 +512,14 @@ Selected methods (full public surface is large; grouped by role):
   header via `VP8HeaderParser`/`VP9HeaderParser`/`AV1HeaderParser` — see that section below) and, if
   the codec/size/dimensions changed or there is no
   current player, tears down and recreates the player via `selectVideoPlayer`, validates the
-  resolution via `checkVideoResolution`, wires timestamp/error/resize/framerate callbacks onto it,
-  resolves the DOM element via `selectVideoElement`, calls `player.init(videoElement)`, applies
-  mute/volume, and — if width/height changed — fires `resizeCallback` with a `VideoResizeInfo`.
+  resolution via `checkVideoResolution`, sets `player.codec = streamData.codecType` and
+  `player.audioCodecHint = self.audioCodecHint` (the SDP-learned value from `setAudioCodecHint()` —
+  see `RtpClient.sendSdpInfo()`'s doc entry above; real bug fix, see `VideoTagPlayer.setAudioInfo()`
+  in `05-video-player-rendering.md`), wires timestamp/error/resize/framerate callbacks onto it,
+  resolves the DOM element via `selectVideoElement`, calls `player.init(videoElement)` (both fields
+  above are set *before* this call specifically so a `VideoPlayerLike` implementation can use them
+  during `init()`, before its first `onVideoData`/`onAudioData`), applies mute/volume, and — if
+  width/height changed — fires `resizeCallback` with a `VideoResizeInfo`.
   On non-I-frames it still computes size info (for MJPEG's per-frame dimensions) and, once a
   player exists, reuses the cached `videoWidth`/`videoHeight`. Finally, if a player exists: for
   `tagMode === 'video'` I-frames it fills in `videoInfo.codecInfo`/`profileIdc`/`levelIdc` (H264)
