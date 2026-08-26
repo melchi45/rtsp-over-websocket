@@ -28,8 +28,15 @@ function validateCreateRequest(body: unknown): { value: CreateSessionRequest; ch
   if (typeof b.audioBitrateKbps !== 'number' || b.audioBitrateKbps <= 0 || b.audioBitrateKbps > 512) {
     return { error: '"audioBitrateKbps" must be a number between 1 and 512' };
   }
-  if (typeof b.username !== 'string' || b.username.length === 0) return { error: '"username" is required' };
-  if (typeof b.password !== 'string' || b.password.length === 0) return { error: '"password" is required' };
+  // Empty string is allowed for both — it opts the session out of RTSP
+  // Digest auth entirely (see CreateSessionRequest.username's comment in
+  // types.ts). One empty and the other not is rejected: there's no sensible
+  // half-authenticated state to start a session in.
+  if (typeof b.username !== 'string') return { error: '"username" must be a string (empty string for an unauthenticated session)' };
+  if (typeof b.password !== 'string') return { error: '"password" must be a string (empty string for an unauthenticated session)' };
+  if ((b.username.length === 0) !== (b.password.length === 0)) {
+    return { error: '"username" and "password" must either both be set or both be left empty' };
+  }
 
   // Optional — 0-based wire value (see Session.channel's comment in
   // types.ts). Omitted/undefined means "auto-assign the next free one".

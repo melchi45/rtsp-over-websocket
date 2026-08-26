@@ -114,7 +114,7 @@ sequenceDiagram
     Ffmpeg-->>API: encoded frame observed -> status: live
 
     Player->>API: ws(s)://.../StreamingServer (RTSP-over-WebSocket, as above)
-    API->>API: match channel -> session, digest auth against session credentials
+    API->>API: match channel -> session; digest auth against session credentials (skipped if session has none)
     API->>MediaMTX: relay RTSP for that session's publish path
     MediaMTX-->>Player: video/audio via the bridge
 ```
@@ -127,6 +127,10 @@ Key points:
 - **Sessions aren't automatically garbage-collected on failure/completion** — a `stopped`/`failed` session stays in
   the store (for status visibility) but no longer blocks its channel from being reused by a new session; an
   active (`starting`/`live`) session does block reuse.
+- **A session's username/password may both be left empty** to opt out of RTSP Digest auth entirely — the bridge
+  (`rtspOverWebSocket/server.ts`) then skips the `401` challenge and relays from the first request. Validated as
+  both-empty-or-both-set in `sessionRoutes.ts`; the demo page's Server tab exposes it as the Session Username
+  "Use" toggle (on by default).
 - **REST and the WebSocket bridge share a port per scheme** — `http`/`ws` both live on `HTTP_PORT`, `https`/`wss`
   both live on `HTTPS_PORT` (see `config.ts`). `npm run start:server` can start either or both, selected via
   `--http`/`--https` flags, `RTSP_WS_PROTOCOL`, or an interactive prompt.

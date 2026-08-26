@@ -52,7 +52,11 @@ export interface CreateSessionRequest {
   audioCodec: AudioCodec;
   /** kbps */
   audioBitrateKbps: number;
-  /** RTSP-over-WebSocket digest credentials this session will accept. */
+  /** RTSP-over-WebSocket digest credentials this session will accept. Both
+   * empty strings means the session requires no auth at all — the bridge
+   * (rtspOverWebSocket/server.ts) skips the Digest challenge entirely for
+   * such a session. Must be both-empty or both-non-empty; one empty and the
+   * other not is rejected at request-validation time (sessionRoutes.ts). */
   username: string;
   password: string;
   /** H264/H265 only — whether x264/x265 may emit B-frames (default true, ffmpeg's own default).

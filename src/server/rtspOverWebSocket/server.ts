@@ -11,7 +11,8 @@
  * the client wants (the channel number createSession() assigned), performs
  * one RTSP Digest (MD5) challenge/response against that session's own
  * username/password (set at session-creation time, not a real camera's
- * credentials), then relays between the WebSocket and a local TCP
+ * credentials) — or, if that session was created with empty username/
+ * password, skips the challenge entirely — then relays between the WebSocket and a local TCP
  * connection to this session's own MediaMTX publish path — the one this
  * server's own ffmpeg process is continuously pushing to (see
  * services/transcodeSession.ts), so there is no on-demand fan-out or
@@ -221,12 +222,19 @@ function handleConnection(ws: WebSocket): void {
       console.log(`[RtspOverWebSocket][${session.id.slice(0, 8)}] matched channel=${channel} -> ${backendTargetUri} (client base "${clientBaseUri}")`);
     }
 
-    const auth = parseDigestAuthorization(text);
-    if (!auth || !verifyDigest(auth, reqLine.method, session.request.username, session.request.password, nonce)) {
-      challenge(cseq);
-      return;
+    // Empty username/password means this session opted out of auth
+    // (sessionRoutes.ts only allows both-empty or both-non-empty) — skip
+    // the Digest challenge entirely and relay from the very first request.
+    if (session.request.username) {
+      const auth = parseDigestAuthorization(text);
+      if (!auth || !verifyDigest(auth, reqLine.method, session.request.username, session.request.password, nonce)) {
+        challenge(cseq);
+        return;
+      }
+      console.log(`[RtspOverWebSocket][${session.id.slice(0, 8)}] digest auth OK — switching to relay`);
+    } else {
+      console.log(`[RtspOverWebSocket][${session.id.slice(0, 8)}] session has no credentials — skipping digest auth, switching to relay`);
     }
-    console.log(`[RtspOverWebSocket][${session.id.slice(0, 8)}] digest auth OK — switching to relay`);
     state = 'relaying';
 
     (async () => {
