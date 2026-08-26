@@ -623,6 +623,8 @@ export class RTSPOverWebSocket extends HTMLElement {
         break;
       }
       case 'codec': {
+        // AV1/VP8/VP9 decode+render are already wired end to end (depacketize → WebCodecs decode →
+        // canvas/MSE render) but not accepted here yet — tracked as docs/ROADMAP.md's M-1.
         if (typeof newValue === 'undefined') {
           this._codec = null;
         } else if (newValue !== 'MJPEG' && newValue !== 'H264' && newValue !== 'H265' && newValue !== 'MPEG4') {
@@ -2104,6 +2106,7 @@ export class RTSPOverWebSocket extends HTMLElement {
     return this._codec;
   }
   set codec(v: string) {
+    // Same AV1/VP8/VP9 gap as attributeChangedCallback's 'codec' case above — see docs/ROADMAP.md's M-1.
     if (v !== 'MJPEG' && v !== 'H264' && v !== 'H265' && v !== 'MPEG4') {
       throw new RTSPOverWebSocketError({
         channelId: this.channel,

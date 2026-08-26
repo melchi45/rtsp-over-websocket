@@ -41,3 +41,9 @@ Update the matching section in the same change:
 - If the change is a non-obvious decision worth preserving beyond just the class docs (a redesign,
   a bug fix with a real root cause, a naming/architecture call), also add an entry to this repo's
   root `MEMORY.md`, matching its existing entries' style.
+- Whenever you create or edit any `docs/player/*.md` file, keep its own Title/Abstract/Version/
+  Author/History/Milestone header current: a new file gets the header from scratch; an existing
+  file gets a new row appended to its **History** table (never overwrite prior rows), and its
+  **Milestone** field updated if the change relates to a `docs/ROADMAP.md` item. The template and
+  the full rule (which applies to every file under `docs/`, not just `docs/player/`) are in
+  `CLAUDE.md`'s "Documentation headers" section — don't duplicate it here, just apply it.

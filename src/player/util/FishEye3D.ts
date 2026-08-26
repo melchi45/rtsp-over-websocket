@@ -16,7 +16,8 @@ function undefinedGlobalError(name: string): ReferenceError {
  * THREE API (`THREE.Geometry`/`Face3`/`AxisHelper`/`RGBFormat`/
  * `BufferGeometry.fromGeometry`), all removed in modern three.js — using a
  * caret range here would risk a "compatible" minor bump silently deleting
- * APIs this file depends on.
+ * APIs this file depends on. Upgrading past 0.84.0 is a tracked future milestone — see
+ * docs/ROADMAP.md's M-2 (blocked on rewriting against modern `BufferGeometry` APIs).
  *
  * Two confirmed real bugs are preserved as-is rather than fixed:
  *  - `update()`'s canvas-texture-refresh branch reads a global `livecanvas`

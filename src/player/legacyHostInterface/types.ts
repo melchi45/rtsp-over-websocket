@@ -103,7 +103,8 @@ export interface ControlPlayerInfo {
   };
 }
 
-/** Stand-in for the legacy StreamManager service — not yet ported to this repository. */
+/** Stand-in for the legacy StreamManager service — not yet ported to this repository.
+ * Tracked as a future milestone: see docs/ROADMAP.md's M-3. */
 export interface StreamManagerHandle {
   initStreamPlayer(info: RTSPOverWebSocketPlayerData, sunapiClient: SunapiClientHandle): void;
   controlPlayer(info: ControlPlayerInfo): void;
@@ -114,7 +115,8 @@ export interface StreamManagerHandle {
 
 export type StreamManagerCtor = new () => StreamManagerHandle;
 
-/** Stand-in for the legacy SunapiClient service — not yet ported to this repository. */
+/** Stand-in for the legacy SunapiClient service — not yet ported to this repository.
+ * Tracked as a future milestone: see docs/ROADMAP.md's M-3. */
 export type SunapiClientHandle = unknown;
 
 /** Inferred from `Attributes.get()` usage — actual shape is much larger. */

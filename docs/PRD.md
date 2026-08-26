@@ -1,5 +1,20 @@
 # Product Requirements Document (PRD)
 
+*Product-level requirements for the two products in this repository: the **Player** (`src/player`) and the
+**Server** (`src/server`, the YouTube-transcode demo/bridge).*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim · **Milestone:** —
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-04 | Harden the YouTube demo pipeline (yt-dlp staleness, graceful shutdown, keyframe gating) and add project docs (initial version) |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header; added "Future milestones" section |
+| 2026-08-26 | Add `deno`/`bgutil-ytdlp-pot-provider` to the Dependencies table (`e9a7e70`) |
+
+---
+
 Product-level requirements for the two products in this repository: the **Player** (`src/player`, the
 `<rtsp-over-websocket>` custom element) and the **Server** (`src/server`, the YouTube-transcode demo/bridge). See
 [MRD.md](MRD.md) for the motivating problem and [SRS.md](SRS.md) for detailed, testable requirements.
@@ -109,6 +124,8 @@ A small Express-based demo/dev server that (a) transcodes a YouTube video into a
 | --- | --- | --- |
 | `ffmpeg` | Server | Transcoding; must be installed separately, not bundled |
 | `yt-dlp` | Server | YouTube probing/downloading; standalone binary recommended over the apt package (staleness) |
+| `deno` | Server | JS runtime `yt-dlp` needs to solve YouTube's signature/"n" challenge; necessary but not sufficient alone (see next row) — installed user-locally, no sudo |
+| `bgutil-ytdlp-pot-provider` | Server | PO Token provider `yt-dlp` needs to download (not just probe) most modern YouTube videos without a `403`; requires Node.js >=22 (separate from this repo's own pinned Node 20). `scripts/ensure-bgutil-pot-provider.js` starts an already-built instance automatically (wired into `npm run start:server*`) but does not install one — see [README.md](../README.md#external-tools-required-by-srcserver) |
 | MediaMTX | Server | External RTSP server the transcode publishes to and the bridge relays from; not spawned by this repo |
 | `legacy-player` git submodule | Player (tests only) | Source of truth for parity tests; absence causes `ENOENT` test failures, not logic failures |
 | `three@0.84.0` | Player (fisheye dewarp) | Pinned below a known-DoS-advisory-free version is not currently possible without a rewrite — tracked in [README.md](../README.md#milestones) |
@@ -119,3 +136,14 @@ A small Express-based demo/dev server that (a) transcodes a YouTube video into a
   APIs, with no automated visual-regression check for the dewarp output (README "Milestones").
 - `legacyHostInterface`'s legacy host-app consumption path is currently unverified against a real host app
   (only contract-tested against inferred service shapes) — see `src/player/legacyHostInterface/types.ts`.
+
+## 5. Future milestones
+
+Full tracked list, with source-file pointers and status, lives in [docs/ROADMAP.md](ROADMAP.md); this is the
+product-level summary.
+
+| Milestone | Area | Status |
+| --- | --- | --- |
+| Allow `AV1`/`VP8`/`VP9` through the Player's `codec` attribute/property validation — decode/render is already wired end to end (P-4); only the public allow-list still rejects them | Player | Planned |
+| Upgrade `three` past `0.84.0` (fisheye dewarp rewrite) | Player | Blocked — see §4 above |
+| Port remaining `legacyHostInterface` stand-ins (`StreamManagerHandle`, `SunapiClientHandle`) | Player | Not started — see §4 above |

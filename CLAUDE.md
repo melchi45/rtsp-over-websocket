@@ -127,6 +127,42 @@ call-stack traces, RFC/standard references, and Relations & Data Flow. Start at
 - If a new class doesn't fit neatly under an existing `docs/player/*.md` file's subsystem, add a
   new section to the closest-matching file rather than leaving it undocumented.
 
+## Documentation headers
+
+Every file under `docs/` (including `docs/player/*.md`) carries a metadata header, directly below its `#`
+title, in this exact shape:
+
+```
+# <existing title — unchanged>
+
+*<one-to-two sentence abstract, compressed from the doc's own intro>*
+
+**Version:** <current `package.json` version> · **Author:** <current `package.json` author name> ·
+**Milestone:** <relevant `docs/ROADMAP.md` ID(s), or "—" if none apply>
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| <date> | <what changed, oldest first> |
+| ... | ... |
+
+---
+
+<existing body, unchanged>
+```
+
+- **When creating a new doc**: write the full header, with a one-row History table ("Initial version").
+- **When editing an existing doc**: append one new row to its History table (never rewrite prior rows), and
+  update the Milestone field if the change relates to a `docs/ROADMAP.md` item. Leave Title/Abstract/Version/
+  Author as-is unless the change actually invalidates them.
+- Version tracks this repo's overall `package.json` version, not a per-document scheme — all docs share one
+  Version value at any given time.
+- See any file under `docs/` (e.g. [docs/ROADMAP.md](docs/ROADMAP.md), [docs/SDD.md](docs/SDD.md)) for a real
+  example. `docs/player/*.md` specifically also has day-to-day enforcement wired into
+  [`.claude/skills/player-docs/SKILL.md`](.claude/skills/player-docs/SKILL.md) — that skill applies this same
+  rule, it doesn't restate it.
+
 ## Conventions
 
 - **No old-brand naming anywhere** — file names, identifiers, comments, docs, and test fixture strings have all
