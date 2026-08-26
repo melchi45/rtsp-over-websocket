@@ -167,6 +167,26 @@
         align-items: center;
         gap: 6px !important;
       }
+      .field-block {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 4px;
+        font-size: 13px;
+        color: var(--text-h);
+      }
+      .field-label-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .field-label-row .checkbox-field {
+        font-size: 11px;
+        font-weight: normal;
+        gap: 4px !important;
+        white-space: nowrap;
+      }
       .actions {
         grid-column: 1 / -1;
         display: flex;
@@ -561,10 +581,16 @@
                       >Channel <span class="field-note">(leave blank to auto-assign, 1-based same as the Player tab)</span>
                       <input id="yt-channel" type="number" min="1" step="1" placeholder="auto" />
                     </label>
-                    <label
-                      >Session Username <span class="field-note">(for RTSP-over-WS digest auth)</span>
+                    <div class="field-block">
+                      <div class="field-label-row">
+                        <span>Session Username <span class="field-note">(RTSP-over-WS digest auth; turn "Use" off for no auth)</span></span>
+                        <label class="checkbox-field" style="margin: 0">
+                          <input id="yt-auth-toggle" type="checkbox" checked />
+                          Use
+                        </label>
+                      </div>
                       <input id="yt-username" value="tester" />
-                    </label>
+                    </div>
                     <label
                       >Session Password
                       <span class="password-field">
@@ -697,7 +723,12 @@
               <div class="grid-form">
                 <label style="grid-column: 1 / -1"
                   >RTSP URL
-                  <span class="field-note">(e.g. rtsp://user:pass@host:port/{channel}/{profile}/media.smp?device=camera&amp;statistics&amp;controls)</span>
+                  <span class="field-note"
+                    >camera: rtsp://user:pass@host:port/{channel}/{profile}/media.smp?device=camera&amp;statistics&amp;controls
+                    &mdash; nvr (e.g. this repo's own src/server sessions): .../LiveChannel/{channel}/media.smp?device=nvr
+                    &mdash; <code>?device=...</code> is required for nvr paths: applySrcAttribute() can't tell
+                    <code>LiveChannel/0/media.smp</code> apart from a camera-mode path by shape alone</span
+                  >
                   <input
                     id="srcurl-input"
                     placeholder="rtsp://user:pass@host:port/1/profile1/media.smp?device=camera&statistics&controls"
@@ -756,7 +787,10 @@
                 </label>
                 <label
                   >Password
-                  <input id="srcurl-password" type="password" />
+                  <span class="password-field">
+                    <input id="srcurl-password" type="password" />
+                    <button id="btn-toggle-srcurl-password" type="button">Show</button>
+                  </span>
                 </label>
                 <div class="actions">
                   <button id="btn-srcurl-credentials-connect" type="button">Connect</button>
@@ -1473,6 +1507,15 @@
         var srcurlUseSunapiCheckbox = document.getElementById('srcurl-use-sunapi');
         var btnSrcurlCredentialsConnect = document.getElementById('btn-srcurl-credentials-connect');
 
+        // ---- Credentials-required password show/hide (same pattern as the
+        // Server panel's Session Password field) ----
+        var btnToggleSrcurlPassword = document.getElementById('btn-toggle-srcurl-password');
+        btnToggleSrcurlPassword.addEventListener('click', function () {
+          var showing = srcurlPasswordInput.type === 'text';
+          srcurlPasswordInput.type = showing ? 'password' : 'text';
+          btnToggleSrcurlPassword.textContent = showing ? 'Show' : 'Hide';
+        });
+
         var srcurlPlayerEl = null;
         // Set by the SUNAPI-first Connect flow (see parseSrcUrl() below) so
         // the Credentials-required retry — which only has username/password
@@ -1906,8 +1949,16 @@
           // stringification quirks.
           playerEl.hostname = form.hostname.value;
           playerEl.port = form.port.value;
-          playerEl.username = form.username.value;
-          playerEl.password = form.password.value;
+          // Only set when non-empty — the property setter always calls
+          // setAttribute() even for '', which would leave a stray
+          // username="" password="" in the DOM for a no-auth (e.g.
+          // unauthenticated Server-tab) session. Leaving the attributes
+          // unset is functionally identical: RTSPOverWebSocket.ts's
+          // info.device.username/password default to '' either way, and
+          // an unauthenticated RTSP-over-WebSocket session never gets
+          // challenged, so the player never needs them set.
+          if (form.username.value) playerEl.username = form.username.value;
+          if (form.password.value) playerEl.password = form.password.value;
           playerEl.channel = form.channel.value;
           playerEl.profile = form.profile.value;
           playerEl.device = form.device.value;
@@ -2151,11 +2202,32 @@
           if (currentSession) renderSessionStatus();
         });
         ytUsernameInput.addEventListener('input', function () {
-          form.username.value = ytUsernameInput.value;
+          if (ytAuthToggle.checked) form.username.value = ytUsernameInput.value;
         });
         ytPasswordInput.addEventListener('input', function () {
-          form.password.value = ytPasswordInput.value;
+          if (ytAuthToggle.checked) form.password.value = ytPasswordInput.value;
         });
+
+        // ---- Session Username "Use" toggle — on by default; off starts the
+        // next session with empty username/password (sessionRoutes.ts treats
+        // that as an explicit request for no RTSP Digest auth, and
+        // rtspOverWebSocket/server.ts's bridge skips the challenge for such a
+        // session). currentFormRequest() is the actual source of truth for
+        // what gets sent — this handler only keeps the inputs' disabled state
+        // and the Player tab's live-synced fields in step with it.
+        var ytAuthToggle = document.getElementById('yt-auth-toggle');
+        function updateAuthFieldsAvailability() {
+          var enabled = ytAuthToggle.checked;
+          ytUsernameInput.disabled = !enabled;
+          ytPasswordInput.disabled = !enabled;
+          btnToggleYtPassword.disabled = !enabled;
+        }
+        ytAuthToggle.addEventListener('change', function () {
+          updateAuthFieldsAvailability();
+          form.username.value = ytAuthToggle.checked ? ytUsernameInput.value : '';
+          form.password.value = ytAuthToggle.checked ? ytPasswordInput.value : '';
+        });
+        updateAuthFieldsAvailability();
 
         // ---- youtube probe ----
         var ytUrlInput = document.getElementById('yt-url');
@@ -2266,6 +2338,11 @@
 
           ytUrlInput.value = s.request.youtubeUrl;
           document.getElementById('yt-channel').value = String(s.channel + 1);
+          // An empty username on the running session means it was started
+          // with the "Use" toggle off (no RTSP Digest auth) — reflect that
+          // back into the toggle rather than leaving a stale checked state.
+          ytAuthToggle.checked = !!s.request.username;
+          updateAuthFieldsAvailability();
           ytUsernameInput.value = s.request.username;
           form.username.value = s.request.username;
           videoCodecSelect.value = s.request.videoCodec;
@@ -2383,8 +2460,11 @@
             videoCodec: videoCodecSelect.value,
             audioCodec: audioCodecSelect.value,
             audioBitrateKbps: parseInt(document.getElementById('yt-audio-bitrate').value, 10),
-            username: document.getElementById('yt-username').value,
-            password: document.getElementById('yt-password').value,
+            // Empty username/password (the "Use" toggle off) tells the
+            // server to start this session with no RTSP Digest auth at all —
+            // see CreateSessionRequest.username's comment in src/server/types.ts.
+            username: ytAuthToggle.checked ? document.getElementById('yt-username').value : '',
+            password: ytAuthToggle.checked ? document.getElementById('yt-password').value : '',
             bFrames: bFramesCheckbox.checked
           };
           // Entered as 1-based, same as the Player tab's Channel field, and
@@ -2499,8 +2579,12 @@
           // 1-based (RtspClient.ts subtracts 1 before building the RTSP
           // request URI), so convert back here.
           form.channel.value = String(currentSession.channel + 1);
+          // currentSession.request.username is already '' for a session
+          // started with the "Use" toggle off — mirror that into the
+          // password too rather than trailing in whatever's still sitting
+          // in the (disabled) Session Password input.
           form.username.value = currentSession.request.username;
-          form.password.value = document.getElementById('yt-password').value;
+          form.password.value = currentSession.request.username ? document.getElementById('yt-password').value : '';
           form.device.value = 'nvr';
           form.profile.value = currentSession.request.videoCodec;
           activateTab('player');
