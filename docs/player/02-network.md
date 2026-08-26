@@ -1,5 +1,22 @@
 # `src/player/network` — RTSP-over-WebSocket signaling, transport, and SUNAPI HTTP
 
+*Per-class reference for `src/player/network`: RTSP-over-WebSocket signaling, transport, and the SUNAPI HTTP
+client, with concrete method behavior, wire framing, and RFC citations.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
+| 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
+| 2026-08-11 | Fix `SunapiManager`'s `joinAfterGet` bug: eight REST methods always rejected regardless of the actual GET result |
+| 2026-08-13 | Add `.env` support for the live-device test; fix `describe.skip` collection bug; docs |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 This document is the per-class reference for `src/player/network` (plus the one `util` class it
 leans on hardest, `DigestGenerator`). It goes one level deeper than
 [docs/ARCHITECTURE.md](../ARCHITECTURE.md)'s "Playing a stream" sequence diagram and

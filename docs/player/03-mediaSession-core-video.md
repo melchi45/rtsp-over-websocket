@@ -1,5 +1,23 @@
 # mediaSession — Core Session Hierarchy and Video Depacketization
 
+*Per-class reference for the RTP/RTCP session base classes, the session factory/router (`RtpClient`), the
+player-facing hub (`MediaRouter`), the SUNAPI-metadata parser, and the video codec depacketizers
+(H.264/H.265/MJPEG/VP8/VP9/AV1).*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
+| 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
+| 2026-08-11 | Add H265Session Aggregation Packet (RFC 7798 §4.4.2) support — fixes "SPS payload is not available" |
+| 2026-08-11 | Fix AV1 `av1C` `configObu` boundary when the sequence header OBU has no explicit size field |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 This document covers the RTP/RTCP session base classes, the per-channel session factory/router
 (`RtpClient`), the player-facing hub (`MediaRouter`), the SUNAPI-metadata parser
 (`MetaDataParser`), and the video codec depacketizers (H.264/H.265/MJPEG/VP8/VP9/AV1) together

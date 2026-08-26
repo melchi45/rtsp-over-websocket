@@ -1,5 +1,19 @@
 # `mediaSession` — Audio & Text Sessions
 
+*Per-class reference for the concrete `RtpSession` subclasses under `src/player/mediaSession/audioSession/` (the
+receive-side audio codecs plus the talk-back send session) and the text/meta session.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 This document covers the concrete `RtpSession` subclasses under `src/player/mediaSession/audioSession/` (the four
 receive-side audio codecs plus the talk-back send session) and `src/player/mediaSession/textSession/MetaSession.ts`,
 plus the shared ADPCM helper `src/player/util/CommonAudioUtil.ts`. It is one file in a per-subsystem reference set

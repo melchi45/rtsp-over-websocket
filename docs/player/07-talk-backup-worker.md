@@ -1,5 +1,21 @@
 # src/player — Talk-Back, Backup, and Worker Classes
 
+*Per-class reference for three subsystems: two-way audio (`talk/`), client-side backup/export (`backup/`), and
+the Web Worker–side classes (`worker/`) that do video decode, audio transcode, MJPEG depacketize, SUNAPI REST,
+and AVI/ZIP muxing off the main thread.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
+| 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 This document covers three subsystems from [src/player/README.md](../../src/player/README.md)'s
 §7/§8 class map, in more depth than that overview: the **talk-back** (two-way audio) encoder
 (`talk/`), the **client-side backup/export** orchestration (`backup/`), and the **Web Worker–side**

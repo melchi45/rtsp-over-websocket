@@ -1,5 +1,20 @@
 # `listen` — Audio Decode + Playback
 
+*Per-class reference for `src/player/listen/decoder/*` and `src/player/listen/renderer/*` — the audio decode and
+playback subsystem, including decode math/tables and Web Audio API / MSE usage.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
+| 2026-08-13 | Load `ffmpegAAC.decoder.js`'s Module before AAC canvas-tag audio decode; cross-link canvas/video-tag audio routing in docs |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 This document is per-class reference documentation for `src/player/listen/decoder/*` and
 `src/player/listen/renderer/*` — the audio decode and playback subsystem. It goes deeper than the
 class-diagram summary in [src/player/README.md §6](../../src/player/README.md) — actual decode

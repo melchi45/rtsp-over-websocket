@@ -1,5 +1,22 @@
 # `src/player` reference — elements, interface, exceptions
 
+*Per-class reference for the public custom element (`elements/`), its per-channel orchestration layer
+(`interface/`), the React wrapper (`react/`), and the error hierarchy (`exceptions/`).*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
+| 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
+| 2026-08-11 | Implement `RTSPOverWebSocket.disconnectedCallback()` — was missing entirely |
+| 2026-08-13 | Add `.env` support for the live-device test; fix `describe.skip` collection bug; docs |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 Per-class reference for the public custom element (`elements/`), the per-channel orchestration
 layer it drives (`interface/`), the React wrapper (`react/`), and the error hierarchy
 (`exceptions/`). This is one file in a set of per-subsystem references (network/, mediaSession/,

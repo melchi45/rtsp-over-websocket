@@ -1,5 +1,19 @@
 # `src/player/util` — Standalone Helper Classes and Functions (part 2)
 
+*Per-class reference for the general-purpose helpers under `src/player/util/` that don't belong to any other
+subsystem's documentation — data structures, timing, and math utilities.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 This document covers the general-purpose helpers under `src/player/util/` that don't belong to any other
 subsystem's documentation. It complements [`src/player/README.md`](../../src/player/README.md)'s
 ["10. `util` — notable standalone classes"](../../src/player/README.md) section, going deeper into the actual

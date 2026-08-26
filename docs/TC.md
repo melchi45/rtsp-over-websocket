@@ -1,5 +1,18 @@
 # Test Case Catalog (TC)
 
+*Test cases for the Player and Server, each mapped to the [SRS.md](SRS.md) requirement(s) it verifies.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-04 | Harden the YouTube demo pipeline (yt-dlp staleness, graceful shutdown, keyframe gating) and add project docs (initial version) |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 Test cases for the Player and Server, each mapped to the [SRS.md](SRS.md) requirement(s) it verifies. "Automated"
 cases already exist as vitest suites (`npm run test:player`) or the demo page's in-browser Test tab; "Manual" cases
 are executed by hand following [test-script.md](test-script.md). Case IDs are referenced from that script.

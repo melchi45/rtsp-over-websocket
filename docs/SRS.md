@@ -1,5 +1,20 @@
 # Software Requirements Specification (SRS)
 
+*Detailed, testable requirements for the Player and Server, with requirement IDs referenced from [TC.md](TC.md)'s
+test cases.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-04 | Harden the YouTube demo pipeline (yt-dlp staleness, graceful shutdown, keyframe gating) and add project docs (initial version) |
+| 2026-08-04 | Add a React wrapper (Player.tsx) and demo panel, rename `custom/` to `elements/` |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+
+---
+
 Detailed, testable requirements for the Player and Server. Requirement IDs are referenced from
 [TC.md](TC.md)'s test cases. See [PRD.md](PRD.md) for product-level requirements this document elaborates, and
 [DESIGN.md](DESIGN.md) for how each requirement is actually implemented.
