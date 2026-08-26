@@ -18,6 +18,14 @@ description: Build, start, verify, and stop this repo's RTSP-over-WebSocket demo
 - For the demo server to actually reach a `live` session (not just start): `ffmpeg`, `yt-dlp`, and `MediaMTX` must
   be installed and MediaMTX running — see the README's "External tools" section for install commands. Without
   them the server still starts and serves the REST API/demo page fine; only session creation fails.
+- Most modern YouTube videos additionally need a JS runtime (`deno`) and a reachable PO Token provider
+  (`bgutil-ytdlp-pot-provider`) for `yt-dlp` to actually download (not just probe) without a `403` — neither
+  alone is enough. `npm run start:server*` already runs `scripts/ensure-bgutil-pot-provider.js` for you (same
+  leave-alone-if-reachable shape as `ensure-mediamtx.js`), but that script only *starts* an already-built
+  provider — first-time setup (git clone + Node **>=22** build + yt-dlp plugin zip) is manual, see the README's
+  "External tools" section. Without it, sessions for videos that need it fail with `ffmpeg exited with code 183`
+  even though `GET /api/youtube/probe` succeeded — see `CLAUDE.md`'s "Environment gotchas" for the full symptom
+  and root cause before assuming a session failure is an app bug.
 
 ## Build
 
@@ -63,7 +71,9 @@ npm run stop:server
 ```
 
 Kills whatever is listening on the configured HTTP/HTTPS ports (respects `RTSP_WS_HTTP_PORT`/`RTSP_WS_HTTPS_PORT`
-overrides), and reports clearly whether it stopped something or found nothing running.
+overrides), and reports clearly whether it stopped something or found nothing running. Also stops a
+`bgutil-ytdlp-pot-provider` instance this repo's own `ensure-bgutil-pot-provider.js` started (pid-tracked, same
+as MediaMTX) — it leaves alone one that was already running before `start:server*` and not started by this repo.
 
 ## Tests
 

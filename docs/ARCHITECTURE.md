@@ -1,5 +1,21 @@
 # Architecture
 
+*Repository structure of `src/`, how the pieces fit together, and the two main runtime data flows: playing an
+existing RTSP-over-WebSocket source, and the demo server's YouTube → RTSP → WebSocket pipeline.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim · **Milestone:** —
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-07-31 | Initial commit |
+| 2026-08-03 | Rename legacy AngularJS glue layer off old branding |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-26 | Note `deno`/`bgutil-ytdlp-pot-provider` as external dependencies (`e9a7e70`) |
+
+---
+
 This document covers the structure of `src/`, how the pieces fit together, and the two main runtime data flows:
 playing an existing RTSP-over-WebSocket source, and the demo server's YouTube → RTSP → WebSocket pipeline.
 
@@ -137,6 +153,11 @@ Key points:
 - **MediaMTX is an external dependency**, not spawned by `src/server` — see the README's "External tools" section.
   If it isn't reachable at startup, the server logs a warning and keeps running; sessions can still be created but
   fail at the ffmpeg-publish step.
+- **`yt-dlp` itself depends on two more external pieces to fetch modern YouTube videos without a `403`**: a JS
+  runtime (`deno`, for the signature/"n" challenge) and a reachable PO Token provider
+  (`bgutil-ytdlp-pot-provider`) — neither alone is enough. `scripts/ensure-bgutil-pot-provider.js` starts an
+  already-built provider automatically (wired into `npm run start:server*`, same shape as MediaMTX's own
+  `ensure-mediamtx.js`), but first-time setup is manual — see the README's "External tools" section.
 
 ## Testing strategy (src/player)
 

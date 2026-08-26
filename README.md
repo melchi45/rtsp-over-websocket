@@ -45,6 +45,12 @@ piece of custom RTSP/WebSocket protocol code in this repo (`src/server/rtspOverW
 end doesn't know or care that the "camera" it's talking to is actually this pipeline — it speaks the identical
 RTSP-over-WebSocket protocol it would use against a real device.
 
+The `yt-dlp` stage isn't a single hop, either — for most modern videos it also needs a `deno` JS runtime (solves
+YouTube's signature/"n" challenge) and a reachable PO Token provider (`bgutil-ytdlp-pot-provider`), both external
+to this pipeline diagram — see "External tools required by src/server" below for setup, and
+[docs/DESIGN.md](docs/DESIGN.md#13-transcode-pipeline-transcodesessionts) for the full pre-flight-check and
+PO-Token-request sequence diagram.
+
 ## Server ↔ Player: live-session flow
 
 End-to-end walkthrough of what happens between the demo page's Server and Player tabs, in order:
@@ -350,5 +356,7 @@ control; `.env` itself is gitignored.
   there's no visual-regression test for the fisheye dewarp output — only structural/unit tests — so the rendered
   result can't be verified automatically. On hold until that rewrite can be checked against a real fisheye camera
   feed in a browser.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full, currently-tracked milestone list (this entry plus others).
 
 ![license-image](https://img.shields.io/badge/license-HanwhaVision%201.0-blue.svg?style=flat) [license-url](LICENSE.txt)

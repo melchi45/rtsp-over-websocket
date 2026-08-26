@@ -1,5 +1,23 @@
 # Design Document
 
+*Implementation-level design supporting the requirements in [SRS.md](SRS.md): state machines, protocol-level
+sequence diagrams, and the specific algorithms behind the Server's transcode/bridge/keyframe-gate logic and the
+Player's custom-element/StreamPlayer wiring.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim · **Milestone:** —
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-04 | Harden the YouTube demo pipeline (yt-dlp staleness, graceful shutdown, keyframe gating) and add project docs |
+| 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-26 | Add a sequence diagram for the PO Token/`deno` pre-flight check and request flow to §1.3 (`e9a7e70`) |
+| 2026-08-26 | Add a decision flowchart alongside the sequence diagram, showing `hasDeno()`/`potProviderReachable()`'s branch outcomes |
+
+---
+
 Implementation-level design supporting the requirements in [SRS.md](SRS.md). For repository structure and the
 top-level module layering/data-flow diagrams, start with [ARCHITECTURE.md](ARCHITECTURE.md) — this document goes
 one level deeper: state machines, protocol-level sequence diagrams, and the specific algorithms behind the
@@ -91,6 +109,63 @@ justification of each):
   for a given itag over an equally-available `mweb`-origin one, and the `android_vr` URL `403`s regardless of PO
   Token/JS runtime (yt-dlp doesn't even request it a token). See `CLAUDE.md`'s "Environment gotchas" and
   `MEMORY.md` for the full investigation and README.md's "External tools" section for the provider setup.
+
+**PO Token / `deno` pre-flight check and request flow.** `deno` and the PO Token provider solve two independent
+problems — YouTube's signature/"n" challenge, and the PO Token itself — so they show up separately below, not as
+one linear hand-off.
+
+**Decision flow** — `startTranscode()`'s pre-flight check, and what each outcome means for the session:
+
+```mermaid
+flowchart TD
+    Start(["startTranscode(session)"]) --> CheckDeno{"hasDeno()?<br/>~/.deno/bin/deno exists"}
+    CheckDeno -- no --> Default["spawn yt-dlp: no --extractor-args override<br/>(yt-dlp's own default client mix)"]
+    CheckDeno -- yes --> CheckPot{"potProviderReachable()?<br/>GET 127.0.0.1:4416/ping, status &lt; 500, 1s timeout"}
+    CheckPot -- no --> Default
+    CheckPot -- yes --> Mweb["spawn yt-dlp: --extractor-args youtube:player_client=mweb"]
+
+    Default --> DefaultOutcome["Pre-existing behavior — nothing breaks.<br/>Some modern videos still 403<br/>(android_vr-origin URL, no PO Token requested)."]
+    Mweb --> MwebOutcome["Confirmed live: full DASH ladder exposed,<br/>downloads cleanly with a real PO Token."]
+```
+
+**Request flow** — once `yt-dlp` is actually running, the message order behind the diagram above:
+
+```mermaid
+sequenceDiagram
+    participant TS as startTranscode() (transcodeSession.ts)
+    participant YD as yt-dlp (spawned child process)
+    participant Deno as deno (local JS runtime)
+    participant Pot as bgutil-ytdlp-pot-provider (local :4416)
+    participant BG as Google BotGuard (google.com)
+    participant GV as googlevideo.com (video CDN)
+
+    TS->>TS: hasDeno() — sync check: does ~/.deno/bin/deno exist?
+    TS->>Pot: GET /ping (1s timeout)
+    Pot-->>TS: reachable (status < 500) or timeout/error
+    alt both checks pass
+        TS->>YD: spawn with --extractor-args youtube:player_client=mweb\n(env PATH prepends ~/.deno/bin either way)
+    else either check fails
+        TS->>YD: spawn with no --extractor-args override (yt-dlp's own default client mix)
+    end
+
+    YD->>Deno: run YouTube player JS to solve the signature/"n" challenge
+    Deno-->>YD: deciphered signature / "n" param
+
+    opt this request needs a PO Token (mweb and similar clients do)
+        YD->>Pot: POST /get_pot (via yt-dlp's bgutil-ytdlp-pot-provider plugin)
+        Pot->>BG: BotGuard challenge/response (provider's own outbound HTTPS)
+        BG-->>Pot: attestation
+        Pot-->>YD: PO Token
+    end
+
+    YD->>GV: GET DASH format URL (+ PO Token if required)
+    GV-->>YD: video/audio bytes (stdout, piped into ffmpeg)
+```
+
+Note the two failure-independence points this diagram makes explicit: `hasDeno()`/`potProviderReachable()` only
+gate whether `mweb` is *forced* (§1.3's bullet above) — `yt-dlp`'s own default client mix will still attempt the
+same `deno`/PO-Token round trips on its own if it happens to pick a client that needs them, just without this
+repo steering it toward the client confirmed to need (and correctly receive) both.
 
 ### 1.4 RTSP-over-WebSocket bridge (`server.ts`)
 

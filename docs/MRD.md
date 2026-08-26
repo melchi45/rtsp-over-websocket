@@ -1,5 +1,20 @@
 # Market Requirements Document (MRD)
 
+*Why this repository exists: the problem it solves, who it's for, and what "success" looks like for the
+`<rtsp-over-websocket>` player and its demo server.*
+
+**Version:** 1.1.0 · **Author:** Youngho Kim · **Milestone:** —
+
+**History**
+
+| Date | Change |
+| --- | --- |
+| 2026-08-04 | Harden the YouTube demo pipeline (yt-dlp staleness, graceful shutdown, keyframe gating) and add project docs (initial version) |
+| 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-26 | Note `deno`/`bgutil-ytdlp-pot-provider` in the external-tools constraint (`e9a7e70`) |
+
+---
+
 ## 1. Purpose
 
 This document explains *why* this repository exists: the problem it solves, who it's for, and what "success" looks
@@ -76,9 +91,11 @@ testable without any camera hardware.
 
 ## 8. Constraints and assumptions
 
-- `src/server` depends on three external tools it does not install or bundle: `ffmpeg`, `yt-dlp`, and MediaMTX
-  (see [README.md](../README.md#external-tools-required-by-srcserver)). Without them the REST API still serves,
-  but sessions cannot reach `live`.
+- `src/server` depends on external tools it does not install or bundle: `ffmpeg`, `yt-dlp`, MediaMTX, and — for
+  most modern YouTube videos specifically — a `deno` JS runtime plus a reachable `bgutil-ytdlp-pot-provider` PO
+  Token provider (see [README.md](../README.md#external-tools-required-by-srcserver)). Without `ffmpeg`/`yt-dlp`/
+  MediaMTX the REST API still serves but sessions cannot reach `live` at all; without `deno`/the PO Token
+  provider, sessions still work for videos that don't need them, but most modern videos fail with a `403`.
 - The legacy parity test suite assumes a `legacy-player` git submodule is checked out; it is not always present,
   and tests depending on it fail with `ENOENT` (not a logic failure) when it's absent.
 - `three@0.84.0` is pinned deliberately due to a fisheye-dewarp rendering dependency on removed APIs — see
