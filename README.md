@@ -54,7 +54,9 @@ End-to-end walkthrough of what happens between the demo page's Server and Player
 2. **Create session** — `POST /api/sessions` (video/audio codec, resolution, audio bitrate, RTSP-over-WebSocket
    username/password, optional channel) validates the request, assigns a channel if none was given, and returns
    `201` with the new session (`status: "starting"`) immediately — `yt-dlp`/`ffmpeg` are then spawned
-   asynchronously in the background.
+   asynchronously in the background. `username`/`password` may both be left as empty strings to start the session
+   with **no RTSP Digest auth at all** — the demo page's Server tab exposes this as the "Use" toggle next to
+   Session Username (on by default); one empty and the other non-empty is rejected. There is no partial-auth state.
 3. **Transcode reaches MediaMTX** — `yt-dlp`'s stdout is piped directly into `ffmpeg`'s stdin; `ffmpeg` encodes to
    the requested codec/resolution and publishes to `rtsp://127.0.0.1:8554/<sessionId>` on MediaMTX. The first
    `frame=` line in `ffmpeg`'s stderr flips the session to `status: "live"`; no output within 20s (or a process
@@ -62,7 +64,11 @@ End-to-end walkthrough of what happens between the demo page's Server and Player
 4. **Player connects** — the `<rtsp-over-websocket>` element opens `ws(s)://<host>:<port>/StreamingServer` and
    sends an RTSP `DESCRIBE` whose URI embeds the channel number (`channel` attribute, 1-based in markup, 0-based on
    the wire). The bridge reads that channel, looks up the matching session, and challenges with RTSP Digest
-   (`401` + nonce) using **that session's own username/password** — not real camera credentials.
+   (`401` + nonce) using **that session's own username/password** — not real camera credentials — unless the
+   session was created with empty username/password, in which case the bridge skips the challenge entirely and
+   relays from the first request. The player itself never needs `username`/`password` attributes set for this: it
+   only ever answers a challenge reactively (RtspClient's digest header stays empty until a `401` asks for one), so
+   a session with no auth "just connects" with those attributes left unset.
 5. **Relay + keyframe gate** — once authenticated, the bridge opens its own RTSP/TCP connection to MediaMTX and
    relays `DESCRIBE`/`SETUP`/`PLAY` and the resulting interleaved RTP/RTCP frames 1:1 back over the WebSocket. For
    H.264/H.265 video it also holds back non-keyframe slices until the first IDR (or a 4s timeout) so a viewer
@@ -216,6 +222,70 @@ experimental (RFC-draft, never finalized as RFCs) but does have real rtpmap entr
   ```
   `/usr/local/bin` takes PATH priority over `/usr/bin`, so this binary is picked up first even if an older apt
   version is also installed. Update later with `sudo yt-dlp -U`.
+
+**Most modern YouTube videos need two more pieces beyond `yt-dlp` itself to actually download (not just probe)
+without a `403` — a JS runtime, and a PO Token provider. Both are required; neither alone is enough.** `GET
+/api/youtube/probe` (`yt-dlp -j`, metadata only) can succeed and list correct resolutions while the real download
+still fails, so a successful probe does **not** mean a session will reach `live`. Symptom: session fails with
+`ffmpeg exited with code 183: ... Invalid data found when processing input`, or (in the server's own log lines,
+`[yt-dlp][<sessionId>] ...`) `ERROR: ffmpeg exited with code 8` wrapping a `Server returned 403 Forbidden` on a
+`googlevideo.com` URL.
+
+1. **A JS runtime (`deno`)** — solves YouTube's signature/"n" challenge. Install user-locally, no sudo needed:
+   ```
+   curl -fsSL https://deno.land/install.sh | sh   # installs to ~/.deno/bin
+   ```
+   `transcodeSession.ts` finds it at that exact path automatically (prepended to the `yt-dlp` child process's own
+   `PATH`, independent of whatever shell started `src/server` — no need to add it to your own `~/.bashrc`).
+
+2. **A PO Token provider** — [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)
+   (see also yt-dlp's own [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)). Without one,
+   YouTube 403s essentially every DASH format for a typical video regardless of JS runtime — confirmed live
+   (2026-08-25): the identical `403` reproduced with `deno` present and actively solving the challenge
+   (`[jsc:deno] Solving JS challenges using deno` in the log right before the `403`). Requires Node.js **>=22**
+   (a separate requirement from this repo's own pinned Node 20 — install via `nvm install 22` if you don't
+   already have one) and `git`:
+   ```
+   git clone --single-branch --branch 1.3.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git ~/bgutil-ytdlp-pot-provider
+   cd ~/bgutil-ytdlp-pot-provider/server
+   ~/.nvm/versions/node/v22.*/bin/npm ci    # or: npm ci, if node --version is already >=22
+   ~/.nvm/versions/node/v22.*/bin/npx tsc
+   ```
+   Then install the yt-dlp plugin (the "Manual" method — this repo's `yt-dlp` is the standalone binary, not a
+   `pip`/`pipx` install):
+   ```
+   mkdir -p ~/.config/yt-dlp/plugins
+   curl -sL "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/1.3.2/bgutil-ytdlp-pot-provider.zip" \
+     -o ~/.config/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip
+   ```
+   `scripts/ensure-bgutil-pot-provider.js` (wired into `npm run start:server*`) starts the built server
+   automatically if nothing is already reachable on its port (default `127.0.0.1:4416`) — same
+   leave-it-alone-if-already-running / pid-tracked-so-`stop:server`-can-clean-up-after-itself shape as
+   `ensure-mediamtx.js`. It auto-detects a Node >=22 under `~/.nvm/versions/node/*` (or set
+   `BGUTIL_POT_PROVIDER_NODE_BIN` explicitly) and the provider's build dir at `~/bgutil-ytdlp-pot-provider` (or
+   set `BGUTIL_POT_PROVIDER_DIR`) — see `.env.example` for all the override vars, including
+   `BGUTIL_POT_PROVIDER_CA_CERTS` for the next point.
+
+   **Behind a TLS-intercepting proxy** (confirmed on this dev box — a corporate root CA in
+   `/etc/ssl/certs/ca-certificates.crt`), the provider's own outbound HTTPS (BotGuard challenge fetch from
+   `google.com`) fails with `self-signed certificate in certificate chain` unless it's told to trust that CA —
+   `ensure-bgutil-pot-provider.js` auto-detects `/etc/ssl/certs/ca-certificates.crt` and sets
+   `NODE_EXTRA_CA_CERTS` for it if present; override via `BGUTIL_POT_PROVIDER_CA_CERTS` if your CA bundle lives
+   elsewhere. `npm ci`'s own `canvas` native build (a real dependency, not optional) hits the identical error for
+   the same reason during setup — export `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt` before running
+   `npm ci` above if you hit `SELF_SIGNED_CERT_IN_CHAIN` there too.
+
+**With both set up**, `transcodeSession.ts` forces `--extractor-args youtube:player_client=mweb` (confirmed live
+to reliably expose the full DASH resolution ladder and actually download, unlike `yt-dlp`'s own default client
+mix, which can end up serving an `android_vr`-origin URL that `403`s regardless of PO Token/JS runtime) — **but
+only when both a JS runtime and a reachable PO Token provider are detected at session-start time**; forcing
+`mweb` without both is confirmed *worse* than not forcing anything (see `CLAUDE.md`'s "Environment gotchas" and
+`MEMORY.md` for the full investigation, including two earlier explanations — no JS runtime, then no PO Token —
+that were each necessary but not sufficient alone). Missing either piece just means sessions fall back to
+`yt-dlp`'s unforced default, exactly the pre-existing behavior — nothing breaks, some videos just won't reach
+`live`. This is an active YouTube-vs-`yt-dlp` arms race; treat any specific client/format name here as a
+point-in-time snapshot, not a permanent fact — re-verify with `yt-dlp -v -F <url>` if sessions start failing
+again.
 
 **MediaMTX** — the RTSP server `src/server` publishes transcoded video to. No apt package exists, so fetch a GitHub
 release binary directly (swap in the latest version from the [releases page](https://github.com/bluenviron/mediamtx/releases)):

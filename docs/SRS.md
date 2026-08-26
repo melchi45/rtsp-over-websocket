@@ -140,8 +140,9 @@ events (`changehostname`, `changechannel`, `changeprofile`, `changeprofilenumber
 
 - **REQ-SRV-010**: `POST /api/sessions` MUST validate: `youtubeUrl` (http(s) URL string), `resolutionHeight` (one
   of the fixed resolution ladder), `videoCodec` (one of `MJPEG`/`H264`/`H265`/`AV1`/`VP8`/`VP9`), `audioCodec` (one
-  of `OPUS`/`AAC`/`G711`/`G726`), `audioBitrateKbps` (1–512), `username`/`password` (non-empty), and an optional
-  non-negative-integer `channel`. Any violation MUST return `400` with a descriptive `error`.
+  of `OPUS`/`AAC`/`G711`/`G726`), `audioBitrateKbps` (1–512), `username`/`password` (each a string; MUST be either
+  both empty — an unauthenticated session, REQ-SRV-043a — or both non-empty, never one empty and the other not),
+  and an optional non-negative-integer `channel`. Any violation MUST return `400` with a descriptive `error`.
 - **REQ-SRV-011**: If `channel` is given and already occupied by a `starting`/`live` session, the request MUST
   return `409`. If occupied by a `stopped`/`failed` session, that session MUST be deleted and the channel reused.
 - **REQ-SRV-012**: If the installed `ffmpeg` build has no encoder for the requested `videoCodec`/`audioCodec`, the
@@ -177,6 +178,11 @@ events (`changehostname`, `changechannel`, `changeprofile`, `changeprofilenumber
   embedded in-band before every keyframe — required for players joining mid-stream).
 - **REQ-SRV-035**: G.726 audio encoding MUST round an out-of-range requested bitrate to the nearest value the
   encoder actually supports (16/24/32/40 kbps) rather than failing the session.
+- **REQ-SRV-036**: `yt-dlp`'s invocation MUST add `--extractor-args youtube:player_client=mweb` if and only if
+  both a JS runtime (`~/.deno/bin/deno`) and a reachable bgutil-ytdlp-pot-provider HTTP server (default
+  `127.0.0.1:4416`, `scripts/ensure-bgutil-pot-provider.js`) are available at the start of that session; if either
+  is missing, `yt-dlp` MUST be invoked without a `player_client` override. Forcing `mweb` without both available
+  MUST NOT be done — confirmed to make sessions fail that the unforced default handles.
 
 ### 5.5 RTSP-over-WebSocket bridge (`/StreamingServer`)
 
@@ -189,7 +195,10 @@ events (`changehostname`, `changechannel`, `changeprofile`, `changeprofilenumber
   then close with code `1008`.
 - **REQ-SRV-043**: The bridge MUST challenge every unauthenticated/incorrectly-authenticated request with RTSP
   Digest (`401` + a fresh nonce per challenge), verified against **that session's own** `username`/`password`
-  (never a shared/global credential).
+  (never a shared/global credential) — except as carved out by REQ-SRV-043a.
+- **REQ-SRV-043a**: If a session's `username`/`password` are both empty (REQ-SRV-010), the bridge MUST skip the
+  Digest challenge entirely for connections on that session's channel and proceed directly to relaying from the
+  first request, with no `401` ever sent.
 - **REQ-SRV-044**: After `MAX_AUTH_ATTEMPTS` (3) failed challenges, the bridge MUST close the connection with code
   `1008`.
 - **REQ-SRV-045**: Once authenticated, the bridge MUST wait (up to `SESSION_LIVE_WAIT_MS` = 15000ms) for the

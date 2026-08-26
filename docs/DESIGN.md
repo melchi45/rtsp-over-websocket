@@ -82,6 +82,15 @@ justification of each):
   real camera encoder behavior, and a bitstream-filter alternative (`dump_extra`) was confirmed to only fire once.
 - **Startup detection is stderr-log-driven** (`frame=\s*\d+` match), not a fixed delay or MediaMTX API poll —
   ties the `starting → live` transition to `ffmpeg` actually having encoded something, not merely having started.
+- **`--extractor-args youtube:player_client=mweb` is added *conditionally*** — only when `hasDeno()` (a JS runtime
+  for YouTube's signature/"n" challenge) **and** `potProviderReachable()` (a live bgutil-ytdlp-pot-provider HTTP
+  server, REQ-SRV-036) both check out at the start of each session. Forcing `mweb` without both is confirmed live
+  to be *worse* than the unforced default — YouTube's PO Token requirement makes `mweb` fail outright ("No video
+  formats found!") in that case, for videos the default client mix still handles. With both available, `mweb`
+  fixes a real gap in the default: yt-dlp's default client selection can end up keeping an `android_vr`-origin URL
+  for a given itag over an equally-available `mweb`-origin one, and the `android_vr` URL `403`s regardless of PO
+  Token/JS runtime (yt-dlp doesn't even request it a token). See `CLAUDE.md`'s "Environment gotchas" and
+  `MEMORY.md` for the full investigation and README.md's "External tools" section for the provider setup.
 
 ### 1.4 RTSP-over-WebSocket bridge (`server.ts`)
 
@@ -98,9 +107,13 @@ sequenceDiagram
     B->>B: parseRtspRequestLine — not RTSP? close(1002)
     B->>B: extractChannel(uri) — no numeric segment? close(1008)
     B->>B: findByChannel — no session? send 404, close(1008)
-    B-->>C: 401 + WWW-Authenticate: Digest nonce=…
-    C->>B: same request + Authorization: Digest …
-    B->>B: verifyDigest(session.username/password) — fail (up to 3x)? re-challenge; >3? close(1008)
+    alt session has username/password
+        B-->>C: 401 + WWW-Authenticate: Digest nonce=…
+        C->>B: same request + Authorization: Digest …
+        B->>B: verifyDigest(session.username/password) — fail (up to 3x)? re-challenge; >3? close(1008)
+    else session created with empty username/password
+        Note over B: no auth configured — challenge skipped entirely
+    end
     Note over B: state: awaiting-auth -> relaying
     B->>B: waitForLive(session, 15s) — not live in time? close(1011)
     B->>M: TCP connect (BACKEND_CONNECT_TIMEOUT_MS=5s) — fail? close(1011)
@@ -158,6 +171,13 @@ response = MD5(HA1:nonce:HA2)
 
 `REALM` is a fixed string (`rtsp-ws-youtube`) baked into both challenge and verification — it need not match any
 real device realm since credentials are session-scoped, not device-scoped.
+
+A session created with both `username`/`password` as empty strings (validated as an explicit both-empty-or-both-set
+choice in `sessionRoutes.ts`, never one empty and the other not) skips Digest entirely: `server.ts` checks
+`session.request.username` truthiness before ever calling `verifyDigest`/`challenge`, and goes straight to
+`state = 'relaying'` on the first message. This needed no player-side change — `RtspClient`'s `Authentication`
+header starts `''` and is only ever populated reactively in response to a `401` (see §2.4), so a client that's never
+challenged simply never sends one.
 
 ### 1.7 Server module map
 

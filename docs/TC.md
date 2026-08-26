@@ -80,6 +80,8 @@ Legend: **Auto** = covered by an existing automated test · **Manual** = exercis
 | TC-SRV-020 | REQ-SRV-010 | Server running | `POST /api/sessions` with a missing `youtubeUrl` | `400`, descriptive `error` | Manual |
 | TC-SRV-021 | REQ-SRV-010 | — | `POST /api/sessions` with `resolutionHeight: 999` (off-ladder) | `400` | Manual |
 | TC-SRV-022 | REQ-SRV-010 | — | `POST /api/sessions` with `audioBitrateKbps: 0` | `400` | Manual |
+| TC-SRV-022a | REQ-SRV-010 | — | `POST /api/sessions` with `username: "tester", password: ""` (one empty, one not) | `400`, error names both fields | Manual — verified 2026-08-25 |
+| TC-SRV-022b | REQ-SRV-010, REQ-SRV-043a | — | `POST /api/sessions` with `username: "", password: ""` | `201`; created session's `request.username` is `""` | Manual — verified 2026-08-25 |
 | TC-SRV-023 | REQ-SRV-012 | Requested `videoCodec` unsupported by installed `ffmpeg` | `POST /api/sessions` with that codec | `422`, message references `GET /api/capabilities` | Manual |
 | TC-SRV-024 | REQ-SRV-013 | Valid body, unreachable `youtubeUrl` | `POST /api/sessions` | `502` | Manual |
 | TC-SRV-025 | REQ-SRV-014 | Fully valid body | `POST /api/sessions` | `201`, body has `status: "starting"`, no `password` field; session later transitions to `live` (poll `GET /api/sessions/:id`) | Manual |
@@ -97,6 +99,8 @@ Legend: **Auto** = covered by an existing automated test · **Manual** = exercis
 | TC-SRV-041 | REQ-SRV-031 | MediaMTX NOT running | Create a session | `status` becomes `failed` within ~20s, `error` mentions connection failure/no output | Manual |
 | TC-SRV-042 | REQ-SRV-032 | Live session | Kill the session's `ffmpeg` process externally (`kill <pid>`) | `status` becomes `failed` (non-zero/signal exit) | Manual |
 | TC-SRV-043 | REQ-SRV-035 | — | Create a G.726 session with `audioBitrateKbps: 100` (unsupported rate) | Session still reaches `live`; encoder actually runs at 40 kbps (nearest supported) | Manual |
+| TC-SRV-044 | REQ-SRV-036 | `~/.deno/bin/deno` present, bgutil-ytdlp-pot-provider reachable at `127.0.0.1:4416` | Create a session for a modern YouTube video at 1080p | Server log shows `player_client=mweb (deno + PO Token provider both available)`; session reaches `live` | Manual — verified 2026-08-25 (`dQw4w9WgXcQ`, `9bZkp7q19f0`) |
+| TC-SRV-045 | REQ-SRV-036 | PO Token provider stopped (or deno absent) | Create a session | Server log shows `player_client=default (...)`, no `--extractor-args` in the logged `yt-dlp` command — NOT forced to `mweb` | Manual — verified 2026-08-25 |
 
 ## 10. Server — RTSP-over-WebSocket bridge
 
@@ -106,6 +110,7 @@ Legend: **Auto** = covered by an existing automated test · **Manual** = exercis
 | TC-SRV-051 | REQ-SRV-042 | — | Send a valid RTSP request whose URI has no numeric channel segment | Connection closes with code `1008` | Manual |
 | TC-SRV-052 | REQ-SRV-042 | No session on channel 5 | Send a request URI targeting channel 5 | Server sends `404`, then closes with `1008` | Manual |
 | TC-SRV-053 | REQ-SRV-043 | Live session on channel `N` with known credentials | Send a request with no `Authorization` header | `401` + `WWW-Authenticate: Digest` with a nonce | Manual |
+| TC-SRV-053a | REQ-SRV-043a | Session on channel `N` created with `username`/`password` both `""` | Send a request with no `Authorization` header | No `401` — bridge proceeds straight to the post-auth flow (`waitForLive`/relay) on the first message | Manual |
 | TC-SRV-054 | REQ-SRV-043 | — | Retry with wrong password | `401` again with a **new** nonce | Manual |
 | TC-SRV-055 | REQ-SRV-044 | — | Fail auth 4 times in a row | Connection closes with code `1008` after the 3rd failed attempt | Manual |
 | TC-SRV-056 | REQ-SRV-045 | Session created but not yet `live` | Connect and authenticate immediately | Bridge waits (does not error immediately); if still not live after 15s, closes with `1011` | Manual |

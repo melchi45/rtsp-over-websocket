@@ -1082,3 +1082,459 @@ per source should only ever be constructed by `VideoTagPlayer`, yet the user con
 `<canvas>` — not `<video>` — exists in the DOM, i.e. `CanvasTagPlayer` should be the active
 renderer). That contradiction is still open; this AAC-decoder gap is a separate, independently-real
 bug found along the way, not a confirmed fix for the black-canvas report itself.
+
+## Unauthenticated sessions (added) — `src/player` needed zero changes, only `src/server` + the demo page did
+
+Added support for creating/consuming an RTSP-over-WebSocket session with no username/password at all, requested
+as: let `src/server` run sessions without credentials, add a Session Username "Use" toggle (default on) to the
+demo page's Server panel that starts the session with no auth when switched off, and check whether `src/player`
+can already connect without credentials.
+
+The player answer turned out to be **yes, already, with no code change required** — tracing the actual connect
+path (not just the one throw site that looks like a blocker) showed the whole chain was already credential-
+optional:
+
+- `elements/RTSPOverWebSocket.ts`'s `info.device` default is `username: '', password: ''` (never `undefined`)
+  unless the `username`/`password` attributes are left unset, in which case they simply stay at that default.
+- `StreamPlayer.ts`'s `open()` only throws its `0x0402` "username is empty" error when `info.device.username` is
+  `undefined` — `typeof '' !== 'undefined'` is `true`, so an empty string sails through as a normal (if
+  credential-less) username, never hitting that branch. The `0x0402` throw at `RTSPOverWebSocket.ts:5555` (inside
+  `backup()`) is a *different*, stricter check (`_username === null`) — it's specific to the backup feature and
+  irrelevant to ordinary live playback.
+- `RtspClient.ts`'s `Authentication` header field starts `''` and is populated only reactively, inside the `401`
+  response handler — never pre-emptively. `DigestGenerator` is likewise only ever invoked in response to a parsed
+  `WWW-Authenticate` challenge. So the very first RTSP request a client sends never carries an `Authorization`
+  header regardless of whether `username`/`password` are set — a server that never challenges is functionally
+  indistinguishable, from the player's perspective, from one that challenged and got answered correctly.
+- Confirmed via `docs/player/01-elements-interface-exceptions.md`'s existing note that `play()` "no longer
+  validates username/password up front" (a prior redesign, unrelated to this change) — the `0x0403`/`0x0206`
+  credential-related errors already only ever originate from an actual failed/missing challenge-response deeper in
+  `RtspClient`, never from a synchronous precondition check in `play()` itself.
+
+So the actual changes were entirely server + demo-page side:
+
+- `src/server/api/sessionRoutes.ts`: `username`/`password` may now each be an empty string, but validated as an
+  explicit **both-empty-or-both-set** pair — one empty and the other not is rejected with a `400` naming both
+  fields. There's no partial-auth state.
+- `src/server/rtspOverWebSocket/server.ts`: `handleConnection`'s per-connection state machine now branches on
+  `session.request.username` truthiness before ever calling `parseDigestAuthorization`/`verifyDigest`/`challenge` —
+  an empty-credentials session skips straight to `state = 'relaying'` on the first message, no `401` ever sent.
+  Verified live (not just read) by opening a raw `ws` connection to `/StreamingServer` with no `Authorization`
+  header against both an empty-credentials session (proceeded straight past auth to the live-wait/relay stage) and
+  a normal-credentials session on the same running server (got the expected `401` + nonce) — see server log lines
+  `session has no credentials — skipping digest auth, switching to relay` vs. the normal `digest auth OK` line.
+- `src/index.html`: added a "Use" checkbox (`#yt-auth-toggle`, default checked) next to the Session Username field
+  in the Server panel. Off sends empty `username`/`password` in `POST /api/sessions` regardless of what's still
+  typed into the (now-disabled) Session Username/Password inputs, and disables those inputs plus the password
+  show/hide button so a stale-but-ignored value can't confuse anyone reading the form. `reflectRunningSessionSettings()`
+  and the "Fill Player tab connection info" button both mirror an already-running session's actual auth state back
+  into the toggle/Player-tab fields (an empty `request.username` on a fetched session means it was started with
+  the toggle off) rather than assuming the toggle's current UI state matches whatever session is actually live.
+- Requirements/test-case docs updated to match: `docs/SRS.md` REQ-SRV-010 (validation rule) and new REQ-SRV-043a
+  (challenge-skip carve-out on REQ-SRV-043), `docs/TC.md` TC-SRV-022a/022b/053a, `docs/DESIGN.md` §1.4's sequence
+  diagram and §1.6, `docs/ARCHITECTURE.md`'s sequence diagram and key points, `README.md`'s live-session-flow
+  steps 2 and 4.
+- **Follow-up (2026-08-26): Player-tab "Connect" left a stray `username="" password=""` in the rendered DOM** for
+  a no-auth session — reported by the user pasting the actual rendered `<rtsp-over-websocket>` markup. Cause:
+  `src/index.html`'s `btnConnect` handler always did `playerEl.username = form.username.value` (and same for
+  `password`) unconditionally; `RTSPOverWebSocket.ts`'s `set username(v)`/`set password(v)` are plain
+  attribute-reflecting setters (`this.setAttribute('username', v)`, no empty-string guard — same pattern as every
+  other attribute setter on the class, e.g. `device`), so assigning `''` still creates the attribute with an
+  empty value rather than leaving it absent. Fixed at the demo-page call site only (`if (form.username.value)
+  playerEl.username = ...`, same for `password`) — **not** in the element's setter itself, since that's a
+  standard, consistently-applied attribute-reflection contract shared by every property on the class and changing
+  it would be a much bigger, riskier surface than this one demo-page call site needed. Purely cosmetic/DOM-hygiene
+  fix: leaving the attribute unset is functionally identical to setting it to `''` (`info.device.username`/
+  `password` already default to `''`, and an unauthenticated session is never challenged either way — see the
+  main entry above), confirmed by the investigation that led to the toggle feature in the first place.
+
+## `yt-dlp` YouTube fetch failing in this dev environment — `deno` tried, ruled out, reverted; real cause is per-video server-side gating
+
+While manually verifying the unauthenticated-session change above (creating a real session end-to-end), every
+session on this box failed with `ffmpeg exited with code 183: ... Invalid data found when processing input` —
+initially assumed related to the auth change, but reproduced identically with normal-auth sessions too, so
+unrelated and pre-existing. This took **three** wrong-then-corrected explanations before landing on one backed by
+real evidence; recording the full path (not just the ending) because each wrong step looked individually
+plausible and was only caught by the user pushing back and asking to re-verify, twice.
+
+1. First hypothesis: blanket YouTube CDN block. Wrong — `GET /api/youtube/probe` (`yt-dlp -j`, metadata-only)
+   always succeeded and even listed the requested resolution correctly, which made "it's just blocked" look
+   plausible at a glance but was actually just extraction working while the *download* step (a different, later
+   `yt-dlp` operation) failed.
+2. Second hypothesis: "no JS runtime → `403`, install `deno`". `deno` was installed user-locally (official
+   installer → `~/.deno/bin`, added to `~/.bashrc`'s `PATH`) and genuinely does fix the `No supported JavaScript
+   runtime could be found` warning and gets real JS-challenge (signature cipher) solving working — confirmed via
+   `[youtube] [jsc:deno] Solving JS challenges using deno` in the log. **But re-testing the exact failing session
+   after installing `deno` still 403'd.** Investigated further and found the fix hadn't even reached the running
+   server process (its `/proc/<pid>/environ` showed no `~/.deno/bin` in `PATH` — a stale process from before the
+   `.bashrc` edit) — fixed that too (verified via `/proc/<pid>/environ` this time, not just assumption) and
+   re-tested with `deno` *confirmed* reachable by the actual failing process. **Still 403'd, identically**, with
+   `[jsc:deno] Solving JS challenges using deno` right before the `403` in the same log — proof `deno` was never
+   the fix for this specific symptom, only for the separate (real, but irrelevant here) "no JS runtime" warning.
+   Per the user's explicit request, `deno` was fully reverted at this point: `rm -rf ~/.deno`, the `~/.bashrc`
+   `PATH` addition removed, and the "install deno" instructions pulled from `README.md`/`CLAUDE.md`.
+3. Real cause, found only after ruling out `deno`: tested three different video IDs directly with `yt-dlp`
+   (`deno` absent this time, ruling it out as a factor). One older, long-popular video (`jNQXAC9IVRw`, "Me at the
+   zoo") downloaded cleanly at every format tier including full DASH merge. Two different modern videos
+   (`fZa5SwVMnGg`, `aqz-KE-bpKQ`) both `403`'d at **every** resolution tier tried, down to the lowest (`144p`
+   DASH and even the legacy progressive `18`) — so it isn't a resolution/bitrate cutoff, and it isn't specific to
+   the one video used throughout earlier testing (`fZa5SwVMnGg`) either. This points at YouTube-side, per-video
+   gating (consistent with `yt-dlp`'s own PO-Token-required warnings on non-`android_vr` clients — `yt-dlp -v`
+   shows `PO Token Providers: none`), not a local environment defect and not something a JS runtime fixes.
+
+Practical upshot for next time this symptom shows up: **try a different `youtubeUrl` before assuming the
+environment is broken** — some videos work, some don't, seemingly independent of resolution. If it turns out to
+be consistently every video, that's the PO Token gate.
+
+**Superseded by [[yt-dlp-po-token-provider-final-fix]] below**: the line that used to be here ("`deno` is *not*
+part of the fix... don't reinstall it on this same assumption") was itself wrong, in the same way steps 1-2 above
+were — it was true only in isolation (deno alone, without a PO Token provider, really doesn't fix this), but the
+user pushed back a second time ("정말요? 확인해보세요") and asked for the PO Token provider to actually be set up,
+which revealed deno **was** a necessary (if not sufficient) piece all along. Worth noting as its own lesson: a
+correction that's true *in the specific context it was tested* can still mislead if that context (here: "without
+a PO Token provider") isn't carried forward with it.
+
+## yt-dlp-po-token-provider-final-fix — the actual working fix, both deno and a PO Token provider, plus a third necessary piece (forcing the right YouTube client)
+
+Following directly from the section above: the user asked to set up a real PO Token provider rather than accept
+the "not fixable from this repo" conclusion. This turned out to be the right call — it fully fixed real sessions
+(confirmed live at 1080p, both `dQw4w9WgXcQ` and `9bZkp7q19f0`, through the actual REST API end-to-end,
+`status: "live"` with continuous `frame=` progress) — but getting there needed a third piece beyond the two
+already known, discovered only by actually testing rather than stopping once the PO Token layer worked:
+
+1. **Installed [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) 1.3.2** — git
+   cloned to `~/bgutil-ytdlp-pot-provider`, built the `server/` subdir with Node.js (requires **Node >=22**, a
+   separate requirement from this repo's own pinned Node 20 — installed via `nvm install 22`, invoked by absolute
+   path rather than changing this repo's own default Node), and installed the yt-dlp plugin via the "Manual" zip
+   method (`~/.config/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip` — this repo's `yt-dlp` is the standalone
+   binary, not `pip`/`pipx`, so the PyPI install method doesn't apply).
+2. **Hit the same TLS-interception issue as before, twice more** — `npm ci`'s `canvas` native build failed
+   (`SELF_SIGNED_CERT_IN_CHAIN` fetching Node headers from nodejs.org) until `NODE_EXTRA_CA_CERTS` pointed at
+   `/etc/ssl/certs/ca-certificates.crt`; then the running provider's *own* outbound HTTPS (BotGuard challenge
+   fetch from `google.com`) failed identically (`self-signed certificate in certificate chain`) until the same
+   env var was set for the server process itself — a corporate root CA (`Somansa_Root_CA.crt`, a Korean DLP/
+   security vendor — matches the Windows security-software paths visible in this WSL box's inherited `PATH`)
+   trusted by the OS/curl but not by Node's own bundled CA store by default.
+3. **First end-to-end retest still 403'd** — even with a real PO Token successfully generated (confirmed via a
+   direct `POST /get_pot` call returning a token) and `deno` solving the JS challenge, `yt-dlp`'s *default*
+   (unforced) client selection still ended up 403ing at every resolution. Root cause: `yt-dlp` merges formats
+   from multiple YouTube "clients" by itag number, and for the app's `bestvideo[...][vcodec^=avc1]` selector it
+   kept picking the `android_vr`-origin URL for a given itag over an equally-available `mweb`/`web`-origin one —
+   and `android_vr`'s URLs 403 regardless of PO Token/JS runtime (`yt-dlp` doesn't even request it a token, per
+   its own client-capability table). Explicitly forcing `--extractor-args youtube:player_client=mweb` fixed it:
+   `mweb` (unlike the plain `web` client, which degrades to a 360p progressive-only fallback) exposes the full
+   DASH ladder and, with PO Token + JS runtime both available, downloads cleanly at every resolution tested.
+4. **Forcing `mweb` unconditionally would have been a regression**, caught by testing the *other* direction
+   before shipping: with `deno`/the PO Token provider deliberately turned off, forcing `mweb` failed outright
+   (`No video formats found!`) even for the one old video (`jNQXAC9IVRw`) that the *unforced* default had always
+   handled fine throughout this whole investigation. So `transcodeSession.ts`'s `startTranscode()` checks
+   `hasDeno()` + `potProviderReachable()` (a live HTTP check against `127.0.0.1:4416`) at the start of every
+   session and only adds the `mweb` override when *both* are true — otherwise it falls back to the exact
+   pre-existing unforced behavior, verified by killing the PO Token provider mid-session-testing and confirming
+   the log correctly logged `player_client=default (...)` and did not add `--extractor-args`.
+
+Final architecture, mirroring the existing `ensure-mediamtx.js`/`stop-server.js` pattern exactly: new
+`scripts/ensure-bgutil-pot-provider.js` (leaves an already-reachable instance alone; otherwise auto-detects a
+Node >=22 under `~/.nvm/versions/node/*` and the provider's build dir, starts it, pid-tracks it) wired into
+`npm run start:server*`; `scripts/stop-server.js` extended to stop only the instance it started; new
+`BGUTIL_POT_PROVIDER_PORT` config constant and `.env.example` entries for every override
+(`BGUTIL_POT_PROVIDER_DIR`/`_NODE_BIN`/`_CA_CERTS`). Deliberately **not** part of this repo's own npm
+scripts/install (unlike `yt-dlp` itself, which `ensure-yt-dlp.js` *does* auto-install) — the provider is a
+real, separate long-running service with its own build step and Node version requirement, closer in shape to
+MediaMTX (external, must already be running) than to `yt-dlp` (a single binary this repo happily fetches for
+you). See `README.md`'s "External tools" section for the full manual setup steps, `CLAUDE.md`'s "Environment
+gotchas" for the condensed troubleshooting version, and `docs/SRS.md`'s REQ-SRV-036 / `docs/TC.md`'s
+TC-SRV-044/045 for the formal requirement and both directions (mweb forced when available; NOT forced when not)
+tested.
+
+## `applySrcAttribute()` never wrote the resolved `device` back to the actual attribute — real bug, unrelated to auth (fixed)
+
+Reported as a follow-up to the unauthenticated-sessions work above: the user pasted a real
+`RTSPOverWebSocketError` stack (`generateRTSPURL` -> `play` -> `applySrcAttribute` -> `attributeChangedCallback`
+-> `set src`) with message `device attribute is not define.`, hit from the demo page's "RTSP URL" tab by typing a
+plain nvr-shaped URL with no query string at all (`rtsp://localhost:4000/LiveChannel/0/media.smp` — no
+`?device=nvr`) and clicking Connect. Asked to confirm whether this was actually a username/password issue — it
+wasn't; a real, separate bug in `src/player/elements/RTSPOverWebSocket.ts`'s `applySrcAttribute()`.
+
+Root cause: the method computes a local `deviceType` const with a sensible fallback chain
+(`url.searchParams.get('device') ?? this.getAttribute('device') ?? 'camera'`), but the *only* place that gets
+written back to the real `device` attribute is a generic `?query=value` passthrough loop earlier in the same
+method — which only fires for params the `src` URL's query string actually contains. A `src` with no query
+string, on a fresh element that never had `device` set any other way, left the real attribute (and
+`_deviceType`, its backing field, default `null`) unset forever. `generateRTSPURL()` branches
+`if (this._deviceType === 'camera') {...} else if (this._deviceType === 'nvr') {...} else { throw 0x0404 }` — a
+`null` `_deviceType` hits that final `else` unconditionally, so `play()` always threw for exactly this URL
+shape, regardless of credentials.
+
+Fix: added `this.setAttribute('device', deviceType);` immediately after computing `deviceType`, so the resolved
+value (URL param, or existing attribute, or the `'camera'` default) is always persisted to the real attribute —
+not just used locally to decide how to parse the path segments below it. One-line fix, but the class of bug is
+worth remembering: a value computed with a correct fallback chain isn't the same as that value actually being
+reflected onto the attribute other code paths (`generateRTSPURL()`, `attributeChangedCallback`) read from — don't
+assume a local variable and the backing attribute stay in sync just because they're derived from the same
+inputs.
+
+**Second, more consequential bug found while verifying the first fix actually made the user's exact URL work**
+(traced the logic by hand with plain Node's `URL`, not just reasoning about it): even with the crash gone, a
+`src` with no `?device=` query param still resolves to `'camera'` by default (the URL genuinely doesn't say
+which device type it is — `?device=nvr` has to be explicit; added an nvr-shaped example to the demo page's RTSP
+URL tab field-note/placeholder, which previously only showed a camera-shaped one, so this isn't confusing again).
+But even *with* `?device=nvr` added, the channel never got parsed: `generateRTSPURL()`'s own nvr branch produces
+`LiveChannel/<channel>/media.smp` (or `PlaybackChannel`/`BackupChannel`), but `applySrcAttribute()`'s channel-
+segment parsing unconditionally read `segments[0]` — correct for camera mode (`{channel}/{profile}/media.smp`,
+no prefix) but wrong for nvr mode, where `segments[0]` is the literal `LiveChannel` string and the channel is
+`segments[1]`. `Number('LiveChannel')` is `NaN`, so the `channel` attribute silently never got set for *any*
+nvr-shaped `src` — not a crash, just a silently-wrong connection (would attempt channel 0/whatever was already
+set, not what the URL asked for). This is exactly the shape of URL this repo's own `src/server` sessions
+produce and reflect back onto `src` (`docs/DESIGN.md`'s "channel is 0-based on the wire" convention), so it's a
+real, live gap, not a hypothetical one. Fixed by stripping a leading `LiveChannel`/`PlaybackChannel`/
+`BackupChannel` segment (case-insensitive) before reading the channel segment, but only when
+`deviceType === 'nvr'` — camera-mode parsing is unaffected. Verified both fixes together end-to-end (outside a
+browser, via plain Node `URL` + the exact parsing logic) for `rtsp://localhost:4000/LiveChannel/0/media.smp`:
+no `?device=` → `{device: 'camera', channel: null}` (no crash, but wrong device — expected, URL is genuinely
+ambiguous); `?device=nvr` appended → `{device: 'nvr', channel: 1}` (correct — wire value `0` converts to the
+1-based `channel` attribute `1`); a camera-mode URL with an existing channel segment was re-verified unaffected.
+
+Doc updated in place (not just appended to) at `docs/player/01-elements-interface-exceptions.md`'s
+`applySrcAttribute()`/`generateRTSPURL()`/`buildAbsoluteRTSPURL()` entries for both fixes, since the old
+description ("device ... already applied above via the generic passthrough if `src` included it") was actively
+wrong about this gap, not just incomplete.
+
+**Third bug, same method, found immediately after** (user tested the round-tripped Player-tab URL against the
+RTSP URL tab, worked through the `?device=nvr` fix above, then separately reported a real device connect
+attempt — `rtsp://192.168.x.x/0/H.264/media.smp`, no port — failing with a WebSocket connection to `:4000`, the
+port from an *earlier, unrelated* connection on the same reused element): `applySrcAttribute()`'s port handling
+was `if (url.port !== '') this.setAttribute('port', url.port);` — when the URL had no port at all, this did
+*nothing*, leaving `port` at whatever a previous `src` on that same element had set it to (the demo page's RTSP
+URL tab element is created once and reused across every "Set"/"Connect" click, not recreated per attempt). Fixed
+by resolving a default (`'443'` if `this._secure`, else `'80'`) whenever `url.port === ''`, applied in a
+*separate* step positioned deliberately *after* the generic `?query` passthrough loop — not merged into the
+single line the explicit-port case still uses before that loop — specifically so an explicit `?secure`/`?https`
+in the same URL is already applied by the time the default is computed, rather than being clobbered by the
+`'port'` `attributeChangedCallback` case's own `_secure = (port === 443)` side effect (documented at that case
+already: setting `port` force-resets `_secure` based on the port number alone). Confirmed `play()` already had
+an equivalent `_port === null` → 443/80 fallback elsewhere in the class — validating `443`/`80` as this
+codebase's existing canonical defaults, not new numbers invented for this fix — but that guard only covers a
+*never-set* `_port`, not a *stale* one, so it didn't help this case. Separately confirmed (direct question from
+the user) that ws:// vs wss:// selection is already correctly driven by `secure`/`https` →
+`info.device.protocol` → `StreamPlayer.ts`'s `startStreaming()` — not a bug, no change needed there.
+
+**Fourth bug, same method, same "stale state from a reused element" family**: right after the port fix above, the
+user tested switching the RTSP URL tab's target IP between two real devices (`.32` then `.40`, both `?device=camera`,
+neither URL carrying its own credentials). The first IP correctly triggered the "Credentials required" prompt and
+the user typed a username/password; changing only the IP and reconnecting on the same (reused) element then
+silently answered `.40` with `.32`'s credentials instead of prompting again — `applySrcAttribute()` never had any
+logic to clear `username`/`password` for a `src` that simply omits its own, exactly the same shape of bug as the
+`port` one (a value with no explicit override in the new URL just keeps whatever a previous connection left
+behind). Fixed by comparing the new `url.hostname` against the element's *current* `hostname` attribute before
+overwriting it: if they differ and there *was* a previous hostname (not this element's very first `src`), clear
+`username`/`password` first unless the new `src` supplies its own. The `previousHostname === null` guard matters:
+without it, a `src` set *after* `username`/`password` had already arrived some other way (the demo page's Player
+tab, for instance, assigns them as plain properties before ever touching `src`) would wipe them out on the very
+first connect, which would have been a regression in the opposite direction. Verified the logic directly (three
+scenarios: fresh element, IP change, same-IP reconnect) via the same plain-Node dry-run technique used for the
+device/channel fixes above, rather than fighting jsdom+ESM integration again — much faster and just as conclusive
+for pure attribute-derivation logic with no real DOM/network dependency. Doc updated in place again at
+`docs/player/01-elements-interface-exceptions.md`'s `applySrcAttribute()` entry (now covers four fixes from one
+investigation thread — device, channel, port, credentials — all in the same "resolve explicitly instead of
+silently keeping stale state from a reused element" family; worth checking this method for the same pattern again
+if another "works once, breaks on the second try" report comes in for the RTSP URL tab).
+
+## nvr-mode `generateRTSPURL()` rewritten to emit real `?query` syntax — a deliberate wire-protocol-format change, not a bug fix, done at the user's explicit request after being warned of the real-device risk
+
+Direct follow-on from the device/channel/port/credentials investigation above: the user asked *why* a
+Player-tab-generated `src` like `rtsp://host:4000/LiveChannel/2/media.smp/profile=H264` couldn't just be pasted
+into the RTSP URL tab and work — the underlying problem was that `generateRTSPURL()`'s nvr branch never produced
+real `?query=value` syntax in the first place, it glued `profile=`/`session=`/`start=`/etc. directly onto the
+path string with `/` or `&` chosen ad hoc per field (bare trailing `/` if no session key, otherwise `/session=X`
+then `&`-prefixed extras) — not `URLSearchParams`-parseable at all, which is *why* `applySrcAttribute()` could
+never read `device`/`profile` back out of its own sibling method's output.
+
+**Before changing it, flagged a real risk the user needed to actually decide on, not one I should default past**:
+`generateRTSPURL()`'s return value is not a display string — `play()` assigns it to
+`info.media.requestInfo.url`, which `RtspClient.ts` sends verbatim as the literal outgoing RTSP request URI
+(`this._request(cmd, requestInfo.url, ...)`). So this wasn't a client-side-only convenience fix like the four
+before it — it changes what this player actually sends to **real Hanwha NVR/camera hardware**, which this class
+serves in addition to this repo's own demo `src/server` (which only cares about the numeric channel segment and
+ignores everything else in the path — confirmed via `rtspFraming.ts`'s `extractChannel()`). No confirmation
+either way was found in `docs/player/` that real NVR firmware requires the legacy path-embedded format
+specifically, nor that it's safe to change — genuine unknown, not something to guess past. Presented the
+tradeoff explicitly (fix `applySrcAttribute()` only — zero wire-risk, vs. also rewrite `generateRTSPURL()` — full
+symmetry but real-device risk) via `AskUserQuestion` rather than picking one myself; the user chose the riskier,
+fuller fix having been told the risk plainly.
+
+**Implementation**: nvr branch now builds a `queryParams: string[]`, starting with `'device=' + this._deviceType`
+(so a self-generated nvr `src` is always unambiguous when re-parsed — no longer relies on
+`applySrcAttribute()`'s 'camera' default guessing right), pushes every other piece
+(`session`/`start`/`end`/`overlap`/`BestshotFilter`/`substream`/`profile`/`profile_number`/`ProfileUsage`/
+`camchannel`/`codec`/`limitWidth`/`limitHeight`/`iframe`) the same way, then joins with exactly one `?` +
+`&`-separators at the very end. This incidentally also deletes the whole class of "was this the first param, do
+I need a leading `&` or not" bookkeeping the old code had scattered per-field — which was itself part of the
+original bug (the no-session-key path left a bare `/` with nothing after it, so the *next* thing appended landed
+glued on with no separator at all). Camera mode untouched — its `profile` was already a real path segment,
+correctly round-tripped, with none of the nvr branch's `&`-glued extras.
+
+**Verified twice, at two different levels, before calling it done**:
+1. Pure logic: simulated `generateRTSPURL()`'s new nvr output for a real channel+profile combination, then fed
+   that exact string back through `applySrcAttribute()`'s simulated logic — got back identical
+   `device`/`channel`/`profile` state. Full round-trip, no browser/DOM needed for this kind of pure
+   string-derivation check.
+2. Live, against the real bridge: created a real session on this repo's own `src/server`, then sent a raw
+   `DESCRIBE` over a raw WebSocket using the new URI shape (`.../media.smp?device=nvr&profile=H264`) — got a real
+   `200 OK` with a full SDP body back from `rtspOverWebSocket/server.ts`/MediaMTX. Confirms the format change
+   doesn't break this repo's own bridge (`extractChannel()`/`rewriteRequestUri()` both still resolve the channel
+   correctly with a real query string present) — real Hanwha hardware compatibility remains genuinely unverified,
+   as disclosed to the user up front.
+
+**Immediately followed by a user request to also keep the *old* format working**: `applySrcAttribute()`'s nvr
+branch gained a legacy-fallback pass — every path segment after the channel (skipping `media.smp`/`play.smp`/
+`backup.smp`) is split on `&` and each `key=value` pair routed through the exact same
+`session`/`start`/`end`/`overlap`/`knownAttributes` handling the real `?query` loop uses, but only for a key the
+real query string *didn't* already supply this parse (tracked via a `queryProvidedKeys` set populated while
+processing `url.searchParams`) — a legacy path fragment is a best-effort guess, never authoritative over an
+explicit `?query` value. This means both `.../media.smp?device=nvr&profile=H264` (new) and
+`.../media.smp/profile=H264?device=nvr` (old) now work identically — verified both directly against the same
+live session, both `200 OK`. `queryParams` line, `applySrcAttribute()`'s legacy fallback, and both live tests are
+documented together in `docs/player/01-elements-interface-exceptions.md`'s `applySrcAttribute()`/`generateRTSPURL()`
+entries.
+
+## Fifth bug in `applySrcAttribute()` — same-day regression in the fourth fix itself (`removeAttribute()` vs `setAttribute('', '')` are NOT interchangeable here)
+
+The credentials-clear-on-hostname-change fix (fourth fix, above) used `this.removeAttribute('username')` /
+`removeAttribute('password')` to clear stale credentials. This shipped a real regression, caught by the user
+testing the exact same two-real-camera-IPs scenario the fix itself was written for
+(`rtsp://192.168.x.32/.../media.smp?device=camera` → `rtsp://192.168.x.40/.../media.smp?device=camera`, both
+with no credentials in the URL): the *second* connect now threw `RTSPOverWebSocketError` ("username is empty
+from input parameter.") from `StreamPlayer.ts`'s `open()`, immediately on `play()`.
+
+Root cause, traced precisely (not just plausible reasoning — simulated the exact conditional both ways before
+committing to the fix): `removeAttribute('username')` fires the `'username'` `attributeChangedCallback` case
+with `newValue = null`. That case computes `this.info.device.username = this._username ?? undefined` — with
+`_username = null`, the `??` operator substitutes `undefined` (it triggers on both `null` and `undefined`, not
+just falsy values generally). This produces a state (`info.device.username === undefined`) that is *not* the
+same as this element's actual default "no credentials" state, which is `info.device.username: ''` (empty
+string) baked into the `info` object literal at construction and never touched if the `username` attribute is
+simply never set. `StreamPlayer.ts`'s `open()` checks `typeof info.device.username !== 'undefined'` — `true`
+(no throw) for `''`, `false` (throws) for `undefined`. So a *fresh* element with no `username` attribute ever
+set connects fine (confirmed throughout this whole investigation), but an element whose `username` attribute
+was explicitly *removed* after having been set does not — even though both states read as "no username" at a
+glance, only one of them is the specific empty-string representation this class's own precondition check
+actually accepts.
+
+Fix: `setAttribute('username', '')` / `setAttribute('password', '')` instead of `removeAttribute()` — produces
+`newValue = ''`, so `_username = ''`, so `info.device.username = '' ?? undefined` = `''` (the `??` does *not*
+substitute for a non-nullish empty string), matching the safe default exactly. Verified the fix directly by
+simulating both code paths (`removeAttribute()`'s `null` vs `setAttribute('', '')`'s `''`) through the identical
+`?? undefined` + `typeof !== 'undefined'` logic `StreamPlayer.open()` actually runs — confirmed `null` throws,
+`''` doesn't, before touching the real file again.
+
+Lesson worth keeping for next time a "clear this attribute" fix gets written in this class: **`removeAttribute()`
+and `setAttribute(name, '')` are not interchangeable whenever the attribute's `attributeChangedCallback` case
+uses `?? undefined`/`?? someDefault` on `newValue`** — `removeAttribute()`'s `null` and a real "unset" `undefined`
+collapse to the same coalesced value, which may not match whatever this class's *other* code (constructors,
+other methods) actually treats as the neutral/default state for that field. Check what the field's own
+object-literal default is before picking one over the other; don't assume "clearing" a value always means
+`removeAttribute()`.
+
+**Same request also asked for defense-in-depth beyond that one call site**: "username이 비어 있어도 일단 websocket에
+접속하고 RTSP의 401 에러를 수신받아 처리하도록 수정이 필요합니다" — even with the `applySrcAttribute()` regression fixed,
+the user wanted `StreamPlayer.ts`'s own `open()` precondition relaxed too, not just the one caller that happened
+to trip it. `open()` had its own separate `throw ... 0x0402 ('username is empty from input parameter.')` for
+`info.device.username === undefined` — a synchronous, hard-fail precondition that's *exactly* the kind of check
+`RTSPOverWebSocket.ts`'s own `play()` was already redesigned away from (see this same file's earlier "401 /
+credential-retry (recent redesign)" section — `play()` "no longer throws up front for missing username/password
+... the actual 0x0403 error now originates deeper, in RtspClient's digest-auth header builder"). `StreamPlayer.open()`
+had never gotten the same treatment. Changed it to default `profileInfo.device.username = ''` instead of
+throwing — `hostname`/`cameraIp` stay hard requirements (genuinely can't connect without a target host; only
+`username` was ever the mismatched-with-the-rest-of-the-codebase check). This is squarely in-line with an
+already-established, already-documented architectural direction in this exact codebase, not a novel design
+decision — low risk to apply by extension.
+
+## React wrapper (`src/player/react/Player.tsx`) couldn't connect without credentials either — a third code path with the same underlying gap, found by following the same "trace, don't guess" method
+
+After `RTSPOverWebSocket.ts`/`StreamPlayer.ts` were both fixed to accept empty credentials, the user asked to
+check `src/player/react` too — a third consumer of the same element, and worth checking precisely *because* it's
+a separate code path that could plausibly have its own gap, not because there was any specific symptom reported
+yet.
+
+Root cause, different in kind from every fix so far in this thread (not a "stale state" bug — a design default
+that stopped fitting once no-auth became a supported case): `Player.tsx`'s `useEffect` branches on `useSunapi =
+props.device.useSunapi !== false` — SUNAPI REST login by default unless explicitly opted out. A SUNAPI login
+fundamentally needs *something* to authenticate with; with no `username`/`password` at all, `SunapiManager.init()`
+can only ever fail, and this component never falls through to the raw-attribute path (`useSunapi: false`'s
+branch, which sets real `password`/`autoplay` attributes and lets the element's own
+`connectedCallback()`/`updateSunapiManager()` drive things) that would otherwise work fine given the two fixes
+above.
+
+**First attempt at the fix was too narrow, and testing against the actual demo page caught it before shipping**:
+tried `useSunapi = props.device.useSunapi === true ? true : props.device.useSunapi === false ? false :
+hasCredentials` — only override the *default* (unset) case, leaving an *explicit* `useSunapi: true` alone on the
+theory that an explicit caller choice should be respected. But re-reading `src/index.html`'s own React panel
+connect handler showed `useSunapi: form.useSunapi.checked` — a real boolean from the checkbox's `.checked`
+property, **always** explicit, **never** `undefined` (the checkbox defaults to checked, i.e. `true`). So the
+"only downgrade the default" version would never actually fire on this repo's own demo page — the exact
+UI a report about this would come through. Caught by continuing to trace the *actual call site*, not stopping at
+"the component-level fix looks reasonable in isolation." Corrected to `useSunapi = hasCredentials &&
+props.device.useSunapi !== false` — no-credentials always wins, full stop, regardless of what the flag says,
+since a SUNAPI attempt with zero credentials can never meaningfully succeed no matter how it's requested; an
+explicit `useSunapi: true` **with** credentials present is completely unaffected.
+
+Also worth noting since it wasn't obvious going in: `IDevice.username`/`password` (`Constant.ts`) are typed as
+required `string`, not `string | undefined` — so this component was never at risk of the `null`-vs-`''`
+`removeAttribute()` mixup from the fifth `applySrcAttribute()` bug above; an empty string was already the only
+way to express "no credentials" through this component's own prop types, which is exactly the representation
+`StreamPlayer.open()`'s fix (fourth entry up) made safe. Doc updated at `docs/player/01-elements-interface-exceptions.md`'s
+`Player` (React wrapper) section — both the `useSunapi` derivation and the `useSunapi: false` bullet's
+description, since that mode is no longer just a comparison/test path but the one an intentional no-auth
+connection now actually goes through.
+
+## Real-camera "1 frame then freeze" bug: Opus audio racing the first video I-frame for `VideoTagPlayer`'s `SourceBuffer` codecs string
+
+Reported live against real Hanwha camera hardware (two cameras, same client code, same profile shape — one
+worked fine, one played exactly one video frame then froze forever). The single differentiating fact, given by
+the user only after some back-and-forth diagnostic questions: the frozen camera's audio codec was Opus; the
+working one's wasn't. Confirmed experimentally (not just by code reading) by having the user reconfigure the
+frozen camera's audio to G.711 — the freeze stopped. That confirmation is what turned a plausible-but-unproven
+code-reading hypothesis into a confirmed root cause before any fix was written.
+
+**Root cause**: `VideoTagPlayer.ts`'s very first `MediaSource.addSourceBuffer(mimeCodec)` call happens at the
+first video I-frame (`onVideoData()`'s `createInitSegment()`), and the `mimeCodec` string's audio half is
+`this.opusActive ? 'opus' : 'mp4a.40.2'` — `opusActive` used to default to `false` and only ever get set by a
+*real* `onAudioData` → `setAudioInfo()` call. On real hardware, which arrives first — the first video I-frame or
+the first audio RTP packet — is a genuine race with no ordering guarantee (this repo's own demo server, by
+contrast, apparently tends to deliver video first reliably enough that this race was never seen against it).
+When video won the race, the `SourceBuffer` got permanently locked into `'mp4a.40.2'` (MSE forbids changing a
+`SourceBuffer`'s codecs string after creation), and the moment the real Opus `onAudioData` call then arrived,
+`setAudioInfo()`'s pre-existing (correct, intentional) mismatch guard — added specifically because a prior
+remove-and-recreate attempt had wedged the whole `MediaSource`, see that method's comment — silently and
+permanently dropped that connection's audio for the rest of the session. The part that wasn't obvious from
+reading `setAudioInfo()` alone: this doesn't just mean "no sound." `<video>`'s playable range (`buffered`) for a
+multi-track `SourceBuffer` is the *intersection* across all declared tracks — once the audio track stops
+receiving samples entirely, the intersection stops advancing even while video segments keep appending
+successfully underneath it, which is exactly "renders once, then freezes forever, while RTP keeps arriving"
+(confirmed separately via the Statistics panel: the video RTP packet counter kept climbing throughout the
+freeze). AAC/G711/G726 were never at risk from this specific bug: all three share the identical `'mp4a.40.2'`
+MIME string regardless of arrival order, so `opusActive`'s `false` default already matches them — the race only
+exists for the one codec whose correct MIME string differs from the default.
+
+**Fix**: thread the audio codec type down from SDP (`RtpClient.sendSdpInfo()`, which runs once at RTSP `SETUP`
+time — well before either the first video or first audio RTP packet, so there's no race at that layer) through a
+new `MediaRouter.setAudioCodecHint(codecType)` / `audioCodecHint` field, mirroring the *existing* pattern
+already used for the video codec (`MediaRouter.handleVideoData` already sets `player.codec` before calling
+`player.init()`, specifically so a player can know its codec before its first data callback — same idea,
+applied to audio for the first time). `VideoPlayer.ts` (the shared base class) gained a plain `audioCodecHint`
+field; `VideoTagPlayer.init()` now seeds `this.opusActive = this.audioCodecHint === 'OPUS'` before either
+`onVideoData`/`onAudioData` can run, so the first `SourceBuffer` is correctly declared regardless of which
+media type's RTP happens to arrive first. A second, smaller wrinkle this surfaced: naively pre-seeding
+`opusActive` would make the *first real* Opus `setAudioInfo()` call see "no change" (it already matches the
+hint) and skip the branch that actually populates `this.audioInfo`'s real `channelCount`/`sampleRate`-derived
+fields — fixed with a companion `opusActiveIsHintOnly` flag (true until a real Opus `setAudioInfo()` call
+confirms it), added as an extra `switchingCodec` condition scoped to the Opus case only, so AAC/G711/G726's
+existing `switchingCodec` behavior is completely unchanged. The original mismatch guard in `setAudioInfo()` is
+kept as-is, now only a fallback for a missing/wrong SDP hint rather than the primary defense.
+
+Real camera IPs/credentials from the live report are deliberately not recorded here or anywhere else in this
+repo's docs — only the codec/behavior facts, which is all a future fix or regression check would need. Docs
+updated: `docs/player/05-video-player-rendering.md` (`VideoPlayer`'s `audioCodecHint` field, `VideoTagPlayer`'s
+Structure field list, `init()`, and `setAudioInfo()` entries) and `docs/player/03-mediaSession-core-video.md`
+(`RtpClient.sendSdpInfo()`'s per-codec bullets and `MediaRouter.handleVideoData`'s entry).

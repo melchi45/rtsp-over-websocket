@@ -157,28 +157,124 @@ their exact location rather than fixed silently (file header comment,
   Deliberately does **not** also write the legacy `_source` field (long comment at `:1656-1670`
   explains why: doing so would make every `if (this._source === null) generateRTSPURL()` gate
   elsewhere permanently skip URL generation after the first `src` write).
-- `applySrcAttribute(srcValue)` (private, `:4162-4278`) — parses `src` as a `URL`: username/
-  password/hostname/port from the authority go through `setAttribute`; every recognized
-  `?query=value` param is passed through generically to the matching attribute (bare flags like
+- `applySrcAttribute(srcValue)` (private, `:4297-4558`) — parses `src` as a `URL`. **A `src` whose
+  `hostname` differs from this element's *current* `hostname` attribute clears `username`/
+  `password` first** (fixed 2026-08-26, fourth fix from the same investigation) unless the new
+  `src` supplies its own — a different device very often means different (or no) credentials, and
+  the RTSP URL demo tab's element is created once and reused across "Connect" clicks, not
+  recreated per attempt. Confirmed live: connecting to one IP with no credentials in the URL
+  correctly triggered the "Credentials required" prompt and the user typed a
+  username/password; changing only the IP in the URL and reconnecting on the same element then
+  silently answered with the *first* IP's credentials instead of prompting again, because nothing
+  cleared them for a `src` that simply omits its own. `previousHostname === null` (this element's
+  very first `src`) deliberately does **not** count as a "change" — otherwise a `src` set after
+  `username`/`password` had already arrived via markup/property assignment (e.g. this page's
+  Player tab, which sets `username`/`password` as plain properties before `src`) would wipe them
+  out immediately. Reconnecting a `src` to the *same* hostname leaves existing credentials alone.
+  **Clearing uses `setAttribute('username'/'password', '')`, not `removeAttribute()`** — the first
+  version of this fix used `removeAttribute()` and shipped a same-day regression: it fires the
+  `'username'` `attributeChangedCallback` case with `newValue = null`, which computes
+  `info.device.username = null ?? undefined` = `undefined` — a *different* state from this
+  element's own default (`info.device.username: ''` in the `info` object literal). `StreamPlayer.ts`'s
+  `open()` treats those two differently: `typeof info.device.username !== 'undefined'` is `true`
+  for `''` (the normal "no credentials" state every fresh element already starts in — no throw)
+  but `false` for `undefined`, throwing `RTSPOverWebSocketError` ("username is empty from input
+  parameter."). Confirmed live: switching a `src`'s IP with `removeAttribute()` in place threw this
+  on the very next connect attempt — `''` is this class's actual "no credentials" representation,
+  `removeAttribute()`'s `null` is not, and the two are not interchangeable here even though both
+  read as "falsy"/"empty" at a glance.
+  Otherwise, username/password/hostname from the authority go through `setAttribute`
+  unconditionally; `port` is handled specially (see below). Every recognized `?query=value` param
+  is passed through generically to the matching attribute (bare flags like
   `?statistics` arrive as `''`, matching the existing boolean-attribute convention), with a few
   RTSP-session-only settings (`session`, `start`, `end`, `overlap`/`overlappedid`) special-cased
-  onto plain properties instead since they were never real attributes. The path supplies
-  `channel` (0-based on the wire, converted back to the 1-based `channel` attribute) and, for
-  camera devices, `profile`/`profile_number`. After parsing, it sets `_autoplay = true` and, if
-  already connected to the DOM, `stop()`s any existing player and `play()`s again (both
-  try/caught, since a mid-parse `src` — e.g. missing password — surfaces as an ordinary
-  `RTSPOverWebSocketError` from `play()`'s own checks, not something that should throw out of an
+  onto plain properties instead since they were never real attributes. **`device` is resolved and
+  written back explicitly** (`:4441-4442`, fixed 2026-08-26) rather than relying on the generic
+  passthrough alone: it reads `url.searchParams.get('device') ?? this.getAttribute('device') ??
+  'camera'` and always calls `setAttribute('device', deviceType)` with the result. This matters
+  because the passthrough loop above it only fires for query params the `src` URL's *query
+  string* actually contains — a `src` with no query string at all (a plain nvr-shaped path like
+  `rtsp://host:port/LiveChannel/0/media.smp`, no `?device=nvr`) on a fresh element that never had
+  `device` set another way used to leave the real attribute/`_deviceType` at its `null` default
+  forever, and `generateRTSPURL()` would throw `0x0404` ("device attribute is not define.") the
+  instant `play()` ran below — confirmed live, reported via exactly that URL shape from the demo
+  page's "RTSP URL" tab. Note this only stops the *crash*: a `src` with no `?device=` at all still
+  resolves to `'camera'` by default (matching the field-note/placeholder on the demo page's RTSP
+  URL tab, which now shows both a camera- and an nvr-shaped example) — `?device=nvr` must be given
+  explicitly for an nvr-shaped path, since nothing in the path shape alone reliably distinguishes
+  the two. **The path's `channel` segment is also device-aware** (`:4460-4462`, fixed 2026-08-26,
+  same investigation): nvr-mode paths (`generateRTSPURL()`'s nvr branch, and `RtspClient.ts`'s
+  device="nvr" URI builder) lead with a literal `LiveChannel`/`PlaybackChannel`/`BackupChannel`
+  segment before the channel number, unlike camera mode where the channel is `segments[0]` with
+  no prefix — `applySrcAttribute()` now strips that literal prefix (matched case-insensitively)
+  before reading the channel segment when `deviceType === 'nvr'`; previously `Number('LiveChannel')`
+  was always `NaN` and `channel` silently never got set for *any* nvr-shaped `src`. The path also
+  supplies, for camera devices, `profile`/`profile_number`. **nvr mode also accepts the *old*
+  path-embedded pseudo-param style as a fallback** (`:4483-4530`, added 2026-08-26, same day
+  `generateRTSPURL()`'s nvr branch switched to emitting a real `?query` string instead — see that
+  entry below): every path segment after the channel is scanned for `&`-joined `key=value` pairs
+  (a segment that's just `media.smp`/`play.smp`/`backup.smp` is skipped) and routed through the
+  same `session`/`start`/`end`/`overlap`/`knownAttributes` handling the real `?query` loop above
+  uses — so a hand-typed or bookmarked `.../media.smp/profile=H264` (or the old
+  `/session=X&start=Y&profile=Z` combined-segment form) still works, alongside the new
+  `?profile=H264` form. Never overrides a key the real query string already supplied in the same
+  parse (tracked via `queryProvidedKeys`, populated by the `?query` loop above) — the path fallback
+  is a best-effort guess, not authoritative over an explicit `?query` value. Verified live against
+  this repo's own bridge (`rtspOverWebSocket/server.ts`): both `.../media.smp?device=nvr&profile=H264`
+  and `.../media.smp/profile=H264?device=nvr` reach `200 OK` on the same session. **`port` resolves
+  to a real default
+  when the URL omits it, instead of silently keeping whatever a previous connection on this same
+  element left behind** (fixed 2026-08-26, third fix from the same investigation): an explicit
+  `url.port` is applied immediately, in its original position before the passthrough loop (so an
+  explicit `?secure`/`?https` in the same URL, processed by that loop, still wins over the `'port'`
+  `attributeChangedCallback` case's own `_secure = (port === 443)` side effect — see that case's
+  comment on why order matters there); if `url.port === ''`, a *separate* step right after the
+  passthrough loop sets `port` to `'443'`/`'80'` based on `this._secure` at that point (i.e.
+  honoring an explicit `?secure`/`?https` from the same URL). Confirmed live: pasting a bare
+  `rtsp://192.168.x.x/0/H.264/media.smp` (no port) into an element that had previously connected
+  to `localhost:4000` kept trying `ws://192.168.x.x:4000/StreamingServer` — the stale `:4000`
+  simply never got reset, since the old code only ever called `setAttribute('port', ...)` when
+  `url.port !== ''` and otherwise did nothing at all. `play()` (`:4235-4247`) already has its own
+  `_port === null` → default-443/80 fallback, confirming those are this codebase's existing
+  canonical defaults — but that guard only helps a *never-set* `_port`, not a *stale* one, so it
+  didn't save this case. After parsing, it sets `_autoplay = true` and, if already connected to
+  the DOM, `stop()`s any existing player and `play()`s again (both try/caught, since a mid-parse
+  `src` — e.g. missing password — surfaces as an ordinary `RTSPOverWebSocketError` from `play()`'s
+  own checks, not something that should throw out of an
   attribute reaction).
-- `generateRTSPURL()` (private, `:4281-4569`) — the inverse direction: builds the RTSP request
+- `generateRTSPURL()` (private, `:4561-4865`) — the inverse direction: builds the RTSP request
   *path* (not a full URL) from current element state, branching on `device` (`camera` vs `nvr`)
-  and `info.media.type` (`live`/`playback`/`backup`). For `nvr` it also appends `&start=`/`&end=`/
-  `&overlap=`/`&BestshotFilter=`/`&substream` query-style params onto the path string (not a
-  real `?`-prefixed query — see the method's own doc comment at `:4153-4161` on why `src` is
-  intentionally *not* parsed the same way this is generated). After building the path, it calls
-  `buildAbsoluteRTSPURL()` to get a full `rtsp://` URL, reflects that back onto the `src`
+  and `info.media.type` (`live`/`playback`/`backup`). **This return value is not just a display
+  string** — `play()` assigns it to `info.media.requestInfo.url`, which `RtspClient.ts` sends
+  verbatim as the real outgoing RTSP request URI (`this._request(cmd, requestInfo.url, ...)`), so
+  changing its format changes what's actually sent to the device/server, not just what `src`
+  reflects. **The nvr branch now collects every extra piece (`device`, `session`, `start`, `end`,
+  `overlap`, `BestshotFilter`, `substream`, `profile`/`profile_number`/`ProfileUsage`,
+  `camchannel`, `codec`, `limitWidth`, `limitHeight`, `iframe`) into a `queryParams: string[]` and
+  joins them with exactly one `?` + `&`-separators at the end** (rewritten 2026-08-26 — a
+  deliberate, requested protocol-format change, not a cosmetic one; the user explicitly asked for
+  this after confirming they understood the real-device wire-format risk). Previously each piece
+  was glued directly onto the path string with `/` or `&` chosen ad hoc per field (`/session=X` if
+  a session key existed, else a bare trailing `/` with nothing marking where "path" stopped and
+  "pseudo-query" began) — not real `URLSearchParams`-parseable syntax, which is exactly why
+  `applySrcAttribute()` could never tell `device`/`profile`/etc. apart from the channel number in
+  its own output. `device=nvr` is now included explicitly (nvr branch only — camera mode's own
+  generated `src` was never ambiguous, since `applySrcAttribute()`'s 'camera' default already
+  matches it) so a self-generated nvr `src` is always unambiguous when re-parsed, rather than
+  relying on that 'camera' default guessing wrong. Verified live end-to-end against this repo's
+  own bridge — a session's real `src` now
+  round-trips through `applySrcAttribute()` back to identical `device`/`channel`/`profile` state
+  (confirmed via direct generate-then-reparse simulation) and the resulting URI still reaches
+  `200 OK` against `rtspOverWebSocket/server.ts`. The *old* path-embedded style is still accepted
+  on the parsing side — see `applySrcAttribute()`'s nvr-mode legacy-fallback entry above — so this
+  is additive/backward-compatible for anything that already saved a `src` in the old format; only
+  what this element *generates* going forward changed. Camera mode's path format (`{channel}/
+  {profile}/media.smp`) is unchanged — `profile` there was already a real path segment, correctly
+  round-tripped, with none of the `&`-glued extras the nvr branch had. After building the path, it
+  calls `buildAbsoluteRTSPURL()` to get a full `rtsp://` URL, reflects that back onto the `src`
   attribute (guarded by `_reflectingSrc`), and dispatches a `'generatertspurl'` event — this runs
   on every `play()`/`resume()`/`pause()`/`seek()`/etc., not just on real external `src` changes.
-- `buildAbsoluteRTSPURL(pathPart)` (private, `:4673-4692`) — joins `username`/`password`/
+- `buildAbsoluteRTSPURL(pathPart)` (private, `:4874-4895`) — joins `username`/`password`/
   `hostname`/`port` (from the live accessors, not raw fields) with `generateRTSPURL()`'s path into
   one `rtsp://[user[:pass]@]host[:port]/{path}` string, purely for display/observation. Skips the
   `username[:password]@` authority segment entirely whenever `this.sunapiClient !== null` — a
@@ -630,10 +726,23 @@ one `control()`/`controlWorker()` command surface.
 
 ### Method Analysis
 
-- `open(info, audioOutStatus?)` (private, `:245-372`) — the real "start a session" entry point,
+- `open(info, audioOutStatus?)` (private, `:245-383`) — the real "start a session" entry point,
   called for every `cmd:'open'`/`'audioOut'`(off-branch)/`'backup'`(live→backup switch) command.
-  With a non-null `info`: validates required fields (throws `RTSPOverWebSocketError` if
-  `hostname`/`cameraIp`/`username` missing, error codes `0x0400`/`0x0401`/`0x0402`), copies
+  With a non-null `info`: validates required fields — throws `RTSPOverWebSocketError` if
+  `hostname`/`cameraIp` missing (`0x0400`/`0x0401`; these stay hard requirements, you genuinely
+  can't connect without a target host). **`username` no longer throws when missing** (`:280-286`,
+  fixed 2026-08-26) — defaults `profileInfo.device.username` to `''` instead of the old
+  `throw ... 0x0402 ('username is empty from input parameter.')`. Mirrors the redesign
+  `RTSPOverWebSocket.ts`'s own `play()` already went through (see this file's own "401 /
+  credential-retry" note below): a no-credentials session is legitimate (the bridge may not
+  require auth for that channel) and should reach the real WebSocket/RTSP layer and surface an
+  actual `401` there if one comes back, not fail synchronously before any connection is even
+  attempted. Found live: `applySrcAttribute()`'s hostname-change credential-clear (this file's
+  sibling class, `RTSPOverWebSocket.ts`) could trip this exact throw if it cleared credentials the
+  "wrong" way (`removeAttribute()`, producing `undefined`, instead of `setAttribute('', '')`,
+  producing `''`) — see that fix's own note on why the distinction matters; this `open()` change
+  makes the precondition itself more lenient too, as defense in depth beyond fixing that one call
+  site. Copies
   connection/profile/media settings from `info` into `connectionInfo`/`profileInfo`, sends
   `audioIn` on/off via `mediaRouter.sendCommandData()`, records every `callback.*` into
   `callbackInfo`, then **always** calls `close()` first (tearing down any existing connection)
@@ -821,30 +930,50 @@ via `setAttribute` — and both throw `RTSPOverWebSocketError` if the incoming v
 `typeof v === 'boolean'`, which an empty string is not. Internally it holds `playerRef`
 (`useRef<RTSPOverWebSocket|null>`, resolved post-mount via `document.getElementById`, not a
 React ref callback), `sunapiManagerRef` (`useRef<SunapiManager|null>`), and `playState`/
-`loginError` component state, plus a derived `useSunapi = props.device.useSunapi !== false`
-(defaults to the SUNAPI-login flow when the prop is omitted).
+`loginError` component state, plus a derived `useSunapi` — **not just `props.device.useSunapi`
+verbatim** (fixed 2026-08-26): `const hasCredentials = !!(props.device.username ||
+props.device.password); const useSunapi = hasCredentials && props.device.useSunapi !== false;`.
+Previously this was `props.device.useSunapi !== false` alone (SUNAPI by default unless explicitly
+opted out), which meant a connection with *no* `username`/`password` at all — a legitimate
+no-auth request, e.g. against this library's own YouTube-transcode demo server, which now supports
+sessions with no RTSP Digest auth — still attempted a SUNAPI REST login every time, which can only
+ever fail with nothing to authenticate with, and this component never fell through to the
+raw-attribute path that would otherwise have worked. Confirmed live: this reproduced even with
+`useSunapi` *explicitly* `true` (this repo's own demo page's React panel's "Connect via SUNAPI
+Manager" checkbox defaults to checked and always passes its literal boolean, never leaving
+`useSunapi` `undefined` — so a first attempt at this fix that only downgraded the *unset default*
+never actually applied on that panel; the final fix overrides *any* `useSunapi` value, not just
+the default, whenever there are no credentials). An explicit `useSunapi: true` **with** credentials
+present is unaffected — still SUNAPI, exactly as before.
 
 **Method Analysis (component behavior, not class methods).** On mount (`useEffect`, empty dep
-array, `:210-323`), branching on `useSunapi`:
+array, `:210-323`), branching on the derived `useSunapi` above:
 
-- **`useSunapi` true (default)** — looks up the element by `id`, constructs a `SunapiManager`,
-  logs in via `sunapiManager.init(deviceInfo)` (REST + digest auth — the "real device integration"
-  flow, unlike this library's own YouTube-transcode demo server which has no SUNAPI endpoint), and
-  only on success assigns `playerRef.current.sunapiClient = sunapiManager.sunapiClient` and (if
-  `device.autoplay`) calls `player.play()` — explicitly, never via an `autoplay` attribute; on
-  failure sets `loginError` for the rendered error banner. No `password`/`autoplay` attribute is
-  ever passed to the DOM element in this mode, by design: credentials go through this login flow,
-  not a plaintext `password` attribute or the element's own attribute-driven `connectedCallback`
-  path (see the `sunapiClient`-setter note in this file's `RTSPOverWebSocket` section for exactly
-  why calling `play()` only *after* login matters, not just before it).
-- **`useSunapi` false** — skips the SUNAPI login entirely; the JSX instead includes real
-  `password`/`autoplay` attributes (`password={props.device.password}`,
-  `autoplay={props.device.autoplay ? '' : undefined}` — the bare-flag idiom, since `autoplay` has
-  no property setter and *is* read via `getAttribute`), letting `RTSPOverWebSocket.ts`'s own
-  `connectedCallback()`/`updateSunapiManager()` drive the connection from those raw attributes
-  instead. Exists to reproduce/compare against that raw-attribute behavior (see
-  `src/index.html`'s React panel's "Connect via SUNAPI Manager" checkbox) — not the recommended
-  mode for a real integration.
+- **`useSunapi` true (default when credentials are present)** — looks up the element by `id`,
+  constructs a `SunapiManager`, logs in via `sunapiManager.init(deviceInfo)` (REST + digest auth —
+  the "real device integration" flow, unlike this library's own YouTube-transcode demo server which
+  has no SUNAPI endpoint), and only on success assigns `playerRef.current.sunapiClient =
+  sunapiManager.sunapiClient` and (if `device.autoplay`) calls `player.play()` — explicitly, never
+  via an `autoplay` attribute; on failure sets `loginError` for the rendered error banner. No
+  `password`/`autoplay` attribute is ever passed to the DOM element in this mode, by design:
+  credentials go through this login flow, not a plaintext `password` attribute or the element's own
+  attribute-driven `connectedCallback` path (see the `sunapiClient`-setter note in this file's
+  `RTSPOverWebSocket` section for exactly why calling `play()` only *after* login matters, not just
+  before it).
+- **`useSunapi` false (explicit opt-out, or no credentials at all)** — skips the SUNAPI login
+  entirely; the JSX instead includes real `password`/`autoplay` attributes
+  (`password={props.device.password}`, `autoplay={props.device.autoplay ? '' : undefined}` — the
+  bare-flag idiom, since `autoplay` has no property setter and *is* read via `getAttribute`),
+  letting `RTSPOverWebSocket.ts`'s own `connectedCallback()`/`updateSunapiManager()` drive the
+  connection from those raw attributes instead. Originally existed only to reproduce/compare
+  against that raw-attribute behavior (see `src/index.html`'s React panel's "Connect via SUNAPI
+  Manager" checkbox) — as of the `useSunapi` derivation fix above, this is now also the mode a
+  no-credentials connection actually goes through regardless of the checkbox/prop, since it's the
+  only one of the two that can succeed with nothing to authenticate with. `username={''}`/
+  `password={''}` reaching the element this way is safe: `RTSPOverWebSocket.ts`'s own default
+  (`info.device.username: ''` in its `info` object literal) and `StreamPlayer.ts`'s `open()` (fixed
+  the same day to default to `''` instead of throwing for a missing username — see this file's
+  `StreamPlayer` section) both already treat an empty string as the normal no-auth state.
 
 Both modes register the same ~20 native `CustomEvent` listeners on the element (`error`, `meta`,
 `resize`, `statechange`, `timestamp`, `capture`, `statistics`, `backupstatechange`,
