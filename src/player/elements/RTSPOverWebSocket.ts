@@ -4303,9 +4303,58 @@ export class RTSPOverWebSocket extends HTMLElement {
       return;
     }
 
-    if (url.username !== '') this.setAttribute('username', decodeURIComponent(url.username));
-    if (url.password !== '') this.setAttribute('password', decodeURIComponent(url.password));
+    // A `src` pointing at a *different* device than the one this element
+    // was last connected to must not silently keep answering challenges
+    // with the previous device's credentials — a new device very often
+    // means different (or no) credentials. Compared before `hostname`
+    // itself is overwritten below. `previousHostname === null` (this
+    // element's very first `src`) deliberately does NOT count as a
+    // "change" — nothing to clear yet, and it'd otherwise wipe out
+    // username/password that arrived via markup/property assignment
+    // *before* `src` was ever set (e.g. this page's Player tab sets
+    // `username`/`password` as plain properties, then `src` separately).
+    const previousHostname = this.getAttribute('hostname');
+    const hostnameChanged = url.hostname !== '' && previousHostname !== null && url.hostname !== previousHostname;
+
+    if (url.username !== '') {
+      this.setAttribute('username', decodeURIComponent(url.username));
+    } else if (hostnameChanged) {
+      // Confirmed live 2026-08-26: connecting to 192.168.x.32 (no
+      // credentials in the URL) correctly prompted for username/password
+      // via the "Credentials required" flow; changing only the src's IP to
+      // 192.168.x.40 (still no credentials in the URL) and reconnecting on
+      // the same, reused element silently answered with .32's credentials
+      // instead of prompting again — because nothing here ever cleared
+      // them for a `src` that simply omits its own.
+      //
+      // setAttribute('', '') — NOT removeAttribute() (regression found live
+      // 2026-08-26, same day): removeAttribute() fires the 'username' case
+      // below with `newValue = null`, which sets `_username = null` and
+      // therefore `info.device.user`/`username = null ?? undefined` =
+      // `undefined` — a *different* state from this element's own default
+      // (`info.device.username: ''` in its `info` object literal, see the
+      // constructor). StreamPlayer.ts's `open()` treats those two
+      // differently: `typeof info.device.username !== 'undefined'` is
+      // `true` for `''` (no throw — this is the normal "no credentials"
+      // state every fresh element starts in) but `false` for `undefined`,
+      // throwing `RTSPOverWebSocketError` ("username is empty from input
+      // parameter."). `''` is this class's actual "no credentials"
+      // representation; `removeAttribute()`'s `null` is not.
+      this.setAttribute('username', '');
+    }
+    if (url.password !== '') {
+      this.setAttribute('password', decodeURIComponent(url.password));
+    } else if (hostnameChanged) {
+      this.setAttribute('password', '');
+    }
     if (url.hostname !== '') this.setAttribute('hostname', url.hostname);
+    // An *explicit* port is applied immediately, same position as always —
+    // must stay before the passthrough loop below so that an explicit
+    // `?secure`/`?https` in the same URL (processed by that loop) still
+    // wins over the 'port' attributeChangedCallback case's own `_secure =
+    // (port === 443)` side effect (see that case's comment). The *default*
+    // port case (no port in the URL at all) is resolved separately, after
+    // the passthrough loop — see the comment down there for why.
     if (url.port !== '') this.setAttribute('port', url.port);
 
     // Generic passthrough for every other flag/value attribute — reuses
@@ -4321,8 +4370,14 @@ export class RTSPOverWebSocket extends HTMLElement {
     // attributes to begin with (only plain get/set properties) and are
     // special-cased onto those instead of setAttribute().
     const knownAttributes = new Set(RTSPOverWebSocket.observedAttributes);
+    // Tracks every key a *real* `?query` param already supplied this parse,
+    // so the legacy path-embedded fallback below (nvr mode only) never
+    // overrides an explicit query value with a guess from the path — see
+    // that fallback's own comment for why it exists at all.
+    const queryProvidedKeys = new Set<string>();
     for (const [key, value] of url.searchParams) {
       const paramName = key.toLowerCase();
+      queryProvidedKeys.add(paramName);
       switch (paramName) {
         case 'session':
           this.sessionKey = value;
@@ -4343,23 +4398,66 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
     }
 
+    // No port at all in the URL: falls back to the standard web default for
+    // whichever scheme this connection actually uses — 443 if secure
+    // (reflecting `?secure`/`?https` from the passthrough loop just above,
+    // now that it's had a chance to apply), else 80. Deliberately does NOT
+    // just leave `port` untouched the way this used to (a real bug found
+    // live 2026-08-26): a `src` with no port segment must still *resolve*
+    // one — leaving `port` at whatever a previous connection on this same
+    // element happened to have set is exactly how a stale port from an
+    // earlier `src` (e.g. this repo's own demo server on :4000) silently
+    // carried over into a later `src` pointing at a real device with no
+    // port of its own, producing a WebSocket connection to the wrong port
+    // with no visible error as to why. This mirrors ordinary browser URL
+    // behavior (an omitted port means "the scheme's default port", not
+    // "whatever port happened to be used last"). Only runs when `url.port`
+    // was empty — an explicit port was already applied above, before the
+    // passthrough loop, specifically so an explicit `?secure`/`?https` in
+    // this same URL still overrides the 'port' case's own derived
+    // `_secure` rather than the reverse.
+    if (url.port === '') this.setAttribute('port', this._secure ? '443' : '80');
+
     // Path carries only the stream-identifying pieces — channel, and for
     // camera devices, profile — everything else above is a query param.
     // `device` decides which shape to expect (already applied above via
-    // the generic passthrough if `src` included it; read fresh here just
-    // to decide *how to parse the path*, independent of that). A trailing
-    // `*.smp` filename segment (media.smp/play.smp/backup.smp — whatever
+    // the generic passthrough *only if* `src`'s query string explicitly
+    // included `?device=...`), so it's resolved fresh here with the same
+    // fallback chain (URL param -> existing attribute -> 'camera') and
+    // written back explicitly — a `src` with no `?device=` param on an
+    // element that never had the attribute set otherwise (e.g. the very
+    // first `src` on a fresh element) would otherwise leave the actual
+    // `device` attribute/`_deviceType` at its `null` default forever
+    // (generic passthrough only fires for params the URL's query string
+    // actually contains), and generateRTSPURL() throws `0x0404` ("device
+    // attribute is not define") the moment play() runs — confirmed live:
+    // a plain nvr-shaped `src` like `rtsp://host:port/LiveChannel/0/media.smp`
+    // (no query string at all) hit exactly this. A trailing `*.smp`
+    // filename segment (media.smp/play.smp/backup.smp — whatever
     // generateRTSPURL() would itself produce on the way out) is purely
     // decorative in a `src` URL and discarded rather than parsed for
     // meaning; `mode` (also just a normal query param, already handled
     // above) is what actually selects live/playback/backup.
     const deviceType = (url.searchParams.get('device') ?? this.getAttribute('device') ?? 'camera').toLowerCase();
+    this.setAttribute('device', deviceType);
     const segments = url.pathname.split('/').filter((segment) => segment.length > 0);
     if (segments.length > 0 && /\.smp$/i.test(segments[segments.length - 1])) {
       segments.pop();
     }
     if (segments[0] === 'multicast') {
       this.setAttribute('multicast', '');
+      segments.shift();
+    }
+    // nvr paths (generateRTSPURL()'s nvr branch above, and RtspClient.ts's
+    // device="nvr" URI builder) lead with a literal `LiveChannel`/
+    // `PlaybackChannel`/`BackupChannel` segment before the channel number —
+    // unlike camera mode, where the channel is segments[0] with no prefix.
+    // Without stripping it here, `Number('LiveChannel')` below is `NaN` and
+    // the channel silently never gets set for any nvr-shaped `src` (fixed
+    // 2026-08-26, alongside the `device` fix above — found by tracing the
+    // exact path this repo's own src/server sessions produce,
+    // `LiveChannel/<channel>/media.smp`, back through this parser).
+    if (deviceType === 'nvr' && /^(?:Live|Playback|Backup)Channel$/i.test(segments[0] ?? '')) {
       segments.shift();
     }
 
@@ -4380,6 +4478,53 @@ export class RTSPOverWebSocket extends HTMLElement {
           this.setAttribute('profile_number', profileNumberMatch[1]);
         } else {
           this.setAttribute('profile', profileSegment);
+        }
+      }
+    } else if (deviceType === 'nvr') {
+      // Backward-compat only: generateRTSPURL()'s nvr branch used to embed
+      // pseudo-params directly in the path — `/profile=H264`, or (with a
+      // session key) a single `/session=X&start=Y&profile=Z`-shaped segment
+      // — instead of a real `?query` string (fixed 2026-08-26; see
+      // generateRTSPURL()'s own comment on that change). Still accepted
+      // here so a `src` written in that old style (hand-typed, or
+      // saved/bookmarked from before the fix) keeps working — every
+      // remaining path segment after the channel is scanned for `&`-joined
+      // `key=value` pairs and routed through the exact same
+      // knownAttributes/session/start/end/overlap handling as the real
+      // `?query` loop above. A segment that's just the resource-type
+      // suffix (`media.smp`/`play.smp`/`backup.smp` — not necessarily the
+      // *last* segment here, since without a leading `?` nothing marks
+      // where the path "ends" and the pseudo-query "begins") is skipped.
+      // Never overrides a key the real query string already supplied this
+      // parse (`queryProvidedKeys`) — a legacy path fragment is a
+      // best-effort fallback guess, not authoritative over an explicit
+      // `?query` value.
+      for (const legacySegment of segments.slice(1)) {
+        if (/\.smp$/i.test(legacySegment)) continue;
+        for (const pair of legacySegment.split('&')) {
+          const eq = pair.indexOf('=');
+          if (eq === -1) continue;
+          const legacyKey = pair.slice(0, eq).toLowerCase();
+          const legacyValue = pair.slice(eq + 1);
+          if (queryProvidedKeys.has(legacyKey)) continue;
+          switch (legacyKey) {
+            case 'session':
+              this.sessionKey = legacyValue;
+              break;
+            case 'start':
+              this.startTime = legacyValue;
+              break;
+            case 'end':
+              this.endTime = legacyValue;
+              break;
+            case 'overlap':
+            case 'overlappedid':
+              this.overlappedId = legacyValue;
+              break;
+            default:
+              if (knownAttributes.has(legacyKey)) this.setAttribute(legacyKey, legacyValue);
+              break;
+          }
         }
       }
     }
@@ -4568,11 +4713,29 @@ export class RTSPOverWebSocket extends HTMLElement {
         });
       }
 
+      // Everything below is collected as real `key=value` query-string
+      // entries and joined with exactly one `?`/`&` at the end (fixed
+      // 2026-08-26), instead of the previous approach of gluing each piece
+      // directly onto the path string with `/`/`&` chosen ad hoc per field
+      // (`/session=`, then `&start=`/`&end=`/... only *if* a session key had
+      // already opened the chain, else nothing — the exact bug that made
+      // `applySrcAttribute()` unable to tell `device`/`profile`/etc. apart
+      // from the path at all, since none of this was ever real
+      // `URLSearchParams`-parseable syntax). `device=<nvr|camera>` is added
+      // explicitly so a self-generated `src` is always unambiguous when
+      // re-parsed — no longer relies on the reader guessing 'camera' by
+      // default (see `applySrcAttribute()`'s own comment on that default).
+      // A real device/server may or may not honor a `?`-based query string
+      // the way this legacy path-embedded scheme was originally written for
+      // — this is a deliberate, requested protocol-format change, not a
+      // cosmetic one (`generateRTSPURL()`'s return value is the literal
+      // outgoing RTSP request URI, not just a display string — see
+      // `RtspClient.ts`'s `_request(cmd, requestInfo.url, ...)`).
+      const queryParams: string[] = ['device=' + (this._deviceType as string)];
       if (this._sessionKey) {
-        strRtspURL += '/session=' + this._sessionKey;
+        queryParams.push('session=' + this._sessionKey);
       } else {
         console.warn('If you do not use session key, you could not play more 10 channel.');
-        strRtspURL += '/';
       }
 
       if (this.info.media.type.toLowerCase() === 'playback' || this.info.media.type.toLowerCase() === 'backup') {
@@ -4614,36 +4777,32 @@ export class RTSPOverWebSocket extends HTMLElement {
           }
         }
         if (typeof strStart !== 'undefined' && strStart !== null) {
-          strRtspURL += this._sessionKey ? '&' : '';
-          strRtspURL += 'start=' + strStart;
+          queryParams.push('start=' + strStart);
         }
         if (typeof strEnd !== 'undefined' && strEnd !== null) {
-          strRtspURL += '&end=' + strEnd;
+          queryParams.push('end=' + strEnd);
         }
         if (this.overlappedId !== null && this.overlappedId !== undefined) {
-          strRtspURL += '&overlap=' + this.overlappedId;
+          queryParams.push('overlap=' + this.overlappedId);
         }
 
         if (typeof this._bestshotFilter !== 'undefined' && this._bestshotFilter !== null) {
-          strRtspURL += '&BestshotFilter=' + Object.keys(RTSPOverWebSocketBestshotFilter)[this._bestshotFilter];
+          queryParams.push('BestshotFilter=' + Object.keys(RTSPOverWebSocketBestshotFilter)[this._bestshotFilter]);
           this.bestshot = true;
         } else {
           this.bestshot = false;
         }
 
         if (typeof this._usesubstream !== 'undefined' && this._usesubstream !== null && this._usesubstream) {
-          strRtspURL += '&substream';
+          queryParams.push('substream');
         }
       } else {
-        if (this._sessionKey !== null && this._sessionKey !== undefined) {
-          strRtspURL += '&';
-        }
         if (this._profile_number !== null && this._profile_number !== undefined) {
-          strRtspURL += 'profile=' + this._profile_number;
+          queryParams.push('profile=' + this._profile_number);
         } else if (this._profile !== null && this._profile !== undefined) {
-          strRtspURL += 'profile=' + this._profile;
+          queryParams.push('profile=' + this._profile);
         } else if (typeof this._profileUsage !== 'undefined' && this._profileUsage !== null) {
-          strRtspURL += 'ProfileUsage=' + this._profileUsage;
+          queryParams.push('ProfileUsage=' + this._profileUsage);
         } else {
           throw new RTSPOverWebSocketError({
             channelId: this.channel,
@@ -4655,22 +4814,24 @@ export class RTSPOverWebSocket extends HTMLElement {
         }
 
         if (typeof this._camChannel !== 'undefined' && this._camChannel !== null) {
-          strRtspURL += '&camchannel=' + this._camChannel;
+          queryParams.push('camchannel=' + this._camChannel);
         }
         if (typeof this._codec !== 'undefined' && this._codec !== null) {
-          strRtspURL += '&codec=' + this._codec;
+          queryParams.push('codec=' + this._codec);
         }
         if (typeof this._limitWidth !== 'undefined' && this._limitWidth !== null) {
-          strRtspURL += '&limitWidth=' + this._limitWidth;
+          queryParams.push('limitWidth=' + this._limitWidth);
         }
         if (typeof this._limitHeight !== 'undefined' && this._limitHeight !== null) {
-          strRtspURL += '&limitHeight=' + this._limitHeight;
+          queryParams.push('limitHeight=' + this._limitHeight);
         }
       }
 
       if (this._iframe) {
-        strRtspURL += '&iframe';
+        queryParams.push('iframe');
       }
+
+      strRtspURL += '?' + queryParams.join('&');
     } else {
       throw new RTSPOverWebSocketError({
         channelId: this.channel,
