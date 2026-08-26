@@ -266,12 +266,23 @@ export class StreamPlayer {
       }
 
       this.profileInfo.device.cameraIp = info.device.cameraIp as string;
+      // No longer throws for a missing username (fixed 2026-08-26) — mirrors
+      // the redesign RTSPOverWebSocket.ts's own play() already went through
+      // (see docs/player's "401 / credential-retry" note): a session with
+      // no credentials at all is legitimate — the RTSP-over-WebSocket bridge
+      // may not require auth for that channel — and should reach the actual
+      // WebSocket/RTSP layer and surface a real 401 there if one comes
+      // back, not fail synchronously here before a connection is even
+      // attempted. Confirmed live this throw could fire even for a
+      // deliberately-cleared "no credentials" state (`applySrcAttribute()`'s
+      // hostname-change credential clear, elsewhere in this file's sibling
+      // class, sets `username` to `''` specifically so this check passes).
       if (typeof info.device.username !== 'undefined') {
         this.profileInfo.device.username = info.device.username;
       } else if (typeof info.device.user !== 'undefined') {
         this.profileInfo.device.username = info.device.user;
       } else {
-        throw new RTSPOverWebSocketError({ channelId: this.channelId, errorCode: fromHex('0x0402'), place: 'StreamPlayer.ts:96', message: 'username is empty from input parameter.' });
+        this.profileInfo.device.username = '';
       }
       if (info.device.password !== undefined) {
         this.profileInfo.device.password = info.device.password;

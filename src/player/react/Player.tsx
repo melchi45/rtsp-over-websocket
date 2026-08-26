@@ -70,7 +70,26 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
   const sunapiManagerRef = useRef<SunapiManager | null>(null);
   const [playState, setPlayState] = useState<RTSPOverWebSocketPlayState>(RTSPOverWebSocketPlayState.STOPPED);
   const [loginError, setLoginError] = useState<string | null>(null);
-  const useSunapi = props.device.useSunapi !== false;
+  // Effective SUNAPI-vs-raw-attribute mode — not just `props.device.useSunapi`
+  // verbatim. A SUNAPI REST login (`SunapiManager.init()` below) fundamentally
+  // needs *something* to authenticate with; with no `username`/`password` at
+  // all (an intentional no-auth connection — e.g. this library's own
+  // YouTube-transcode demo server, which now supports sessions with no RTSP
+  // Digest auth, or any real device/bridge that simply doesn't require one),
+  // attempting it anyway can only ever fail — there is nothing to send — and
+  // this component then never falls through to the raw-attribute path that
+  // would otherwise work. Confirmed live 2026-08-26: with no credentials and
+  // `useSunapi` explicitly `true` (this repo's own demo page's React panel
+  // defaults its "Connect via SUNAPI Manager" checkbox to checked and always
+  // passes its literal boolean value, never `undefined` — so an "only
+  // downgrade the unset default" version of this fix, tried first, never
+  // actually applied here), the SUNAPI login attempt fails and `play()`
+  // never runs at all — so this deliberately overrides *any* `useSunapi`
+  // value, not just the default, whenever there are no credentials to log
+  // in with; there's no real scenario where attempting SUNAPI with zero
+  // credentials could succeed regardless of what the flag says.
+  const hasCredentials = !!(props.device.username || props.device.password);
+  const useSunapi = hasCredentials && props.device.useSunapi !== false;
 
   const onError = (event: Event): void => {
     const detail = (event as CustomEvent).detail;
