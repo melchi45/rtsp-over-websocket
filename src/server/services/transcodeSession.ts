@@ -1,5 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { MEDIAMTX_HOST, MEDIAMTX_RTSP_PORT, resolveYtDlpBinary, TRANSCODE_STARTUP_TIMEOUT_MS } from '../config';
+import { existsSync } from 'node:fs';
+import { get as httpGet } from 'node:http';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { BGUTIL_POT_PROVIDER_PORT, MEDIAMTX_HOST, MEDIAMTX_RTSP_PORT, resolveYtDlpBinary, TRANSCODE_STARTUP_TIMEOUT_MS } from '../config';
 import { getAudioEncoder, getVideoEncoder } from './codecCapabilities';
 import * as sessionStore from './sessionStore';
 import type { AudioCodec, Session, VideoCodec } from '../types';
@@ -115,7 +119,7 @@ function audioEncoderArgs(codec: AudioCodec, encoder: string, bitrateKbps: numbe
  * Piping `yt-dlp ... -o -` into ffmpeg's stdin sidesteps that entirely —
  * yt-dlp does the fetching (and, for a DASH video+audio pair, the muxing)
  * and this process only ever sees the resulting bytes. */
-function buildYtDlpArgs(youtubeUrl: string, targetHeight: number): string[] {
+function buildYtDlpArgs(youtubeUrl: string, targetHeight: number, useMwebClient: boolean): string[] {
   // Prefer an avc1 (H.264) *source* codec over YouTube's plain "bestvideo"
   // (usually VP9 or AV1 at a given height) — independent of the requested
   // *output* codec, decoding VP9/AV1 is itself unreliable on some ffmpeg
@@ -137,7 +141,62 @@ function buildYtDlpArgs(youtubeUrl: string, targetHeight: number): string[] {
   // MPEG-TS-compatible bytestream for non-seekable (pipe) output, which is
   // exactly what this needs — ffmpeg auto-detects the actual container on
   // the reading end (`-i pipe:0`) regardless of the "mp4" label.
-  return ['-f', formatSelector, '--merge-output-format', 'mp4', '-o', '-', '--no-playlist', '--no-part', '--quiet', '--no-warnings', youtubeUrl];
+  const args = ['-f', formatSelector];
+  // player_client=mweb — ONLY added when the caller (startTranscode, via
+  // canUseMwebClient()) has confirmed both a PO Token provider and a JS
+  // runtime are actually available. Forcing mweb without those is *worse*
+  // than the default: confirmed live (2026-08-25) that mweb alone (no PO
+  // Token, no JS runtime for the "n" challenge) fails outright with "No
+  // video formats found!", even for a video the *default* (unforced) client
+  // mix handles fine. With both available, though, mweb reliably beats the
+  // default: yt-dlp's default (no player_client override) mixes formats
+  // from multiple YouTube "clients", and for a same-numbered itag can end
+  // up keeping an android_vr-origin URL over an equally-available
+  // mweb-origin one — and that android_vr URL 403s regardless of PO Token/JS
+  // runtime (unlike mweb/web, yt-dlp doesn't request it a PO Token at all).
+  // mweb (unlike the plain "web" client) also exposes the full DASH ladder
+  // up to source resolution rather than degrading to a 360p progressive
+  // fallback. See CLAUDE.md's "Environment gotchas" and MEMORY.md for the
+  // full investigation (including two prior explanations — no JS runtime,
+  // then no PO Token — that were each necessary but not sufficient alone).
+  if (useMwebClient) args.push('--extractor-args', 'youtube:player_client=mweb');
+  args.push('--merge-output-format', 'mp4', '-o', '-', '--no-playlist', '--no-part', '--quiet', '--no-warnings', youtubeUrl);
+  return args;
+}
+
+const DENO_BIN_DIR = join(homedir(), '.deno', 'bin');
+
+function hasDeno(): boolean {
+  return existsSync(join(DENO_BIN_DIR, 'deno'));
+}
+
+/** Quick, short-timeout reachability check for the bgutil-ytdlp-pot-provider
+ * HTTP server (scripts/ensure-bgutil-pot-provider.js) — used to decide
+ * whether forcing player_client=mweb (see buildYtDlpArgs) is safe, not to
+ * actually fetch a token (yt-dlp's own plugin does that). */
+function potProviderReachable(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = httpGet(`http://127.0.0.1:${BGUTIL_POT_PROVIDER_PORT}/ping`, { timeout: 1000 }, (res) => {
+      res.resume();
+      resolve((res.statusCode ?? 0) < 500);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => req.destroy());
+  });
+}
+
+/** yt-dlp needs a JS runtime (deno) on PATH to solve YouTube's signature/"n"
+ * challenge for the mweb client above — not just a nice-to-have here (see
+ * buildYtDlpArgs's comment). Rather than depending on whatever PATH the
+ * shell that launched this Node process happened to have (bitten by exactly
+ * this once already — a stale server process silently missing it, see
+ * MEMORY.md), explicitly prepend deno's well-known user-local install
+ * location if it exists, so this works regardless of shell setup. Safe to
+ * add unconditionally (independent of the mweb decision above) — having
+ * deno available can only help yt-dlp's default client mix too. */
+function ytDlpEnv(): NodeJS.ProcessEnv {
+  if (!hasDeno()) return process.env;
+  return { ...process.env, PATH: `${DENO_BIN_DIR}:${process.env.PATH ?? ''}` };
 }
 
 async function buildFfmpegArgs(session: Session): Promise<string[]> {
@@ -172,9 +231,15 @@ async function buildFfmpegArgs(session: Session): Promise<string[]> {
 }
 
 export async function startTranscode(session: Session): Promise<void> {
-  const ytDlpArgs = buildYtDlpArgs(session.request.youtubeUrl, session.request.resolutionHeight);
-  const ffmpegArgs = await buildFfmpegArgs(session);
   const tag = session.id.slice(0, 8);
+  // Both must be true — see buildYtDlpArgs's comment for why mweb alone
+  // (missing either) is worse than not forcing a client at all.
+  const useMwebClient = hasDeno() && (await potProviderReachable());
+  console.log(
+    `[transcodeSession][${tag}] player_client=${useMwebClient ? 'mweb (deno + PO Token provider both available)' : 'default (deno and/or PO Token provider unavailable — forcing mweb would be worse)'}`
+  );
+  const ytDlpArgs = buildYtDlpArgs(session.request.youtubeUrl, session.request.resolutionHeight, useMwebClient);
+  const ffmpegArgs = await buildFfmpegArgs(session);
   console.log(`[transcodeSession][${tag}] yt-dlp ${ytDlpArgs.join(' ')}`);
   console.log(`[transcodeSession][${tag}] ffmpeg ${ffmpegArgs.join(' ')}`);
 
@@ -185,7 +250,7 @@ export async function startTranscode(session: Session): Promise<void> {
   // Without this, killing yt-dlp only signals yt-dlp; that merge ffmpeg was
   // observed surviving as an orphan (reparented to init) after a
   // timed-out/stopped session, still stuck mid-fetch from googlevideo.
-  const ytDlp = spawn(resolveYtDlpBinary(), ytDlpArgs, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const ytDlp = spawn(resolveYtDlpBinary(), ytDlpArgs, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: ytDlpEnv() });
   const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
   processes.set(session.id, { ytDlp, ffmpeg });
 

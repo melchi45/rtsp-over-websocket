@@ -35,6 +35,17 @@ npm run test:player            # vitest run
 - **`src/server` needs ffmpeg, yt-dlp, and MediaMTX** to actually reach a `live` session — see the README's
   "External tools" section. Without them the server still starts and serves the REST API/demo page fine; only
   session creation fails (with a clear error, not a crash).
+- **`yt-dlp`'s `Deprecated Feature: Support for Python version 3.10 has been deprecated` warning** is cosmetic
+  only — unrelated to the `403`/PO-Token issue above, purely about which Python interpreter runs `yt-dlp` itself.
+  Fixed here (2026-08-25) by pointing the standalone `~/.local/bin/yt-dlp` zipapp's shebang at `python3.11`
+  (already present on this Ubuntu 22.04 box via apt) instead of the generic `#!/usr/bin/env python3` (→ 3.10) —
+  no pip reinstall needed, since the zipapp vendors its own dependencies; verified `yt-dlp -j` still works fully
+  under 3.11. **Deliberately did NOT repoint the system-wide `python3` → 3.11** (e.g. via `update-alternatives`):
+  confirmed live that `python3.11 -c "import apt_pkg"` fails (`ModuleNotFoundError`) because `python3-apt`'s
+  compiled `.so` is built only for `cpython-310` — doing that system-wide would break `add-apt-repository`,
+  `unattended-upgrades`, and similar apt-Python tooling. If this warning reappears, it's most likely because
+  `yt-dlp -U`/a fresh `curl`-installed binary reset the shebang back to generic `python3` — re-patch just the
+  shebang line again, don't touch system `python3`.
 - **`src/player`'s parity tests need a `legacy-player` git submodule** (the original legacy source) that isn't
   always checked out. Failures there are `ENOENT`, not a real regression — check the error text before assuming a
   change broke something.
@@ -54,6 +65,46 @@ npm run test:player            # vitest run
   `status: "live"` and publishes real AV1 frames to MediaMTX. See `README.md`'s "External tools" section for the
   full investigation history (including two earlier wrong guesses — that ffmpeg 6.0+ would fix it, then that no
   ffmpeg version could).
+- **Most modern YouTube videos need a JS runtime AND a PO Token provider to actually download (not just probe)
+  without a `403` — neither alone is enough, and this repo now sets both up automatically.** Symptom when either
+  is missing: session reaches `starting` then `failed` with `ffmpeg exited with code 183: ... Invalid data found
+  when processing input` (this app's own ffmpeg, fed nothing because `yt-dlp` produced zero bytes), or in
+  `yt-dlp`'s own stderr, `ERROR: ffmpeg exited with code 8` wrapping a `Server returned 403 Forbidden` on a
+  `googlevideo.com` URL. `GET /api/youtube/probe` (metadata only) succeeding first is not a useful signal — it
+  succeeds even for videos whose actual download then 403s.
+  - **JS runtime (`deno`)** solves YouTube's signature/"n" challenge — confirmed necessary but **not sufficient
+    alone**: the identical `403` reproduced with `deno` present and actively solving the challenge
+    (`[jsc:deno] Solving JS challenges using deno` right before the `403` in the log).
+  - **PO Token provider** ([bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider),
+    see also yt-dlp's [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)) is the other,
+    separately-required piece — without it, essentially every DASH format 403s regardless of the JS runtime.
+  - **Both together**: `transcodeSession.ts`'s `startTranscode()` checks `hasDeno()` (looks for
+    `~/.deno/bin/deno`) and `potProviderReachable()` (a live server at `127.0.0.1:4416`, or
+    `BGUTIL_POT_PROVIDER_PORT`) at the start of every session, and only *then* adds `--extractor-args
+    youtube:player_client=mweb` to the `yt-dlp` invocation — confirmed live to reliably expose the full DASH
+    resolution ladder and download cleanly, where `yt-dlp`'s own default (unforced) client mix can end up serving
+    an `android_vr`-origin URL for a given itag that `403`s regardless of PO Token/JS runtime being available.
+    **Forcing `mweb` without both is confirmed *worse*** — it fails outright (`No video formats found!`) even for
+    videos the unforced default handles fine — so `startTranscode()` falls back to the plain default whenever
+    either check fails (log line: `player_client=default (deno and/or PO Token provider unavailable — forcing
+    mweb would be worse)` vs. `player_client=mweb (deno + PO Token provider both available)`).
+  - **Setup is automated by `scripts/ensure-bgutil-pot-provider.js`** (wired into `npm run start:server*`, same
+    leave-alone-if-reachable / pid-tracked-for-`stop:server` shape as `ensure-mediamtx.js`) — but it only *starts*
+    an already-built provider, it doesn't install one. First-time setup (git clone + Node 22 build + yt-dlp
+    plugin zip) is manual — see `README.md`'s "External tools" section for the full commands. Two setup gotchas
+    hit live on this box, both env-var-overridable (see `.env.example`):
+    - The provider requires **Node.js >=22**, a separate requirement from this repo's own pinned Node 20 —
+      `ensure-bgutil-pot-provider.js` auto-detects one under `~/.nvm/versions/node/*`.
+    - Behind a TLS-intercepting proxy (a corporate root CA folded into `/etc/ssl/certs/ca-certificates.crt` on
+      this box), the provider's own outbound HTTPS (BotGuard challenge fetch from `google.com`) fails with
+      `self-signed certificate in certificate chain` without `NODE_EXTRA_CA_CERTS` pointed at that bundle —
+      auto-detected by `ensure-bgutil-pot-provider.js` if present. The provider's own `npm ci` (its `canvas`
+      native dependency specifically) hits the identical error during setup for the same reason.
+  - Active YouTube-vs-`yt-dlp` arms race — re-verify against real current behavior (`yt-dlp -v -F <url>` on the
+    actual failing URL, and check `PO Token Providers:`/`JS runtimes:` in that output) rather than trusting any
+    specific client/format name here to stay accurate forever. See `MEMORY.md` for the full investigation
+    (multiple wrong-then-corrected explanations along the way — worth reading before re-deriving this from
+    scratch if it breaks again).
 
 ## `docs/player/` — per-class reference docs (read before *and* update after touching `src/player`)
 

@@ -18,6 +18,7 @@ require('./loadEnv').loadEnv();
 const HTTP_PORT = Number(process.env.RTSP_WS_HTTP_PORT) || 4000;
 const HTTPS_PORT = Number(process.env.RTSP_WS_HTTPS_PORT) || 4001;
 const MEDIAMTX_PID_FILE = path.join(os.tmpdir(), 'rtsp-over-websocket-mediamtx.pid');
+const BGUTIL_POT_PROVIDER_PID_FILE = path.join(os.tmpdir(), 'rtsp-over-websocket-bgutil-pot-provider.pid');
 
 function pidsListeningOn(port) {
   try {
@@ -66,7 +67,31 @@ function stopOwnedMediaMtx() {
   fs.unlinkSync(MEDIAMTX_PID_FILE);
 }
 
+/** Same shape as stopOwnedMediaMtx() — only kills the pid this repo's own
+ * ensure-bgutil-pot-provider.js recorded, and only if that pid is still
+ * actually running a "node" process (guards against a stale pid file
+ * outliving a reboot and getting reused by an unrelated process). */
+function stopOwnedBgutilPotProvider() {
+  if (!fs.existsSync(BGUTIL_POT_PROVIDER_PID_FILE)) return;
+  const pid = Number(fs.readFileSync(BGUTIL_POT_PROVIDER_PID_FILE, 'utf8').trim());
+  const command = pid && processCommand(pid);
+  if (!command) {
+    console.log(`[stop-server] ${BGUTIL_POT_PROVIDER_PID_FILE} pid ${pid || '(invalid)'} is no longer running — removing stale pid file`);
+  } else if (!command.includes('node')) {
+    console.log(`[stop-server] pid ${pid} in ${BGUTIL_POT_PROVIDER_PID_FILE} is now '${command}', not node — leaving it alone`);
+  } else {
+    try {
+      process.kill(pid, 'SIGTERM');
+      console.log(`[stop-server] sent SIGTERM to bgutil-pot-provider pid ${pid}`);
+    } catch {
+      // already gone
+    }
+  }
+  fs.unlinkSync(BGUTIL_POT_PROVIDER_PID_FILE);
+}
+
 stopOwnedMediaMtx();
+stopOwnedBgutilPotProvider();
 
 const pids = Array.from(new Set([...pidsListeningOn(HTTP_PORT), ...pidsListeningOn(HTTPS_PORT)]));
 

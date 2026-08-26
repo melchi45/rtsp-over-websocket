@@ -84,9 +84,9 @@
         "test:player": "cd src/player && vitest run",
         "test:player:watch": "cd src/player && vitest",
         "start:player": "node scripts/serve-dist.js",
-        "start:server": "node scripts/stop-server.js && node scripts/ensure-mediamtx.js && node scripts/ensure-yt-dlp.js && npm run build:server && node dist/server/index.js",
-        "start:server:http": "node scripts/stop-server.js && node scripts/ensure-mediamtx.js && node scripts/ensure-yt-dlp.js && npm run build:server && node dist/server/index.js --http",
-        "start:server:https": "node scripts/stop-server.js && node scripts/ensure-mediamtx.js && node scripts/ensure-yt-dlp.js && npm run build:server && node dist/server/index.js --https",
+        "start:server": "node scripts/stop-server.js && node scripts/ensure-mediamtx.js && node scripts/ensure-yt-dlp.js && node scripts/ensure-bgutil-pot-provider.js && npm run build:server && node dist/server/index.js",
+        "start:server:http": "node scripts/stop-server.js && node scripts/ensure-mediamtx.js && node scripts/ensure-yt-dlp.js && node scripts/ensure-bgutil-pot-provider.js && npm run build:server && node dist/server/index.js --http",
+        "start:server:https": "node scripts/stop-server.js && node scripts/ensure-mediamtx.js && node scripts/ensure-yt-dlp.js && node scripts/ensure-bgutil-pot-provider.js && npm run build:server && node dist/server/index.js --https",
         "stop:server": "node scripts/stop-server.js"
     }
 }

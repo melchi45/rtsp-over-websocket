@@ -11,6 +11,13 @@ export const MEDIAMTX_RTSP_PORT = parseInt(process.env.MEDIAMTX_RTSP_PORT || '85
 export const MEDIAMTX_API_PORT = parseInt(process.env.MEDIAMTX_API_PORT || '9997', 10);
 export const MEDIAMTX_HOST = '127.0.0.1';
 
+/** bgutil-ytdlp-pot-provider's HTTP port (see scripts/ensure-bgutil-pot-provider.js
+ * and transcodeSession.ts's ytDlpEnv()/mweb-client comment) — yt-dlp's own
+ * plugin already defaults to this exact host:port, so this is only used
+ * here to *check* reachability before deciding whether it's safe to force
+ * the mweb player client. */
+export const BGUTIL_POT_PROVIDER_PORT = parseInt(process.env.BGUTIL_POT_PROVIDER_PORT || '4416', 10);
+
 // Same self-signed dev cert scripts/serve-dist.js generates/uses for the
 // static player server, reused here so HTTPS/WSS work out of the box.
 export const TLS_KEY_PATH = process.env.RTSP_WS_TLS_KEY || path.resolve(__dirname, '../../certs/dev-server.key');
