@@ -1341,7 +1341,7 @@ function mediaSegment(sequenceNumber, tracks, data, ept) {
 }
 
 function dualTrackMediaSegment(sequenceNumber, tracks, data, ept) {
-  var mediaData = [], mdatlen = 0; mdatLens = [], i = 0;//data.length;
+  var mediaData = [], mdatlen = 0, mdatLens = [], i = 0;//data.length;
   // build traf boxes for each track fragment
   while (i < data.length) {
     mdatLens[i] = data[i].length;

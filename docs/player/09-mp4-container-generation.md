@@ -12,6 +12,7 @@ what box tree each exported function actually constructs, byte by byte, for ever
 | Date | Change |
 | --- | --- |
 | 2026-08-26 | Initial version |
+| 2026-08-26 | Fix `dualTrackMediaSegment`'s `var` declaration (`:1344`) — a stray `;` instead of `,` after `mdatlen = 0` left `mdatLens`/`i` as bare assignments to undeclared bindings, throwing `ReferenceError: mdatLens is not defined` in strict-mode (ESM) builds on every dual-track (video+audio, `<video>`-tag mode) segment |
 
 ---
 
