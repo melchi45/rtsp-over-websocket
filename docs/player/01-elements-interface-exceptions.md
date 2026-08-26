@@ -14,6 +14,7 @@
 | 2026-08-11 | Implement `RTSPOverWebSocket.disconnectedCallback()` — was missing entirely |
 | 2026-08-13 | Add `.env` support for the live-device test; fix `describe.skip` collection bug; docs |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-26 | Add `RTSPOverWebSocket.transportFactory` get/set — exposes `StreamPlayer`/`RtspClient`'s existing `transportFactory` constructor param as a settable element property |
 
 ---
 
@@ -364,6 +365,16 @@ their exact location rather than fixed silently (file header comment,
   caller would see the exact same 401 again despite a successful SUNAPI login. A no-op for the
   common case where a sunapiClient is attached *before* the first `play()` ever runs (`this.player`
   is still `null`, e.g. `react/Player.tsx`'s `useSunapi` flow, which never hits this at all).
+- `transportFactory` get/set — a plain settable property (same shape as `sunapiClient` above),
+  threaded straight through to `StreamPlayer`'s existing `transportFactory` constructor parameter
+  (`interface/StreamPlayer.ts:217`, itself forwarded to `new RtspClient(transportFactory)`) when
+  `play()` first constructs `this.player`. Lets a caller override how the RTSP-over-WebSocket
+  transport opens its underlying `wss://` connection (`network/transport/Transport.ts`'s
+  `createWebSocket()`, which otherwise does a plain `new WebSocket(serverAddr)`) — e.g. to supply a
+  custom `WebSocketLike` for testing, or a non-browser-`WebSocket` implementation. `undefined` (the
+  default) keeps the existing behavior unchanged. Like `sunapiClient`, only takes effect if set
+  *before* the first `play()` call constructs `this.player` — no reset-on-set behavior exists for
+  this property, unlike the `sunapiClient` setter's `stop()`-and-discard fix described just above.
 - `play()` no longer validates username/password up front (see above) — the actual `0x0403`
   error now originates deeper, in `RtspClient`'s digest-auth header builder, and surfaces to this
   element the same way any other connection error does: via the ordinary `error` callback /

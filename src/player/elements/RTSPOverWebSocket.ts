@@ -7,6 +7,7 @@ import { toYYYYMMDDHHMMSS } from '../util/dateFormat';
 import { getElementByAttributeValue } from '../util/getElementByAttributeValue';
 import { SunapiManager, type SunapiManagerDeviceInfo } from '../network/http/SunapiManager';
 import { RtspControlType, type SunapiClientLike } from '../network/rtspOverWebsocket/RtspClient';
+import type { TransportFactory } from '../network/rtspOverWebsocket/RtspClient';
 import { StreamPlayer } from '../interface/StreamPlayer';
 import type { StreamPlayerInfo } from '../interface/StreamPlayer';
 import { RTSPOverWebSocketPlayType, RTSPOverWebSocketPlayState, RTSPOverWebSocketBestshotFilter, RTSPOverWebSocketPlaySpeed, type RTSPOverWebSocketPlaySpeedEntry } from './RTSPOverWebSocketTypes';
@@ -120,6 +121,7 @@ export class RTSPOverWebSocket extends HTMLElement {
   private _filename: string | null = null;
 
   private _sunapiMng = new SunapiManager();
+  private _transportFactory: TransportFactory | undefined = undefined;
 
   private _playType: (typeof RTSPOverWebSocketPlayType)[keyof typeof RTSPOverWebSocketPlayType] | null = null;
   private _oldPlayType: (typeof RTSPOverWebSocketPlayType)[keyof typeof RTSPOverWebSocketPlayType] | null = null;
@@ -1357,6 +1359,26 @@ export class RTSPOverWebSocket extends HTMLElement {
   }
   set sessionKey(v: string | null) {
     this._sessionKey = v;
+  }
+
+  /**
+   * Overrides how `StreamPlayer`/`RtspClient` open the RTSP-over-WebSocket
+   * streaming connection (`wss://<host>/StreamingServer`) — a plain
+   * settable property (same pattern as `sunapiClient` just below) rather
+   * than a constructor argument, since this element already builds
+   * `StreamPlayer` internally in `play()`. Threaded straight through to
+   * `StreamPlayer`'s own `transportFactory` constructor parameter, which
+   * already existed for this purpose; nothing about the RTSP/RTP framing
+   * `Transport` does changes — only where its underlying `WebSocketLike`
+   * comes from. `undefined` (the default) keeps the current behavior: a
+   * plain browser `new WebSocket(...)`, still subject to the browser's own
+   * TLS certificate validation for `wss:`.
+   */
+  get transportFactory(): TransportFactory | undefined {
+    return this._transportFactory;
+  }
+  set transportFactory(v: TransportFactory | undefined) {
+    this._transportFactory = v;
   }
 
   get sunapiClient(): SunapiClientLike | null {
@@ -4256,7 +4278,12 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
 
     if (this.player === undefined || this.player === null) {
-      this.player = new StreamPlayer(this.info, this._sunapiMng.getSunapiClient() as unknown as SunapiClientLike | null);
+      this.player = new StreamPlayer(
+        this.info,
+        this._sunapiMng.getSunapiClient() as unknown as SunapiClientLike | null,
+        undefined,
+        this._transportFactory
+      );
     }
 
     if (this.player !== undefined && this.player !== null) {
