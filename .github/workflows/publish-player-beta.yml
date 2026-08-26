@@ -1,0 +1,56 @@
+name: Publish player package (beta)
+
+# Runs on every push to main that touches the player package itself, and
+# publishes a beta build to GitHub Packages under the `beta` npm dist-tag
+# (never `latest` — see publish-player.yml for the real release flow).
+#
+# The version published is never committed back to the repository:
+# package.json's version field is only mutated in this job's own checkout,
+# purely to give npm something unique to publish. Each run's beta version
+# is <base version>-beta.<run number> — the run number is unique and
+# monotonically increasing per workflow, so back-to-back pushes never
+# collide even when package.json's own version field hasn't changed.
+#
+# Pushes made by publish-player.yml's own version-bump-back step use the
+# same GITHUB_TOKEN this job would use, so per GitHub's own loop
+# prevention they do not re-trigger this workflow.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/player/**'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+jobs:
+  publish-beta:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@melchi45'
+
+      - name: Set beta version
+        run: |
+          set -euo pipefail
+          BASE_VERSION=$(node -p "require('./package.json').version.split('-')[0]")
+          BETA_VERSION="${BASE_VERSION}-beta.${{ github.run_number }}"
+          echo "Publishing beta version: $BETA_VERSION"
+          npm pkg set version="$BETA_VERSION"
+
+      - run: npm install
+
+      - run: npm run build:player
+
+      - run: npm publish --tag beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

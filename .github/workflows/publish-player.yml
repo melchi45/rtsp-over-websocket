@@ -3,28 +3,68 @@ name: Publish player package
 # package.json's publishConfig.registry already points at GitHub Packages
 # (npm.pkg.github.com/melchi45), so this publishes there using the
 # workflow's own GITHUB_TOKEN — no extra secret needs to be configured.
-# Bump the "version" field in package.json before tagging/releasing;
-# npm publish fails outright if that version is already published.
+#
+# Triggered by pushing a `v*` tag (or manually via workflow_dispatch). The
+# version to publish is NOT read from whatever happens to be committed in
+# package.json — it's computed as one patch level past whatever version is
+# *actually* currently published under the `latest` dist-tag on the
+# registry, which is what npm publish itself checks against. This is what
+# fixes `npm error 409 Conflict - Cannot publish over existing version`:
+# that error means package.json's committed version was never bumped past
+# the last real publish, so relying on it directly to decide the next
+# version has the same problem. The bumped version is committed back to
+# `main` (see the last step) so the repository's package.json stays in
+# sync with what's actually on the registry — if that push ever fails
+# (e.g. branch protection on `main`), the publish itself has still
+# succeeded; only the follow-up bookkeeping commit is affected.
+#
+# Intentionally not also triggered by `release: published` — that would
+# let the same tag trigger two runs (one for the tag push, one for the
+# release), each bumping the version again, publishing an extra unwanted
+# version. Create the tag; this workflow is what actually builds/publishes.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://npm.pkg.github.com'
           scope: '@melchi45'
+
+      - name: Determine next version (latest published + 1 patch level)
+        id: version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          REGISTRY=$(node -p "require('./package.json').publishConfig.registry")
+          PUBLISHED=$(npm view "$PKG_NAME" version --registry="$REGISTRY" 2>/dev/null || true)
+          if [ -z "$PUBLISHED" ]; then
+            echo "No published version found (first publish?) — falling back to package.json's own version."
+            PUBLISHED=$(node -p "require('./package.json').version")
+          fi
+          NEW_VERSION=$(node -e "
+            const [major, minor, patch] = '$PUBLISHED'.split('.');
+            console.log([major, minor, Number(patch) + 1].join('.'));
+          ")
+          echo "Latest published: $PUBLISHED -> publishing: $NEW_VERSION"
+          npm pkg set version="$NEW_VERSION"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
       - run: npm install
 
@@ -33,3 +73,20 @@ jobs:
       - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit bumped version back to main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -- package.json
+          git fetch origin main
+          git checkout -B main origin/main
+          npm pkg set version="${{ steps.version.outputs.version }}"
+          if git diff --quiet -- package.json; then
+            echo "package.json on main already at ${{ steps.version.outputs.version }} — nothing to commit."
+            exit 0
+          fi
+          git add package.json
+          git commit -m "chore: bump published version to ${{ steps.version.outputs.version }} [skip ci]"
+          git push origin HEAD:main
