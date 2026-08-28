@@ -83,7 +83,8 @@ const CGI = {
   MEDIA_CGI: 'media.cgi',
   RECORDING_CGI: 'recording.cgi',
   VIDEO_CGI: 'video.cgi',
-  AI_CGI: 'ai.cgi'
+  AI_CGI: 'ai.cgi',
+  EVENT_RULES_CGI: 'eventrules.cgi'
 } as const;
 
 const SUBMENU = {
@@ -103,7 +104,9 @@ const SUBMENU = {
   RECORDING_TIMELINE: 'timeline',
   RECORDING_AI_TIMELINE: 'aitimeline',
   SNAPSHOT: 'snapshot',
-  GET_CLIENT_IP: 'getclientip'
+  GET_CLIENT_IP: 'getclientip',
+  DYNAMIC_RULES_OPTIONS: 'dynamicrulesoptions',
+  DYNAMIC_RULES: 'dynamicrules'
 } as const;
 
 const ACTION = { VIEW: 'view', SET: 'set', ADD: 'add', UPDATE: 'update', REMOVE: 'remove', CONTROL: 'control', MONITORDIFF: 'monitordiff', CHECK: 'check' } as const;
@@ -404,6 +407,55 @@ export class SunapiManager {
 
   getSessionKey(): Promise<unknown> {
     return this.request(() => `/stw-cgi/${CGI.MEDIA_CGI}?msubmenu=${SUBMENU.VIDEO_SESSION_KEY}&action=${ACTION.VIEW}`, 'getSessionKey');
+  }
+
+  /**
+   * Fetches what event rules a device is *capable of* (`/stw-cgi/
+   * eventrules.cgi?msubmenu=dynamicrulesoptions`) — per channel, every
+   * event source (motion/AI/alarm-input/etc detection), its available
+   * rule slots, and which action types it supports. Contrast with
+   * `getDynamicRules()` below, which returns the rules actually
+   * *configured*. `language` is optional: SUNAPI defaults to the
+   * device's own configured language when omitted, so it's only appended
+   * when the caller actually wants a specific one (e.g. `'English'`),
+   * matching every other optional query param in this class (see
+   * `getVideoProfile`'s `channel`, `getTimeline`'s `overlappedId`).
+   */
+  getDynamicRulesOptions(language?: string): Promise<unknown> {
+    return this.request(
+      () => {
+        let sunapiURI = `/stw-cgi/${CGI.EVENT_RULES_CGI}?msubmenu=${SUBMENU.DYNAMIC_RULES_OPTIONS}&action=${ACTION.VIEW}`;
+        if (typeof language !== 'undefined') {
+          sunapiURI += '&Language=' + language;
+        }
+        return sunapiURI;
+      },
+      'getDynamicRulesOptions',
+      { extract: (data) => (data as { DynamicRulesOptions?: unknown }).DynamicRulesOptions }
+    );
+  }
+
+  /**
+   * Fetches the event rules actually *configured* on the device
+   * (`/stw-cgi/eventrules.cgi?msubmenu=dynamicrules`) — each rule's name,
+   * schedule, enabled/available state, triggering event source(s), and
+   * resulting action(s) (record, alarm output, etc). Contrast with
+   * `getDynamicRulesOptions()` above, which returns what the device
+   * merely *supports*. `language` is optional, same as
+   * `getDynamicRulesOptions()`.
+   */
+  getDynamicRules(language?: string): Promise<unknown> {
+    return this.request(
+      () => {
+        let sunapiURI = `/stw-cgi/${CGI.EVENT_RULES_CGI}?msubmenu=${SUBMENU.DYNAMIC_RULES}&action=${ACTION.VIEW}`;
+        if (typeof language !== 'undefined') {
+          sunapiURI += '&Language=' + language;
+        }
+        return sunapiURI;
+      },
+      'getDynamicRules',
+      { extract: (data) => (data as { Rules?: unknown }).Rules }
+    );
   }
 
   getStorageInfo(): Promise<unknown> {
