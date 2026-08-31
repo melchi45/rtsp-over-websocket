@@ -70,7 +70,7 @@ interface SunapiRestClientConfig {
   oauth: { username?: string };
 }
 
-interface DigestCache {
+export interface DigestCache {
   scheme: string;
   realm: string | null;
   nonce: string | null;
@@ -707,5 +707,21 @@ export class SunapiClient {
 
   getAuthInfo(): DigestCache | null | undefined {
     return this.authInfo;
+  }
+
+  /**
+   * Seeds a digest challenge (realm/nonce/etc.) obtained by a *previous*
+   * `SunapiClient` instance against the same device, so this fresh
+   * instance's first request can send a preemptive `Authorization` header
+   * instead of the unauthenticated-probe -> 401 -> retry round trip every
+   * fresh instance otherwise needs (see `SunapiManager.init()`, which is
+   * the only caller — it discards and recreates its `SunapiClient` on every
+   * call, which previously threw away a still-valid nonce each time). If
+   * the seeded nonce turns out to be stale/rejected, `send()`'s existing
+   * `case 401` path re-challenges and retries exactly as it does for an
+   * unseeded instance — no new failure mode.
+   */
+  seedAuthInfo(cache: DigestCache): void {
+    this.authInfo = { ...cache };
   }
 }

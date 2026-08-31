@@ -14,6 +14,7 @@ client, with concrete method behavior, wire framing, and RFC citations.*
 | 2026-08-11 | Fix `SunapiManager`'s `joinAfterGet` bug: eight REST methods always rejected regardless of the actual GET result |
 | 2026-08-13 | Add `.env` support for the live-device test; fix `describe.skip` collection bug; docs |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-08-31 | `SunapiManager` now caches digest challenges across `init()` calls (`SunapiClient.seedAuthInfo()`) to cut the redundant OPTIONS-preflight/401-retry round trip most `init()` calls previously paid |
 
 ---
 
@@ -721,6 +722,17 @@ an alternate source of RTSP digest-auth response values for camera-mode devices.
   of `successFn`.
 - `setTimeout(timeout)` / `getAuthInfo()` — the only other reachable prototype methods; simple
   accessors.
+- `seedAuthInfo(cache)` — **new, not a legacy port**: shallow-copies a `DigestCache` (realm/nonce/
+  opaque/qop/nc/cnonce) obtained by a *previous* `SunapiClient` instance into `this.authInfo`
+  before the first request goes out. Exists purely so `SunapiManager.init()` (which discards and
+  recreates its `SunapiClient` on every call) can seed a fresh instance with the last-known-good
+  challenge instead of always starting from `authInfo: null`. With a seeded challenge,
+  `makeNewRequest()`'s existing `authInfo.scheme === 'Digest'` check is satisfied on the very
+  first attempt, so it sends a real `Authorization` header immediately (via the same
+  `setDigestHeader` path a 401 retry would otherwise take) instead of the unauthenticated probe.
+  If the seeded nonce is stale/rejected, `send()`'s ordinary `case 401` path fires exactly as it
+  would for an unseeded instance — this method changes nothing about failure handling, only which
+  attempt (the 1st vs. the usual 2nd) carries valid credentials.
 
 ### Call Stack
 
@@ -744,6 +756,16 @@ sequenceDiagram
     SC->>SC: parseResponse()
     SC-->>App: successFn({data})
 ```
+
+Each of the two real `GET`s above is a distinct cross-origin `XMLHttpRequest.send()` with a
+different non-CORS-safelisted header set (`XClient`+`Accept` on the first, plus `Authorization` on
+the retry), so a browser sends its own OPTIONS preflight ahead of *each* one — two preflights and
+two GETs for what the caller sees as a single logical request. That doubling is unavoidable for a
+`SunapiClient` instance with no prior challenge, but `SunapiManager.init()` used to hit it on
+*every* call (it always constructs a fresh `SunapiClient`, discarding any nonce the previous call
+had already obtained) — see `SunapiManager.init()`'s Method Analysis below for the
+`seedAuthInfo()`-based fix, which collapses this to one preflight + one `GET` whenever the seeded
+nonce is still accepted.
 
 ### RFC / Standard References
 
@@ -802,6 +824,14 @@ over `SunapiClient`, exposing one method per SUNAPI endpoint.
 - The legacy `useSunapiClient` flag (always hard-coded `true`, never reassigned) gated a second,
   unreachable `sunapiRestClient`-backed branch — dropped; `init()` always constructs a
   `SunapiClient`.
+- `static digestCache: Map<string, DigestCache>` — **new, not a legacy port**: digest challenges
+  (realm/nonce/etc., see `SunapiClient`'s `DigestCache`) that survive across `init()` calls,
+  keyed by `digestCacheKey(info)` (`protocol://host:port@user`, `host` preferring `hostname` then
+  falling back to `cameraIp`). Static rather than per-instance because the cached challenge
+  belongs to the device/credential pair, not to whichever `SunapiManager` happened to authenticate
+  first. See `init()` below for how it's read/written, and `SunapiClient`'s Call Stack section for
+  *why* this exists (the CORS-preflight-doubling consequence of a fresh, unseeded digest
+  handshake).
 
 ### Method Analysis
 
@@ -813,6 +843,18 @@ over `SunapiClient`, exposing one method per SUNAPI endpoint.
   device capability attributes, wrapping any error as a `SunapiError`. (A legacy quirk that
   unconditionally reset `_sunapiClient` right before an `if (!this._sunapiClient)` "already
   initialized" check is dropped since that branch was permanently unreachable.)
+- **Digest-cache seeding (new, not a legacy port)**: right after building `digestCacheKey(device)`
+  (post-normalization, so it sees the already-resolved `hostname`), `init()` looks up
+  `SunapiManager.digestCache` for that key and, if found, calls the new `SunapiClient` instance's
+  `seedAuthInfo()` with it *before* issuing `attributes.cgi`'s GET. On that GET's success, the
+  now-current `sunapiClient.getAuthInfo()` (whatever challenge ended up working — the seeded one,
+  or a fresh one obtained via a 401 if the seed was stale) is written back to the cache under the
+  same key; on failure, the entry is deleted instead, so a bad/expired seed doesn't get retried
+  forever. Net effect: only the *first-ever* `init()` for a given device (or the first one after a
+  failure) pays the full unauthenticated-probe → 401 → retry round trip (see `SunapiClient`'s Call
+  Stack section); every `init()` after a successful one for the same device sends `Authorization`
+  preemptively and, if the camera still accepts that nonce, completes in one `GET` behind one
+  CORS preflight instead of two of each.
 - **Chrome-extension-host fix** (deviates from a straight legacy port, unlike this file's other
   documented "preserved as-is" legacy quirks): legacy always synced `device.protocol` to
   `window.location.protocol` whenever they differed — fine for a normal http(s) tab, but for

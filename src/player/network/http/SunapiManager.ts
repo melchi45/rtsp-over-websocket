@@ -2,7 +2,7 @@ import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError'
 import { SunapiError } from '../../exceptions/SunapiError';
 import { SunapiException } from './SunapiException';
 import { fromHex } from '../../util/hex';
-import { SunapiClient, type SunapiClientDeviceInfo, type SunapiClientError } from './SunapiClient';
+import { SunapiClient, type SunapiClientDeviceInfo, type SunapiClientError, type DigestCache } from './SunapiClient';
 import { HTTP_STATUS_CODES } from './HttpStatusCode';
 
 /**
@@ -175,6 +175,33 @@ function flattenChannelGroupedFields(data: Record<string, unknown>, wrapperKey: 
 }
 
 export class SunapiManager {
+  /**
+   * Digest challenges (realm/nonce/etc.) surviving *across* `init()` calls
+   * for the same device, keyed by `digestCacheKey()`. `init()` always
+   * discards and recreates its `SunapiClient` (see its own comment on why),
+   * which otherwise throws away a still-valid nonce every single call and
+   * forces the full unauthenticated-probe -> 401 -> authenticated-retry
+   * round trip (two real HTTP requests, each behind its own CORS preflight
+   * since the two attempts send different non-safelisted header sets) for
+   * what the caller sees as one logical GET. Seeding the next `init()`'s
+   * fresh client with the last-known-good challenge lets it send
+   * `Authorization` preemptively; if the camera has since rotated/expired
+   * that nonce, `SunapiClient`'s existing 401-retry path recovers exactly
+   * as it would for an unseeded instance, so this is a pure latency/
+   * request-count optimization with no new failure mode. Static (not
+   * per-instance) because nothing about the cached challenge is specific to
+   * a particular `SunapiManager` — the digest realm/nonce belongs to the
+   * device, not to whichever manager instance happened to authenticate
+   * first.
+   */
+  private static readonly digestCache = new Map<string, DigestCache>();
+
+  private static digestCacheKey(info: SunapiManagerDeviceInfo): string {
+    const host = info.hostname ?? info.cameraIp ?? '';
+    const user = info.user ?? info.username ?? '';
+    return `${info.protocol ?? ''}://${host}:${info.port ?? ''}@${user}`;
+  }
+
   private _sunapiClient: SunapiClientLike | null = null;
   private device: SunapiManagerDeviceInfo = {
     ClientIPAddress: '127.0.0.1',
@@ -240,22 +267,36 @@ export class SunapiManager {
     // "already initialized") permanently unreachable. Dropped here since it
     // can never fire; only the always-taken branch is kept.
     this._sunapiClient = null;
-    this._sunapiClient = new SunapiClient(this.device as SunapiClientDeviceInfo);
+    const newClient = new SunapiClient(this.device as SunapiClientDeviceInfo);
+    const cacheKey = SunapiManager.digestCacheKey(this.device);
+    const cachedAuth = SunapiManager.digestCache.get(cacheKey);
+    if (cachedAuth) {
+      newClient.seedAuthInfo(cachedAuth);
+    }
+    this._sunapiClient = newClient;
 
     const sunapiClient = this._sunapiClient;
     return new Promise((resolve, reject) => {
       sunapiClient.get(
         '/stw-cgi/attributes.cgi',
         '',
-        (response) => resolve(unwrapResponse(response)),
-        (error) =>
+        (response) => {
+          const authInfo = newClient.getAuthInfo();
+          if (authInfo) {
+            SunapiManager.digestCache.set(cacheKey, authInfo);
+          }
+          resolve(unwrapResponse(response));
+        },
+        (error) => {
+          SunapiManager.digestCache.delete(cacheKey);
           reject(
             new SunapiError({
               errorCode: Number(error.Code),
               place: 'SunapiManager.ts:init',
               message: HTTP_STATUS_CODES[String(error.Code)]
             })
-          ),
+          );
+        },
         '',
         this.device.async ? true : false,
         false,

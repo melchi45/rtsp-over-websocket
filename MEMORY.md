@@ -1538,3 +1538,63 @@ repo's docs — only the codec/behavior facts, which is all a future fix or regr
 updated: `docs/player/05-video-player-rendering.md` (`VideoPlayer`'s `audioCodecHint` field, `VideoTagPlayer`'s
 Structure field list, `init()`, and `setAudioInfo()` entries) and `docs/player/03-mediaSession-core-video.md`
 (`RtpClient.sendSdpInfo()`'s per-codec bullets and `MediaRouter.handleVideoData`'s entry).
+
+## Known bug (not yet fixed): `SunapiClient`'s digest-auth retry counter is shared instance state, not per-request
+
+Found while investigating a downstream consumer's (`wisenet-camera-discovery`) real-device bug report: two
+concurrent `SunapiManager` calls on the same client instance that both need a *fresh* HTTP Digest challenge (no
+cached `authInfo` yet) can race and spuriously fail one of them with `401`.
+
+`src/player/network/http/SunapiClient.ts`: `authInfo` (cached digest challenge: realm/nonce/nc/cnonce) and
+`authCount` (line ~147, meant to cap retries to one *per logical request*) are both plain instance fields, shared
+across every `.get()`/`.post()` call made through that client — there is no per-request scoping, request queue, or
+lock anywhere in `SunapiClient` or `SunapiManager`. The retry flow lives in `send()`'s `case 401` handler
+(lines ~592-610): on `401`, `this.authCount += 1`; if now `< 2`, retry the *same logical request* with credentials
+built from the challenge; otherwise fail and reset `authCount = 0`. A successful `200` also resets it to `0`
+(line ~615).
+
+If two calls (e.g. `getDeviceInfo()` and `getCalendarSearch()`) are fired back-to-back, both without a cached
+challenge, both send unauthenticated probes and both get `401` back. Whichever `401` is processed *first*
+increments the shared counter to 1, sees `< 2`, and correctly retries with credentials. Whichever is processed
+*second* increments it to 2, sees `< 2` is now false, and fails outright — its authenticated retry is never sent.
+Which call loses is timing-dependent (an interleaving of two independent request lifecycles), not tied to a
+specific endpoint. Once a challenge is cached, later concurrent calls are safe (they attach credentials on the
+first attempt; the mutations to `authInfo`'s `nc`/`cnonce` are synchronous/single-threaded, not actually racy) —
+so the race window is specifically "two calls both cold at once," not "any two concurrent calls."
+
+**Not fixed here.** The downstream consumer worked around it at their call site (serializing their two
+first-request calls so one warms the cache before the other fires) rather than waiting on a fix + republish of
+this package. The real fix belongs here: either scope `authCount`/the retry decision per logical request (e.g. a
+local variable captured in each `send()` call's own closure instead of `this.authCount`) or serialize/queue
+concurrent requests through one `SunapiClient` instance. Worth doing before another consumer hits the same
+intermittent failure.
+
+## `SunapiManager` now caches digest challenges across `init()` calls (fixed: redundant OPTIONS/GET pair)
+
+Found while investigating another downstream consumer (`wisenet-camera-discovery`) report: their SUNAPI
+requests showed an `OPTIONS` preflight firing twice for what should be one logical `GET`.
+
+Root cause: `SunapiManager.init()` always builds a brand-new `SunapiClient` (see its own doc comment on why —
+a legacy quirk that made the "already initialized" branch permanently unreachable, kept as the always-taken
+path), which starts with `authInfo: null`. A cold `SunapiClient` needs two real `XMLHttpRequest.send()` calls to
+authenticate (unauthenticated probe → `401` → authenticated retry — see `SunapiClient`'s Call Stack in
+`docs/player/02-network.md`), and each of those two sends a different non-CORS-safelisted header set
+(`XClient`+`Accept` vs. `XClient`+`Accept`+`Authorization`), so the browser preflights each one separately: two
+`OPTIONS` + two `GET`s for one logical call. Since `init()` is typically called repeatedly across a UI session
+(every reconnect/mode-toggle in `wisenet-camera-discovery`'s case) and discarded the previous instance's
+still-valid nonce every time, *every* `init()` paid this cost, not just the first ever one.
+
+Fixed by adding a `SunapiManager.digestCache: Map<string, DigestCache>` keyed by device+user (see
+`digestCacheKey()`), plus a new `SunapiClient.seedAuthInfo()`. `init()` seeds the fresh client from the cache
+before its `attributes.cgi` GET, and writes back whatever challenge ends up working after success (deletes the
+entry on failure). When the camera still accepts the cached nonce, this collapses the exchange to one `OPTIONS`
++ one `GET`; when it doesn't, `SunapiClient`'s ordinary `401` retry recovers exactly as it would for an unseeded
+instance — no new failure mode, same worst case as before.
+
+**Known interaction, not addressed here**: this cache is shared/global (static), and `seedAuthInfo()`'s clone
+means two concurrent `init()` calls for the *same* device (e.g. two overlapping caller-side init chains, see
+`wisenet-camera-discovery`'s own `sunapiInitInFlight` guard for why that can happen) would each seed from the
+same cached `nc` and independently increment it, potentially sending the same `nc` value to the device twice —
+a narrower variant of the concurrent-`401`-race bug documented just above. Not fixed here since it requires the
+*caller* not to fire overlapping `init()`s in the first place (which `wisenet-camera-discovery` already has a
+documented, not-yet-ported-here guard for); worth revisiting if a consumer without that guard hits it.
