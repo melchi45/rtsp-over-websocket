@@ -15,7 +15,8 @@ import { defineConfig } from 'vite';
 // react-wisenet-player, which react/Player.tsx was adapted from) should
 // import react/index.ts's `Player` directly from source instead, so it
 // shares that app's own React instance rather than bundling a second one.
-export default defineConfig({
+// See vite.config.ts's comment on `npm run build:player:dev` / `mode`.
+export default defineConfig(({ mode }) => ({
   base: './',
   // React/ReactDOM's own source checks `process.env.NODE_ENV` (e.g. to pick
   // their dev-vs-production internal build, and to gate dev-only warnings)
@@ -34,6 +35,9 @@ export default defineConfig({
     // wrote rtsp-over-websocket.{esm,global}.js and the worker chunks into
     // this same outDir — clearing it here would erase them.
     emptyOutDir: false,
+    // See vite.config.ts's sourcemap comment.
+    sourcemap: true,
+    minify: mode !== 'development',
     lib: {
       entry: resolve(__dirname, 'react/index.ts'),
       name: 'RTSPOverWebSocketReact',
@@ -41,4 +45,4 @@ export default defineConfig({
       fileName: () => 'rtsp-over-websocket-react.esm.js'
     }
   }
-});
+}));

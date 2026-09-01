@@ -1637,3 +1637,30 @@ a no-op and didn't re-fire the callback a second time.
 
 Fixed by changing the case to `newValue === 'true' || newValue === ''`, matching the sibling convention. See
 `docs/player/01-elements-interface-exceptions.md`'s `attributeChangedCallback` bullet for the full trace.
+
+## Player build shipped with no sourcemaps — browser debugger only showed bundled/minified JS (fixed)
+
+Reported symptom: after the TypeScript → JS build, the browser's DevTools debugger could only step through the
+bundled (and, for `build:player`, minified) `.js` output — no way to set breakpoints in or inspect the original
+`.ts` sources for `src/player`.
+
+Root cause: none of the three Vite lib configs (`src/player/vite.config.ts`, `vite.react.config.ts`,
+`vite.react-lib.config.ts`) set `build.sourcemap`, so Vite/Rollup never emitted `.js.map` files — even though
+`scripts/serve-dist.js` already had `.map` registered in its `MIME_TYPES` table, ready to serve them.
+
+Fixed by adding `sourcemap: true` to all three configs' `build` blocks — `npm run build:player` (the normal,
+minified production build) now also emits `.js.map` next to every chunk, including the auto-detected Worker
+chunks (`zipWorker`, `decoderWorker`, etc.). A minified bundle with a sourcemap is enough for DevTools to display
+and step through the original `.ts` — no need to disable minification for that alone.
+
+Also added `npm run build:player:dev`, which runs the same three `vite build` invocations with `--mode
+development`. All three configs were converted from `defineConfig({...})` to the functional form
+`defineConfig(({ mode }) => ({...}))` so they can read `mode` and set `minify: mode !== 'development'` — the only
+difference between the two build scripts is minification; sourcemaps are unconditional in both. Use
+`build:player:dev` when unminified, fully readable output is preferable (e.g. inspecting a Worker chunk's
+generated code directly) rather than relying on sourcemap-mapped minified output.
+
+Deliberately did **not** make `vite.react.config.ts`'s `process.env.NODE_ENV` define mode-dependent (it stays
+hardcoded to `'production'` in both build scripts) — that also gates React's own internal dev-only warning code
+paths, which is a separate concern from TS/JS debuggability and would change React's runtime behavior between the
+two build scripts, not just its readability.

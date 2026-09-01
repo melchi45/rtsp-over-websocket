@@ -11,11 +11,15 @@ import { defineConfig } from 'vite';
 // package.json's "./react" export subpath; dist/types/react/index.d.ts is
 // already produced by the ordinary `tsc -b` pass (src/player/tsconfig.json
 // includes react/**/*.tsx), so this config only needs to emit JS.
-export default defineConfig({
+// See vite.config.ts's comment on `npm run build:player:dev` / `mode`.
+export default defineConfig(({ mode }) => ({
   base: './',
   build: {
     outDir: resolve(__dirname, '../../dist/react'),
     emptyOutDir: true,
+    // See vite.config.ts's sourcemap comment.
+    sourcemap: true,
+    minify: mode !== 'development',
     lib: {
       entry: resolve(__dirname, 'react/index.ts'),
       formats: ['es'],
@@ -33,4 +37,4 @@ export default defineConfig({
       external: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime']
     }
   }
-});
+}));

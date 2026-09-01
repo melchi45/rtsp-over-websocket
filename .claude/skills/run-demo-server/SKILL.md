@@ -30,9 +30,13 @@ description: Build, start, verify, and stop this repo's RTSP-over-WebSocket demo
 ## Build
 
 ```bash
-npm run build:player   # tsc + vite build -> dist/player/*.js, copies src/index.html -> dist/index.html
-npm run build:server   # tsc -> dist/server/*.js
+npm run build:player       # tsc + vite build -> dist/player/*.js, copies src/index.html -> dist/index.html
+npm run build:player:dev   # same, but unminified (--mode development) — for readable browser debugging
+npm run build:server       # tsc -> dist/server/*.js
 ```
+
+Both `build:player` variants emit `.js.map` sourcemaps, so the browser debugger can step through the original
+`.ts` sources — see `CLAUDE.md`'s "Build & run" section for details.
 
 ## Run (background)
 

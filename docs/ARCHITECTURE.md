@@ -13,6 +13,7 @@ existing RTSP-over-WebSocket source, and the demo server's YouTube → RTSP → 
 | 2026-08-03 | Rename legacy AngularJS glue layer off old branding |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-26 | Note `deno`/`bgutil-ytdlp-pot-provider` as external dependencies (`e9a7e70`) |
+| 2026-09-01 | Add "Player build & browser debugging" section (sourcemaps + `build:player:dev`) |
 
 ---
 
@@ -50,6 +51,16 @@ src/
 │
 └── index.html                Vanilla-JS demo page (Player / Server / Test tabs) — copied to dist/index.html at build time
 ```
+
+## Player build & browser debugging
+
+`src/player`'s three Vite lib configs (`vite.config.ts`, `vite.react.config.ts`, `vite.react-lib.config.ts`) all
+set `build.sourcemap: true`, so every `npm run build:player`/`build:player:dev` run emits a `.js.map` next to
+each output chunk — including the auto-detected Worker chunks (`zipWorker`, `decoderWorker`, ...) — letting the
+browser's debugger step through the original `.ts` sources instead of the bundled `.js`. `build:player` keeps its
+output minified (the sourcemap alone is enough for DevTools to map it back); `build:player:dev` runs the same
+three builds with `--mode development`, which each config reads to set `minify: mode !== 'development'` for
+fully unminified output. See `MEMORY.md`'s "Player build shipped with no sourcemaps" entry for the history.
 
 ## The player: layering
 

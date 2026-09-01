@@ -79,6 +79,7 @@
     },
     "scripts": {
         "build:player": "cd src/player && tsc -b && vite build && vite build --config vite.react.config.ts && vite build --config vite.react-lib.config.ts && cd ../.. && npm run build:demo",
+        "build:player:dev": "cd src/player && tsc -b && vite build --mode development && vite build --mode development --config vite.react.config.ts && vite build --mode development --config vite.react-lib.config.ts && cd ../.. && npm run build:demo",
         "build:demo": "mkdir -p dist && cp src/index.html dist/index.html",
         "build:server": "cd src/server && tsc -b",
         "test:player": "cd src/player && vitest run",

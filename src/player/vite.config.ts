@@ -12,7 +12,15 @@ import { defineConfig } from 'vite';
 // lib mode rejects multiple entry points as soon as any target format is
 // 'iife'/'umd' (single-entry-only formats), and this config's `iife` output
 // is load-bearing for the legacy-<script> consumers above.
-export default defineConfig({
+// `npm run build:player:dev` runs this (and the two configs below) with
+// `--mode development`, which only flips `minify` off — sourcemaps are
+// always on (see the `sourcemap: true` below) regardless of mode. Minified
+// output still maps back to the original .ts through the sourcemap, so
+// `build:player` alone is normally enough for browser debugging; the dev
+// mode exists for cases where stepping through readable (non-minified)
+// output is preferable, e.g. inspecting the Worker chunks' generated code
+// directly.
+export default defineConfig(({ mode }) => ({
   // Both rtsp-over-websocket.global.js and every `new Worker(new URL(...))`
   // chunk it spawns (audiotranscoderWorker, decoderWorker, zipWorker, ...)
   // must resolve correctly no matter which subpath the consuming app serves
@@ -42,6 +50,11 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, '../../dist/player'),
     emptyOutDir: true,
+    // Emits .js.map alongside every chunk (including the auto-detected
+    // Worker chunks below) so browser devtools can step through the
+    // original .ts sources instead of the bundled/minified .js output.
+    sourcemap: true,
+    minify: mode !== 'development',
     lib: {
       entry: resolve(__dirname, 'index.ts'),
       name: 'RTSPOverWebSocketLib',
@@ -94,4 +107,4 @@ export default defineConfig({
   worker: {
     format: 'iife'
   }
-});
+}));

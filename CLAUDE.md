@@ -13,6 +13,7 @@ the full structure/data-flow writeup and [README.md](README.md) for build/run in
 
 ```
 npm run build:player          # tsc + vite build -> dist/player/*.js, copies src/index.html -> dist/index.html
+npm run build:player:dev      # same, but unminified (--mode development) — for readable browser debugging
 npm run build:server          # tsc -> dist/server/*.js
 npm run start:server[:http|:https]
 npm run stop:server
@@ -21,6 +22,13 @@ npm run test:player            # vitest run
 
 `src/index.html` is the source of the demo page; never edit `dist/index.html` directly — it's overwritten by
 `npm run build:demo` (part of `build:player`).
+
+Both `build:player` variants emit `.js.map` sourcemaps for every chunk (see the three `src/player/vite*.config.ts`
+files' `sourcemap: true`), so the browser debugger can step through the original `.ts` sources instead of the
+bundled JS — no separate config needed on the consumer side. `build:player:dev` additionally disables
+minification via Vite's `mode` (`minify: mode !== 'development'` in each config); `build:player`'s output stays
+minified since the sourcemap alone is enough for DevTools to map it back to `.ts`. See `MEMORY.md`'s "Player
+build shipped with no sourcemaps" entry for why this wasn't already the case.
 
 ## Environment gotchas (read before debugging a "broken" build)
 

@@ -130,9 +130,16 @@ registry (`registry.npmjs.org`) instead.
 
 ```
 npm install
-npm run build:player   # tsc + vite build -> dist/player/*.js, and copies src/index.html -> dist/index.html
-npm run build:server   # tsc -> dist/server/*.js
+npm run build:player       # tsc + vite build -> dist/player/*.js, and copies src/index.html -> dist/index.html
+npm run build:player:dev   # same, but unminified (--mode development) — for readable browser debugging
+npm run build:server       # tsc -> dist/server/*.js
 ```
+
+Both `build:player` and `build:player:dev` emit `.js.map` sourcemaps next to every chunk (including the
+auto-detected Worker chunks), so the browser DevTools Sources panel shows the original `.ts` files instead of the
+bundled `.js` — set breakpoints and step through TypeScript directly. `build:player`'s output is still minified
+(a sourcemap is enough for DevTools to map it back); `build:player:dev` additionally skips minification, for
+cases where inspecting the generated JS itself (not just the mapped-back `.ts`) needs to be readable.
 
 ## Running the demo server
 
