@@ -17,6 +17,7 @@
 | 2026-08-26 | Add `RTSPOverWebSocket.transportFactory` get/set — exposes `StreamPlayer`/`RtspClient`'s existing `transportFactory` constructor param as a settable element property |
 | 2026-09-01 | Fix mouse-wheel zoom anchoring on the wrong point: `ensureRTSPOverWebSocketWrapper()` now sets `transform-origin: 0 0` on the wrapper div |
 | 2026-09-01 | Fix `statistics` attribute requiring two toggles to hide the panel: `attributeChangedCallback`'s `'statistics'` case now treats a removed attribute as off, matching the sibling boolean-attribute convention |
+| 2026-09-01 | Fix camera-device drag-seek sending the wrong time: `generateRTSPURL()` no longer double-applies `GMT` to `seekingTime`, and `seeking()`'s camera branch now always recomputes `rangeClock` from `seekingTime` (was stuck on stale `_useIso`-gated logic) with the trailing `Z` stripped to match the camera's `samsung-replay-timezone` extension |
 
 ---
 
@@ -273,13 +274,27 @@ their exact location rather than fixed silently (file header comment,
   `src` — e.g. missing password — surfaces as an ordinary `RTSPOverWebSocketError` from `play()`'s
   own checks, not something that should throw out of an
   attribute reaction).
-- `generateRTSPURL()` (private, `:4561-4865`) — the inverse direction: builds the RTSP request
+- `generateRTSPURL()` (private, `:4602-4916`) — the inverse direction: builds the RTSP request
   *path* (not a full URL) from current element state, branching on `device` (`camera` vs `nvr`)
   and `info.media.type` (`live`/`playback`/`backup`). **This return value is not just a display
   string** — `play()` assigns it to `info.media.requestInfo.url`, which `RtspClient.ts` sends
   verbatim as the real outgoing RTSP request URI (`this._request(cmd, requestInfo.url, ...)`), so
   changing its format changes what's actually sent to the device/server, not just what `src`
-  reflects. **The nvr branch now collects every extra piece (`device`, `session`, `start`, `end`,
+  reflects. **Real bug fix (found live, 2026-09-01)** in the camera branch's `playback`
+  sub-case (`:4658-4674`): `seekingTime`'s `strStart` used to add `this.GMT * 3600 * 1000` on top
+  of `this.seekingTime` whenever `this.GMT` was set (true for essentially every camera device —
+  `device.ts` parses the camera's own `TimeZoneIndex` into `player.GMT` right after connecting).
+  But `seekingTime` is already the target wall-clock instant — the same convention this exact
+  block's neighboring `endTime`/`_currentTimestamp` handling already uses, with no GMT adjustment
+  of its own — so adding GMT again double-counted the offset. Confirmed via a live console trace:
+  dragging to `16:31:28` under KST (+9) produced a URL start of `20260902013312` (01:33 the next
+  calendar day) instead of `20260901163128`, corrupting the URL's start/end ordering. Fixed by
+  dropping the GMT-conditional branch entirely for `seekingTime`, matching its neighbors. **This
+  fix is camera-only and needs no separate nvr-branch counterpart**: this whole sub-case already
+  sits inside the outer `if (this._deviceType === 'camera')` guard (`:4608`) — nvr never reaches
+  it. nvr's own GMT handling for `startTime`/`endTime` in its completely separate branch
+  (`:4793-4829`) is untouched and still applies GMT as before. **The nvr branch now collects every
+  extra piece (`device`, `session`, `start`, `end`,
   `overlap`, `BestshotFilter`, `substream`, `profile`/`profile_number`/`ProfileUsage`,
   `camchannel`, `codec`, `limitWidth`, `limitHeight`, `iframe`) into a `queryParams: string[]` and
   joins them with exactly one `?` + `&`-separators at the end** (rewritten 2026-08-26 — a
@@ -332,12 +347,24 @@ their exact location rather than fixed silently (file header comment,
   mode only), state-consistency checks (throws `0x1004` if already in the target state),
   `player.control(info)`. `INSTANTPLAYBACK` is special-cased in both (different `cmd` values, and
   `resume()` restores `_oldPlayType`).
-- `seeking()` (`:5180-5251`), `speed()` (`:4928-5015`), `forward()`/`backward()`
+- `seeking()` (`:5534-5633`), `speed()` (`:4928-5015`), `forward()`/`backward()`
   (`:5017-5178`) — playback-only trick-play commands; each recomputes `rangeClock`/`scale` from
   `seekingTime`/`currentTimestamp`/`GMT` and forwards through `player.control(info)`. `speed()`
   has a preserved legacy typo (`:4942-4946`): for camera devices it writes the regenerated URL to
   `requestInfo.utl` (not `.url`), so speed changes never actually refresh the RTSP URL for
-  cameras.
+  cameras. `seeking()`'s camera branch (`:5564-5596`) had **two real bug fixes (found live,
+  2026-09-01)**: (1) it used to only recompute `rangeClock` when `_useIso` was truthy (never set by
+  this app's caller), so `rangeClock` silently kept whatever stale value `speed()`'s camera branch
+  had just written from the *old* `currentTimestamp` — every drag-seek sent `Range: clock=<current
+  position>-`, i.e. "resume where you already are," regardless of where the marker was dropped; now
+  always recomputed from `this.seekingTime` regardless of `_useIso`. (2) the fix for (1) initially
+  kept `seekingTime`'s trailing `Z` (RFC 2326 `utc-time` grammar, matching the nvr branch just
+  below), but real cameras stopped playback outright on every seek once that shipped — every other
+  camera-bound clock value in this class (`generateRTSPURL()`'s own `strStart`/`strEnd`, `speed()`'s
+  camera branch) strips `Z` for the camera's proprietary `samsung-replay-timezone` RTSP extension,
+  and only nvr's `onvif-replay` extension expects it kept; `seeking()`'s camera branch now strips
+  `Z` too, matching the rest of the camera code paths. nvr's own branch (`:5597-5602`) is untouched
+  and still applies `GMT` as before.
 - `capture(filename?)` (`:5253-5279`), `talk(flag)` (`:5281-5299`), `backup(flag)`
   (`:5301-5340`) plus `startBackup()`/`endBackup()` (`:5342-5480`) — capture/two-way-audio/backup
   session control; `backup()`/`startBackup()` construct/reuse the separate `backupplayer`

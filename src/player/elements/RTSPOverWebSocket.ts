@@ -4656,12 +4656,22 @@ export class RTSPOverWebSocket extends HTMLElement {
             strStart = (this._currentTimestamp.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
           }
           if (this.seekingTime !== null && this.seekingTime !== undefined) {
-            if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
-              const timezone = this.GMT * 3600 * 1000;
-              strStart = (new Date(new Date(this.seekingTime).getTime() + timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
-            } else {
-              strStart = (this.seekingTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
-            }
+            // Real bug fix (found live): this used to add `this.GMT * 3600 *
+            // 1000` on top of `this.seekingTime` whenever `this.GMT` was set
+            // (true for every camera device -- device.ts parses the
+            // camera's own TimeZoneIndex into player.GMT right after
+            // connecting), shifting the URL's embedded start time by a
+            // further GMT offset. `this.seekingTime` already IS the target
+            // wall-clock instant (callers build it as a UTC-labeled string
+            // whose digits are the intended local time, same convention
+            // `this.endTime`/`this._currentTimestamp` below use with no GMT
+            // adjustment of their own) -- adding GMT again pushed a KST
+            // (+9) target 9 hours into the future, confirmed via a live
+            // console trace: dragging to 16:31:28 produced a URL start of
+            // `20260902013312` (01:33, the next calendar day) instead of
+            // `20260901163128`, with the URL's own start/end pair landing
+            // in the wrong order.
+            strStart = (this.seekingTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
           }
           if (this.endTime !== null && this.endTime !== undefined) {
             strEnd = (this.endTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
@@ -5552,10 +5562,38 @@ export class RTSPOverWebSocket extends HTMLElement {
     } else {
       if (this.info.media.type.toLowerCase() === 'playback') {
         if (this._deviceType === 'camera') {
-          if (this._useIso && this._useIso !== null) {
-            this.info.media.requestInfo.rangeClock = this.seekingTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-          }
-          // legacy: non-iso camera branch is a no-op (commented out)
+          // Real bug fix (found live via a console trace, not a preserved
+          // legacy no-op): this branch used to only update rangeClock when
+          // `_useIso` was truthy, which this app's caller never sets --
+          // rangeClock silently kept whatever value speed()'s camera branch
+          // (line ~5285, which runs first: playback.ts's onCustomTimeSeek
+          // sets playSpeed = '1' immediately before seekingTime) had just
+          // written from the OLD `currentTimestamp`, not the newly
+          // requested seek target. Every drag-seek therefore sent
+          // `Range: clock=<current position>-`, i.e. "resume where you
+          // already are", regardless of where the marker was dropped.
+          // Always recomputing rangeClock from `this.seekingTime` here
+          // (the ISO/non-ISO URL-format distinction in generateRTSPURL()
+          // below is unrelated to this header) fixes it for both
+          // `useIsoTimeFormat` states.
+          //
+          // Second fix, found immediately after the first landed: this used
+          // to keep the trailing `Z` (`new Date(...).toISOString()`-style),
+          // matching the NVR branch below and RFC 2326's `utc-time` grammar
+          // ("...HHMMSS[.frac]Z"). But every OTHER place this codebase
+          // builds a camera-bound clock/URL value for the *camera*'s own
+          // proprietary `samsung-replay-timezone` RTSP extension --
+          // generateRTSPURL()'s own `strStart`/`strEnd` a few hundred lines
+          // up, and speed()'s camera branch -- strips `Z` (bare
+          // `YYYYMMDDTHHMMSS`, no trailing zone marker), and only NVR's
+          // `onvif-replay` extension keeps it. Sending the RFC-style
+          // Z-suffixed form to a camera stopped playback outright on every
+          // seek (reported live, immediately after the Z-suffixed version
+          // shipped) -- camera devices apparently reject/ignore a Range
+          // header in a format their own extension doesn't expect, rather
+          // than degrading gracefully. Stripped to match the rest of the
+          // camera code paths.
+          this.info.media.requestInfo.rangeClock = this.seekingTime.replace(/-/g, '').replace(/:/gi, '').replace(/Z/gi, '').slice(0, 20);
         } else if (this._deviceType === 'nvr') {
           if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
             this.info.media.requestInfo.rangeClock = new Date(this.seekingTime).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);

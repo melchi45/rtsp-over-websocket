@@ -1664,3 +1664,36 @@ Deliberately did **not** make `vite.react.config.ts`'s `process.env.NODE_ENV` de
 hardcoded to `'production'` in both build scripts) — that also gates React's own internal dev-only warning code
 paths, which is a separate concern from TS/JS debuggability and would change React's runtime behavior between the
 two build scripts, not just its readability.
+
+## Camera-device drag-seek landed on the wrong time — double GMT application plus a stale/wrong-format `rangeClock` (three related fixes, found live)
+
+Reported symptom: dragging the playback timeline on a **camera** device seeked to the wrong time (hours off,
+sometimes the wrong calendar day) or didn't move at all/reverted to the current position.
+
+Three real bugs, all in the camera-only code paths (nvr's own GMT handling was never touched and is confirmed
+correct/unchanged throughout):
+
+1. **`generateRTSPURL()`'s camera/`playback` sub-case** (`src/player/elements/RTSPOverWebSocket.ts:4658-4674`) —
+   `strStart` used to add `this.GMT * 3600 * 1000` on top of `this.seekingTime` whenever `this.GMT` was set (true
+   for essentially every camera device — `device.ts` parses the camera's own `TimeZoneIndex` into `player.GMT`
+   right after connecting). But `seekingTime` is already the target wall-clock instant, the same convention this
+   exact block's neighboring `endTime`/`_currentTimestamp` handling already uses with no GMT adjustment of its
+   own — adding GMT again double-counted the offset. Confirmed live: dragging to `16:31:28` under KST (+9)
+   produced a URL start of `20260902013312` (next calendar day) instead of `20260901163128`.
+2. **`seeking()`'s camera branch** (`:5564-5596`) used to only recompute `rangeClock` when `_useIso` was truthy
+   (never set by this app's caller) — so `rangeClock` silently kept whatever stale value `speed()`'s camera
+   branch had just written from the *old* `currentTimestamp`, and every drag-seek sent `Range: clock=<current
+   position>-`, i.e. "resume where you already are," regardless of where the marker was dropped.
+3. **Immediate follow-up to fixing (2)**: the naive fix kept `seekingTime`'s trailing `Z` (RFC 2326 `utc-time`
+   grammar, matching the nvr branch right below it), but real cameras stopped playback outright on every seek
+   once that shipped. Every other camera-bound clock value in this class (`generateRTSPURL()`'s own
+   `strStart`/`strEnd`, `speed()`'s camera branch) strips `Z` — cameras use it for their proprietary
+   `samsung-replay-timezone` RTSP extension, and only nvr's `onvif-replay` extension expects a kept `Z`. Cameras
+   apparently reject/ignore a Range header in a format their own extension doesn't expect rather than degrading
+   gracefully. Fixed by stripping `Z` in `seeking()`'s camera branch too, matching the rest of the camera paths.
+
+Device-type branching for all three was **already structurally in place** before this fix (both
+`generateRTSPURL()` and `seeking()` have always had separate top-level `camera` vs `nvr` branches) — no new
+branching was needed, only correcting what the existing camera branches computed. See
+`docs/player/01-elements-interface-exceptions.md`'s `generateRTSPURL()`/`seeking()` bullets for the full
+line-referenced trace.
