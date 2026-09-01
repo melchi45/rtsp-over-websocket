@@ -898,6 +898,7 @@ export class RtspClient {
   }
 
   private formDigestAuthHeader(uri: string): void {
+    console.log('[RtspClient] formDigestAuthHeader() called -> currentState:', this.currentState, ' has pw:', typeof this.pw === 'string' && this.pw !== '', ' has sunapiClient:', this.sunapiClient !== null && typeof this.sunapiClient !== 'undefined');
     const digestInfo = this.digestGenerator.getDigestInfoInWwwAuthenticate(this.wwwAuthenticate!);
     const data: AuthenticateData & { Nc?: string; Cnonce?: string } = {
       Method: this.currentState.toUpperCase(),
@@ -957,7 +958,10 @@ export class RtspClient {
           this.Authentication = this.digestGenerator.getAuthenticate(data, responseValue as string);
           this.SendUnauthorizedRtspCmd();
         },
-        (errorCode) => this.sunapiErrorResponse(errorCode),
+        (errorCode) => {
+          console.log('[RtspClient] formDigestAuthHeader() -> sunapiClient.get() digest-challenge request failed, errorCode:', errorCode);
+          this.sunapiErrorResponse(errorCode);
+        },
         '',
         true
       );
@@ -1225,6 +1229,7 @@ export class RtspClient {
     }
 
     const rtspResponseMsg = this.parseRtspResponse(stringMessage);
+    console.log('[RtspClient] RtspResponseHandler() -> currentState:', this.currentState, ' ResponseCode:', rtspResponseMsg.ResponseCode, ' unahtuorizedCount:', this.unahtuorizedCount);
     if (rtspResponseMsg.ContentBase) {
       this.ContentBase = rtspResponseMsg.ContentBase;
     }
@@ -1354,6 +1359,7 @@ export class RtspClient {
       });
     }
 
+    console.log('[RtspClient] RtspResponseHandler() -> non-200/401 ResponseCode', rtspResponseMsg.ResponseCode, 'at currentState:', this.currentState, '-> calling clearTransport()');
     if (this.transport !== null) {
       this.clearTransport();
     }
