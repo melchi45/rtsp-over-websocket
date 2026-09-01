@@ -1681,101 +1681,83 @@ export class RTSPOverWebSocket extends HTMLElement {
     return this._playSpeed.value;
   }
   set playSpeed(v: number | string) {
+    this._playSpeed = this.resolvePlaySpeedEntry(v);
+
+    if (this.isplay) {
+      this.speed();
+    }
+  }
+
+  /** Numeric-value -> named-speed-entry lookup, shared by the `playSpeed`
+   *  setter above (a user/app-requested speed, which also re-sends the
+   *  request via `speed()`) and `onRTSPOverWebSocketError()`'s `'0x0000'`
+   *  case (a device-reported *correction* of an already-sent request's
+   *  actual applied Scale, which must NOT re-send -- that would just
+   *  request/response loop). Extracted verbatim from the original inline
+   *  `switch`, legacy truncation quirks included unchanged. */
+  private resolvePlaySpeedEntry(v: number | string): RTSPOverWebSocketPlaySpeedEntry {
     switch (Number(v)) {
       case RTSPOverWebSocketPlaySpeed.speed_0_125x.value:
-        this._playSpeed = { value: 0.12, name: RTSPOverWebSocketPlaySpeed.speed_0_125x.name };
-        break;
+        return { value: 0.12, name: RTSPOverWebSocketPlaySpeed.speed_0_125x.name };
       case RTSPOverWebSocketPlaySpeed.speed_0_25x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_0_25x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_0_25x;
       case RTSPOverWebSocketPlaySpeed.speed_0_50x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_0_50x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_0_50x;
       case RTSPOverWebSocketPlaySpeed.speed_0_75x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_0_75x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_0_75x;
       case RTSPOverWebSocketPlaySpeed.speed_0_0x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_0_0x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_0_0x;
       case RTSPOverWebSocketPlaySpeed.speed_1x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_1x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_1x;
       case RTSPOverWebSocketPlaySpeed.speed_2x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_2x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_2x;
       case RTSPOverWebSocketPlaySpeed.speed_4x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_4x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_4x;
       case RTSPOverWebSocketPlaySpeed.speed_8x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_8x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_8x;
       case RTSPOverWebSocketPlaySpeed.speed_16x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_16x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_16x;
       case RTSPOverWebSocketPlaySpeed.speed_32x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_32x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_32x;
       case RTSPOverWebSocketPlaySpeed.speed_64x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_64x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_64x;
       case RTSPOverWebSocketPlaySpeed.speed_128x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_128x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_128x;
       case RTSPOverWebSocketPlaySpeed.speed_256x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_256x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.speed_256x;
       // Legacy bug preserved: -0.125x's negative counterpart is truncated to
       // -0.12 here (same 0.125 -> 0.12 typo as the positive case above), a
       // real ~4% speed discrepancy from the named "-0.125x" preset.
       case RTSPOverWebSocketPlaySpeed.seek_0_125x.value:
-        this._playSpeed = { value: -0.12, name: RTSPOverWebSocketPlaySpeed.seek_0_125x.name };
-        break;
+        return { value: -0.12, name: RTSPOverWebSocketPlaySpeed.seek_0_125x.name };
       case RTSPOverWebSocketPlaySpeed.seek_0_25x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_0_25x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_0_25x;
       case RTSPOverWebSocketPlaySpeed.seek_0_50x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_0_50x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_0_50x;
       case RTSPOverWebSocketPlaySpeed.seek_0_75x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_0_75x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_0_75x;
       case RTSPOverWebSocketPlaySpeed.seek_0_0x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_0_0x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_0_0x;
       case RTSPOverWebSocketPlaySpeed.seek_1x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_1x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_1x;
       case RTSPOverWebSocketPlaySpeed.seek_2x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_2x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_2x;
       case RTSPOverWebSocketPlaySpeed.seek_4x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_4x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_4x;
       case RTSPOverWebSocketPlaySpeed.seek_8x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_8x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_8x;
       case RTSPOverWebSocketPlaySpeed.seek_16x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_16x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_16x;
       case RTSPOverWebSocketPlaySpeed.seek_32x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_32x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_32x;
       case RTSPOverWebSocketPlaySpeed.seek_64x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_64x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_64x;
       case RTSPOverWebSocketPlaySpeed.seek_128x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_128x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_128x;
       case RTSPOverWebSocketPlaySpeed.seek_256x.value:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.seek_256x;
-        break;
+        return RTSPOverWebSocketPlaySpeed.seek_256x;
       default:
-        this._playSpeed = RTSPOverWebSocketPlaySpeed.speed_1x;
-        break;
-    }
-
-    if (this.isplay) {
-      this.speed();
+        return RTSPOverWebSocketPlaySpeed.speed_1x;
     }
   }
 
@@ -3634,6 +3616,18 @@ export class RTSPOverWebSocket extends HTMLElement {
             (element as HTMLElement).style.display = 'none';
             this.removeChild(element);
           });
+        }
+
+        // A device can clamp/reject a requested Scale and echo back the one
+        // it actually applied instead (e.g. requesting 0.75x on a camera
+        // that only supports whole-number playback speeds, which replies
+        // with `Scale: 1`) -- self-correct from it, WITHOUT going through
+        // the public `playSpeed` setter, which would re-send the request
+        // via speed() and just loop. Reported directly by the user with a
+        // real RTSP transcript.
+        if (typeof error.scale !== 'undefined' && error.scale !== this._playSpeed.value) {
+          this._playSpeed = this.resolvePlaySpeedEntry(error.scale);
+          this.dispatch('changespeed', { speed: this._playSpeed.value });
         }
 
         this.dispatch('statechange', { error: error.errorCode, readyState: this.readyState, message: error.description });
@@ -5899,6 +5893,11 @@ interface RTSPOverWebSocketErrorEventLike {
   place?: string;
   decoderId?: unknown;
   performance?: unknown;
+  // The scale a PLAY-type response actually applied -- see
+  // RtspClientErrorEvent.scale (RtspClient.ts) and this class's own
+  // onRTSPOverWebSocketError() '0x0000' case, which self-corrects
+  // playSpeed from it when present and different from what was requested.
+  scale?: number;
 }
 interface RTSPOverWebSocketResizeEvent {
   elementId: string;

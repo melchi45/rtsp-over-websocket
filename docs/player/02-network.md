@@ -15,6 +15,7 @@ client, with concrete method behavior, wire framing, and RFC citations.*
 | 2026-08-13 | Add `.env` support for the live-device test; fix `describe.skip` collection bug; docs |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-31 | `SunapiManager` now caches digest challenges across `init()` calls (`SunapiClient.seedAuthInfo()`) to cut the redundant OPTIONS-preflight/401-retry round trip most `init()` calls previously paid |
+| 2026-09-01 | `parseRtspResponse()` now parses a PLAY/SEEK/RESUME response's `Scale` header into `RtspResponseData.Scale`, threaded through as `RtspClientErrorEvent.scale` so `RTSPOverWebSocket` can self-correct `playSpeed` when a device clamps/rejects the requested value |
 
 ---
 
@@ -131,7 +132,14 @@ recent history — see `retryWithCredentials()` below).
   `200`, walks header lines for `Public`, `CSeq`, `Content-Type` (dispatching to
   `parseDescribeResponse` if `application/sdp`), `Content-Length`, `Content-Base`, `Session`
   (splitting off a `;timeout=` parameter), `Transport` (extracting the `interleaved=<rtp>-<rtcp>`
-  channel IDs), and `RTP-Info` (semicolon/comma-delimited `url=`/`seq=` pairs). For `401`, instead
+  channel IDs), `RTP-Info` (semicolon/comma-delimited `url=`/`seq=` pairs), and — **new (found
+  live, 2026-09-01)** — `Scale` (`:820-821`, `RtspResponseData.Scale = parseFloat(LineTokens[1])`):
+  a PLAY/SEEK/RESUME response can echo back a *different* Scale than what was requested (a device
+  clamping/rejecting an unsupported value, e.g. a camera that only does whole-number playback
+  speeds), and this is how that gets surfaced at all. `RtspResponseHandler()`'s PLAY/SEEK/RESUME
+  error-dispatch sites thread it through as `RtspClientErrorEvent.scale`; see
+  `docs/player/01-elements-interface-exceptions.md`'s `onRTSPOverWebSocketError()` `0x0000` case
+  for how `RTSPOverWebSocket` self-corrects `playSpeed` from it. For `401`, instead
   collects every `WWW-Authenticate` header line into `WWWAuthenticate: ParsedWwwAuthenticate[]` via
   `parseWWWAuthenticate`. Other status codes get no field parsing beyond the status line.
 - `parseWWWAuthenticate(str)` — regex-extracts `Basic`/`Digest` scheme plus `realm=`, `nonce=`,

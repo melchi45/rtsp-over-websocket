@@ -112,6 +112,12 @@ export interface RtspResponseData {
   RtcpInterlevedID?: number;
   RTPInfoList?: RtpInfoEntry[];
   WWWAuthenticate?: ParsedWwwAuthenticate[];
+  // The scale a PLAY response actually applied -- may differ from what was
+  // requested (a device can clamp/reject an unsupported Scale and echo back
+  // the one it actually used instead). See RtspResponseHandler()'s own use
+  // of this and RTSPOverWebSocket.ts's onRTSPOverWebSocketError() '0x0000'
+  // case, which self-corrects playSpeed from it.
+  Scale?: number;
 }
 
 export interface SdpInfoEntry {
@@ -146,6 +152,9 @@ export interface RtspClientErrorEvent {
   pause?: boolean;
   controlType?: ControlType;
   message?: string;
+  // The scale a PLAY response actually applied, when the response carried a
+  // Scale header -- see RtspResponseData.Scale.
+  scale?: number;
 }
 export type RtspErrorCallback = (info: RtspClientErrorEvent) => void;
 export type RtspTextCallback = (rtspData: string) => void;
@@ -811,6 +820,8 @@ export class RtspClient {
             }
             RtspResponseData.RTPInfoList.push(RtpInfo);
           }
+        } else if (LineTokens[0] === 'Scale') {
+          RtspResponseData.Scale = parseFloat(LineTokens[1]);
         }
       }
     } else if (RtspResponseData.ResponseCode === 401) {
@@ -1619,7 +1630,8 @@ export class RtspClient {
         description: 'RTSP Play Streaming: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
         name: status.getName(),
         place: 'RtspClient.ts:RtspResponseHandler',
-        channelId: this.channelId
+        channelId: this.channelId,
+        scale: rtspResponseMsg.Scale
       });
     } else if (this.currentState === 'Playing' && this.nextState !== 'Teardown') {
       if (this.isPausing) {
@@ -1666,7 +1678,8 @@ export class RtspClient {
             description: 'RTSP Seek Streaming: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
             name: status.getName(),
             place: 'RtspClient.ts:RtspResponseHandler',
-            channelId: this.channelId
+            channelId: this.channelId,
+            scale: rtspResponseMsg.Scale
           });
         }
       }
@@ -1700,7 +1713,8 @@ export class RtspClient {
           description: 'RTSP Resume Streaming: ' + status.getStatusCode() + ', error message: ' + status.getDescription(),
           name: status.getName(),
           place: 'RtspClient.ts:RtspResponseHandler',
-          channelId: this.channelId
+          channelId: this.channelId,
+          scale: rtspResponseMsg.Scale
         });
       } else if (this.nextState === 'Teardown') {
         if (this.transport !== null) {

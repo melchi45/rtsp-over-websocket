@@ -1730,3 +1730,60 @@ latter logging `startTime`/`endTime`/`seekingTime` for a related, separate ongoi
 swallowing it (same swallow-and-continue behavior otherwise — this is what surfaced the `startTime` bug above).
 **These are intentionally left in for an active live-device debugging session** — don't assume they're
 permanent/intentional production logging if found later; strip them once the investigation concludes.
+
+## `#speed` never reflected a device-corrected RTSP `Scale` (new feature, planned via EnterPlanMode)
+
+Reported directly by the user with a real RTSP transcript, 2026-09-01: requesting `0.75x` playback
+speed sent `Scale: 0.75` in the `PLAY` request, but the device's `200 OK` response echoed back
+`Scale: 1` — it had clamped/rejected the requested speed and applied a different one instead. Nothing
+in this codebase parsed a `Scale` header off an incoming RTSP response at all (grep-confirmed: `Scale`
+only ever appeared in *outgoing* request-building code across `RtspClient.ts`) — the app's `#speed`
+dropdown and this element's own `playSpeed` getter both kept reporting the requested value forever,
+a real, silent desync from what the device was actually doing.
+
+Fix, spanning both the RTSP response layer and the element's own speed state:
+- `RtspClient.ts`'s `parseRtspResponse()` gained `Scale` parsing (`RtspResponseData.Scale`), same
+  pattern as the neighboring `Session`/`Transport`/`RTP-Info` branches. Threaded through
+  `RtspClientErrorEvent.scale` into the three `RtspResponseHandler()` branches that represent a
+  genuine `PLAY`-method response ("RTSP Play Streaming" / "RTSP Seek Streaming", which already
+  covered seek/speed/forward/backward uniformly / "RTSP Resume Streaming") — deliberately NOT the
+  `PAUSE`-method branch.
+- `RTSPOverWebSocket.ts`: the numeric-value -> named-speed-entry `switch` previously inline in
+  `set playSpeed(v)` was extracted into `private resolvePlaySpeedEntry(v)` (both documented legacy
+  truncation quirks — the `-0.125x`/`0.125x` -> `0.12` typo — preserved verbatim, not "fixed" while
+  touching this code). `onRTSPOverWebSocketError()`'s `'0x0000'` case now calls it directly to
+  self-correct `_playSpeed` whenever `error.scale` is present and differs from the current value —
+  deliberately bypassing the public `playSpeed` setter, which calls `speed()` and would re-send a
+  request for every device response, looping forever. Dispatches a new `changespeed` custom element
+  event (`{ speed: this._playSpeed.value }`), matching the existing `change<Property>` pattern this
+  class already uses for `changetimezone`/`changeport`/etc.
+- `wisenet-camera-discovery` (the consumer, not this repo) adds the listener side —
+  `onchangespeed()` in its `playback.ts`, syncing `#speed`'s displayed value.
+
+Planned via `EnterPlanMode` before implementation (the user explicitly asked for a plan first) —
+research covered the full response-parsing/self-correction/event-dispatch chain across both repos
+before any code was written; see `wisenet-camera-discovery`'s own `MEMORY.md` for the consumer side
+and `docs/window-ui/SRS.md` FR-7.5 v2.23 there.
+
+## Device-clamped playback speed now self-corrects `playSpeed` instead of drifting silently (real feature/bug fix, found live)
+
+Reported live via a real RTSP transcript: requesting an unsupported `Scale` (e.g. `0.75x` on a camera that only
+supports whole-number playback speeds) got a response where the device silently applied a different Scale than
+requested, but `RTSPOverWebSocket.playSpeed` kept reporting the originally-requested value — the element's own
+state drifted out of sync with what the device was actually doing.
+
+Fix, split across two files:
+- `RtspClient.ts`'s `parseRtspResponse()` now parses a PLAY/SEEK/RESUME response's `Scale:` header into
+  `RtspResponseData.Scale` (`:820-821`), threaded through as `RtspClientErrorEvent.scale` on the PLAY/SEEK/RESUME
+  error-dispatch sites in `RtspResponseHandler()`.
+- `RTSPOverWebSocket.onRTSPOverWebSocketError()`'s `0x0000` case self-corrects `_playSpeed` from `error.scale`
+  when present and different from the current value — via a new private `resolvePlaySpeedEntry(v)` (the
+  numeric-value → named-speed-entry lookup extracted verbatim from the `playSpeed` setter's old inline `switch`,
+  legacy truncation quirks unchanged), assigned **directly to `_playSpeed`**, not through the public `playSpeed`
+  setter. This distinction is load-bearing: the public setter also calls `speed()` to send a new request when
+  playing, which here would just re-request the same already-rejected `Scale` the device just corrected away
+  from, looping forever. Dispatches a `'changespeed'` event after the direct correction so callers still observe
+  it.
+
+See `docs/player/01-elements-interface-exceptions.md`'s `onRTSPOverWebSocketError()` bullet and
+`docs/player/02-network.md`'s `parseRtspResponse()` bullet for the full line-referenced trace.

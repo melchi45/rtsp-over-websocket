@@ -466,7 +466,22 @@ their exact location rather than fixed silently (file header comment,
   playback sessions (`0x0005`/`0x0006`/`0x0008`/`0x0100`/`0x0203`/`0x0205`/`0x0209`/`0x0210`/
   `0x030A` — `stop()` then `play()` again if `_retryFlag` is set), network-quality state
   (`0x1005`, feeds the statistics panel's network dot + variance chart), and decoder-performance
-  events (`0x090B`). Everything else dispatches a generic `'error'` event.
+  events (`0x090B`). Everything else dispatches a generic `'error'` event. **New (found live,
+  2026-09-01, real RTSP transcript reported by the user)**: the `0x0000` case now self-corrects
+  `_playSpeed` when `error.scale` is present and differs from the currently-held value — a device
+  can clamp/reject a requested `Scale` (e.g. a camera that only supports whole-number playback
+  speeds rejecting `0.75x`) and echo back the one it actually applied instead of what was
+  requested. The correction goes through the new private `resolvePlaySpeedEntry(v)` (the same
+  numeric-value → named-speed-entry lookup the public `playSpeed` setter itself now delegates to,
+  extracted verbatim from its old inline `switch`, legacy truncation quirks — the `0.125x`/
+  `-0.125x` → `0.12`/`-0.12` typo — included unchanged) assigned **directly to `_playSpeed`**, not
+  through the `playSpeed` setter, and dispatches a `'changespeed'` event afterward. This
+  distinction matters: the public setter also calls `speed()` to *send* a new request when playing,
+  which here would just re-request the same already-rejected `Scale` and loop with the device's
+  correction forever. `error.scale` is threaded from `RtspClient.ts`'s new `RtspResponseData.Scale`
+  (parses a PLAY/SEEK/RESUME response's own `Scale:` header, `RtspClient.ts:820-821`) through
+  `RtspClientErrorEvent.scale` on the PLAY/SEEK/RESUME error-dispatch sites in
+  `RtspResponseHandler()`.
 - `onRTSPOverWebSocketVideoMode(event)` (`:3386-3446`) — swaps `this.video` between `<canvas>`
   and `<video>` in the live DOM when `MediaRouter` decides the rendering mode should change (e.g. a
   live Renderer Type switch). Rebuilds the new element's inline style from scratch
