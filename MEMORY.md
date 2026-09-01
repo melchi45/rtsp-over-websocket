@@ -1617,3 +1617,23 @@ Fixed by adding `transform-origin: 0 0;` to the wrapper's `cssText` in `ensureRT
 makes the DOM match the assumption `scrolled()`'s math already made. See
 `docs/player/01-elements-interface-exceptions.md`'s "Geometry / interaction helpers" section for the full
 derivation.
+
+## `statistics` toggle-off required two calls to actually hide the panel — inverted boolean logic in `attributeChangedCallback` (fixed)
+
+Reported symptom: turning `statistics` off (via the `statistics` property setter, or by removing/setting the
+attribute) didn't hide the panel on the first try — it took toggling off twice before it actually disappeared.
+
+Root cause: `attributeChangedCallback`'s `'statistics'` case (`src/player/elements/RTSPOverWebSocket.ts:542-552`)
+computed `this._statistics = newValue !== 'false'` — every sibling boolean attribute (`controls`, `secure`/
+`https`, `network`, `usesubstream`) instead uses `newValue === 'true' || newValue === ''`, which correctly treats
+a *removed* attribute (`newValue === null`) as off. `statistics`'s inverted check treated attribute-absent as
+*on*. `statisticsDiv()`'s off-path (`:2865-2877`) tears down the built DOM and then calls
+`this.removeAttribute('statistics')` — which synchronously re-fires `attributeChangedCallback` with
+`newValue = null`. With the old logic that flipped `_statistics` back to `true` and called `statisticsDiv()`
+again, which rebuilt the very panel it had just removed (since `statisticsElement` was already null by that
+point, the "already built" early-return didn't apply). So a single toggle-off left the panel rebuilt and visible;
+only a second call actually hid it, because by then the attribute was already absent, so `removeAttribute()` was
+a no-op and didn't re-fire the callback a second time.
+
+Fixed by changing the case to `newValue === 'true' || newValue === ''`, matching the sibling convention. See
+`docs/player/01-elements-interface-exceptions.md`'s `attributeChangedCallback` bullet for the full trace.

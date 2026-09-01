@@ -540,7 +540,15 @@ export class RTSPOverWebSocket extends HTMLElement {
         break;
       }
       case 'statistics': {
-        this._statistics = newValue !== 'false';
+        // Must match the sibling boolean-attribute convention (`controls`/`secure`/`network`/
+        // `usesubstream`: `newValue === 'true' || newValue === ''`), not treat attribute-absent
+        // (`newValue === null` on removal) as "on". `statisticsDiv()`'s off-path calls
+        // `this.removeAttribute('statistics')` after tearing down the panel; with the old
+        // `newValue !== 'false'` check that removal itself re-fired this case with `newValue =
+        // null`, flipped `_statistics` back to `true`, and rebuilt the panel it had just torn
+        // down — so a single toggle-off never actually hid it, only a second one did (by then the
+        // attribute was already absent, so `removeAttribute()` was a no-op and didn't re-fire).
+        this._statistics = newValue === 'true' || newValue === '';
         this.statisticsDiv();
         break;
       }

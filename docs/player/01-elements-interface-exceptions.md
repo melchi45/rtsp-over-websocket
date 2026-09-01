@@ -16,6 +16,7 @@
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-26 | Add `RTSPOverWebSocket.transportFactory` get/set — exposes `StreamPlayer`/`RtspClient`'s existing `transportFactory` constructor param as a settable element property |
 | 2026-09-01 | Fix mouse-wheel zoom anchoring on the wrong point: `ensureRTSPOverWebSocketWrapper()` now sets `transform-origin: 0 0` on the wrapper div |
+| 2026-09-01 | Fix `statistics` attribute requiring two toggles to hide the panel: `attributeChangedCallback`'s `'statistics'` case now treats a removed attribute as off, matching the sibling boolean-attribute convention |
 
 ---
 
@@ -129,6 +130,17 @@ their exact location rather than fixed silently (file header comment,
   is guarded by `_reflectingSrc` (see `applySrcAttribute()` below) so `generateRTSPURL()`'s own
   reflection write doesn't loop back into itself. Per a legacy-preserved comment (`:668-670`),
   `attributeChangedCallback` never re-renders anything itself — only `connectedCallback` does.
+  **Boolean-attribute cases must treat `newValue === null` (attribute absent/removed) as off**,
+  matching `'controls'`/`'secure'`/`'https'`/`'network'`/`'usesubstream'`'s shared
+  `newValue === 'true' || newValue === ''` shape — `'statistics'` (`:542-552`) used to instead
+  compute `newValue !== 'false'`, which reads a removed attribute as *on*. Since
+  `statisticsDiv()`'s off-path (`:2865-2877`) tears down the panel and then calls
+  `this.removeAttribute('statistics')`, that removal synchronously re-fired this callback with
+  `newValue = null`, flipping `_statistics` back to `true` and rebuilding the very panel just torn
+  down — so one `statistics = false` (or one attribute toggle-off) never actually hid it; only a
+  second call did, since by then the attribute was already absent and `removeAttribute()` was a
+  no-op that didn't re-fire the callback. Fixed (2026-09-01) by aligning `'statistics'` with the
+  sibling pattern; if this file's code is ever refactored, don't reintroduce `!== 'false'` here.
 - `connectedCallback()` (`:673-850`) — the one-time DOM-attach setup: sets `position: relative`/
   `display: block` if unset (so absolutely-positioned overlay panels anchor to this element, not
   the viewport), re-reads every attribute already present at attach time into the matching field/
