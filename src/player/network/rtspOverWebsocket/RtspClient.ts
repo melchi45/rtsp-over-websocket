@@ -1708,10 +1708,12 @@ export class RtspClient {
         }
       }
     } else if (this.currentState === 'Playing' && this.nextState === 'Teardown') {
+      console.log('[RtspClient] RtspResponseHandler: TEARDOWN response matched (Playing+Teardown) -> clearTransport()');
       if (this.transport !== null) {
         this.clearTransport();
       }
     } else {
+      console.log('[RtspClient] RtspResponseHandler: fell into generic else branch -> currentState:', this.currentState, ' nextState:', this.nextState);
       if (this.transport !== null) {
         this.clearTransport();
       }
@@ -1739,6 +1741,7 @@ export class RtspClient {
   }
 
   connectionCbFunc(type: TransportConnectionStatus, statusObject: unknown): void {
+    console.log('[RtspClient] connectionCbFunc() called -> type:', type, ' currentState:', this.currentState, ' has responseDisconnectCallback:', this.responseDisconnectCallback !== null);
     try {
       const status = statusObject as { getStatusCode(): number | string; getName(): string; getDescription(): string; getObject?: () => unknown };
       if (type === 'open') {
@@ -1874,6 +1877,7 @@ export class RtspClient {
       }
 
       if (typeof this.responseDisconnectCallback !== 'undefined' && this.responseDisconnectCallback !== null) {
+        console.log('[RtspClient] connectionCbFunc() -> firing responseDisconnectCallback');
         const data: RtspDisconnectResult = {
           current: this.currentState,
           next: this.nextState,
@@ -1882,9 +1886,11 @@ export class RtspClient {
         };
         this.responseDisconnectCallback(data);
         this.responseDisconnectCallback = null;
+      } else {
+        console.log('[RtspClient] connectionCbFunc() -> no responseDisconnectCallback to fire');
       }
-    } catch {
-      // legacy: console.error(...) only, no further effect.
+    } catch (error) {
+      console.error('[RtspClient] connectionCbFunc() threw:', error);
     }
   }
 
@@ -1969,6 +1975,7 @@ export class RtspClient {
   }
 
   Disconnect(response?: RtspDisconnectCallback): void {
+    console.log('[RtspClient] Disconnect() called -> currentState:', this.currentState, ' transport readyState:', this.transport?.readyState);
     this.responseDisconnectCallback = response ?? null;
     if (typeof this.transport !== 'undefined' && this.transport !== null && this.transport.readyState === Transport.OPEN) {
       if (this.currentState === 'Playing' || this.currentState === 'Pause' || this.currentState === 'Setup') {
@@ -2005,6 +2012,7 @@ export class RtspClient {
   }
 
   clearTransport(): void {
+    console.log('[RtspClient] clearTransport() called -> currentState:', this.currentState, ' transport readyState:', this.transport?.readyState);
     if (typeof this.transport !== 'undefined' && this.transport !== null && this.transport.readyState === Transport.OPEN) {
       if (this.currentState === 'Playing') {
         this._request('TEARDOWN', null, null);

@@ -1697,3 +1697,36 @@ Device-type branching for all three was **already structurally in place** before
 branching was needed, only correcting what the existing camera branches computed. See
 `docs/player/01-elements-interface-exceptions.md`'s `generateRTSPURL()`/`seeking()` bullets for the full
 line-referenced trace.
+
+## Stop button didn't actually stop `<video>` playback — `startTime` setter rejected `null`, silently aborting the disconnect callback chain (fixed, plus temporary debug instrumentation)
+
+Reported symptom (live-device investigation, 2026-09-01): clicking Stop during playback sent a real TEARDOWN
+and got a real RTSP response, but the local `<video>` element kept looping whatever was already buffered —
+`VideoTagPlayer.close()` never actually ran.
+
+Root cause chain, traced with `console.log`s added across the whole teardown path:
+1. The demo page's `videoControl.ts` `onstatechange()` `STOPPED` branch calls `player.startTime = null` to
+   reset a finished playback's stale range.
+2. `RTSPOverWebSocket`'s `startTime` setter (`src/player/elements/RTSPOverWebSocket.ts:1428-1470`) used to
+   reject `null` unconditionally (`typeof v !== 'string'` throws for `null`) — unlike `endTime`'s setter right
+   below it, which has always accepted `null` for exactly this reset case.
+3. That setter call happens synchronously inside a `dispatchEvent` chain invoked from
+   `RtspClient.connectionCbFunc()`. The thrown `RTSPOverWebSocketError` unwound back up through
+   `connectionCbFunc()`, previously caught by a silent `catch { }` (legacy: swallowed after a
+   `console.error`-only log) — so it aborted the rest of `connectionCbFunc()` with no visible trace, including
+   the part that fires `responseDisconnectCallback`.
+4. `StreamPlayer.close()`'s `Disconnect()` callback depends on `responseDisconnectCallback` firing to call
+   `mediaRouter.terminate()` — which is what actually calls `VideoTagPlayer.close()` (pauses the `<video>` tag,
+   tears down MSE). Since that never fired, the `<video>` element was never told to stop.
+
+Fixed by widening `startTime`'s type to `string | null | undefined` and allowing `null` through both the type
+check and the ISO-format regex check, matching `endTime`'s existing behavior.
+
+**Temporary diagnostic `console.log`s were added and left in place** (not yet stripped, as of this writing) at:
+`StreamPlayer.close()`, `RtspClient.ts`'s `RtspResponseHandler`/`connectionCbFunc()`/`Disconnect()`/
+`clearTransport()`, `VideoTagPlayer.close()`, and `generateRTSPURL()`'s camera/nvr `playback` branches (the
+latter logging `startTime`/`endTime`/`seekingTime` for a related, separate ongoing playback-seek investigation).
+`connectionCbFunc()`'s catch block also now logs the caught error via `console.error` instead of silently
+swallowing it (same swallow-and-continue behavior otherwise — this is what surfaced the `startTime` bug above).
+**These are intentionally left in for an active live-device debugging session** — don't assume they're
+permanent/intentional production logging if found later; strip them once the investigation concludes.

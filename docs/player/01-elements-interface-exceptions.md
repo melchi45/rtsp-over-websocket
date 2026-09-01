@@ -18,6 +18,7 @@
 | 2026-09-01 | Fix mouse-wheel zoom anchoring on the wrong point: `ensureRTSPOverWebSocketWrapper()` now sets `transform-origin: 0 0` on the wrapper div |
 | 2026-09-01 | Fix `statistics` attribute requiring two toggles to hide the panel: `attributeChangedCallback`'s `'statistics'` case now treats a removed attribute as off, matching the sibling boolean-attribute convention |
 | 2026-09-01 | Fix camera-device drag-seek sending the wrong time: `generateRTSPURL()` no longer double-applies `GMT` to `seekingTime`, and `seeking()`'s camera branch now always recomputes `rangeClock` from `seekingTime` (was stuck on stale `_useIso`-gated logic) with the trailing `Z` stripped to match the camera's `samsung-replay-timezone` extension |
+| 2026-09-01 | Fix Stop button not actually stopping `<video>` playback: `startTime` setter now accepts `null` (matching `endTime`), which was throwing mid-teardown and aborting the disconnect callback chain before `VideoTagPlayer.close()` ran; added temporary diagnostic `console.log`s across the teardown chain and `generateRTSPURL()`'s playback branches for an ongoing investigation |
 
 ---
 
@@ -426,6 +427,34 @@ their exact location rather than fixed silently (file header comment,
   implementation (`SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE = 0x0403`,
   `WRONG_CREDENTIALS_ERROR_CODE = 0x0206`, wired to `retryAuthentication()` — see commits
   `1338ef7`/`2931a9d`/`002138f`).
+
+**Stop button not actually stopping the `<video>` element (real bug fix, found live, 2026-09-01)**
+
+- `startTime` setter (`:1428-1470`) used to reject `null` unconditionally (`typeof v !== 'string'`
+  threw for any non-string, `null` included) — unlike `endTime`'s setter right below it, which has
+  always accepted `null` for exactly this "reset after stop" use case. The demo page's
+  `videoControl.ts` `onstatechange()` `STOPPED` branch calls `player.startTime = null` to clear a
+  finished playback's stale range, and that setter call happens synchronously inside a
+  `dispatchEvent` chain invoked from `RtspClient.connectionCbFunc()`. The thrown
+  `RTSPOverWebSocketError` unwound back up through `connectionCbFunc()`, aborting it **before** it
+  ever reached firing `responseDisconnectCallback` — which is what `StreamPlayer.close()`'s
+  `Disconnect()` callback depends on to call `mediaRouter.terminate()`
+  (`VideoTagPlayer.close()`, which actually pauses the `<video>` tag and tears down MSE). Net
+  effect: clicking Stop sent a real TEARDOWN and got a real RTSP response, but the local `<video>`
+  element was never told to stop, so it kept looping whatever was already buffered. Fixed by
+  widening `startTime`'s type to `string | null | undefined` and allowing `null` through both the
+  type check and the ISO-format regex check, matching `endTime`.
+- Found via a live console trace added across the teardown call chain — `StreamPlayer.close()`,
+  `RtspClient.ts`'s `RtspResponseHandler`/`connectionCbFunc()`/`Disconnect()`/`clearTransport()`,
+  and `VideoTagPlayer.close()` — plus `connectionCbFunc()`'s previously-silent `catch { }` (legacy:
+  `console.error(...)` only) now logs the caught error via `console.error`, which is what
+  surfaced the `startTime` setter's thrown error in the first place. **These `console.log`
+  statements are temporary diagnostic instrumentation for this investigation, not permanent
+  logging** — expect them to be stripped in a follow-up once the underlying issue chain is fully
+  confirmed fixed; don't treat their presence as intentional production behavior if found later.
+  `generateRTSPURL()`'s camera/nvr `playback` branches (`:4664`, `:4809-4811`) similarly gained a
+  temporary `console.log` of `startTime`/`endTime`/`seekingTime` for a related, still-ongoing
+  playback-seek time investigation — same caveat applies.
 
 **Callback handlers** (bound once in the constructor into `info.callback`; invoked by
 `StreamPlayer`/`MediaRouter`/`RtspClient` — never called directly by application code)

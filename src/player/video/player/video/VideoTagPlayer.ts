@@ -2062,6 +2062,7 @@ export class VideoTagPlayer extends VideoPlayer {
   override stop(): void {}
 
   override close(): void {
+    console.log('[VideoTagPlayer] close() called');
     this.videoPause();
 
     try {
@@ -2130,8 +2131,9 @@ export class VideoTagPlayer extends VideoPlayer {
         this.videoElement.style.background = '';
         window.URL.revokeObjectURL(this.videoElement.src);
       }
-    } catch {
-      // legacy: videotag_log.error(...) only, no further effect.
+      console.log('[VideoTagPlayer] close() finished cleanup successfully');
+    } catch (error) {
+      console.error('[VideoTagPlayer] close() cleanup threw:', error);
     }
   }
 

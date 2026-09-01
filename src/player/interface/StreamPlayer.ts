@@ -520,11 +520,14 @@ export class StreamPlayer {
   }
 
   private close(info: StreamPlayerInfo | null, response: (event: unknown) => void): void {
+    console.log('[StreamPlayer] close() called');
     if (this.isValidBackupCheck === true) {
       this.mediaRouter.sendCommandData('backup', { command: 'stop' });
     }
     this.rtspClient.Disconnect((event) => {
+      console.log('[StreamPlayer] close() -> rtspClient.Disconnect callback fired, calling mediaRouter.terminate()');
       this.mediaRouter.terminate(() => {
+        console.log('[StreamPlayer] close() -> mediaRouter.terminate() finished');
         response(event);
       });
     });

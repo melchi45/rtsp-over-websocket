@@ -162,7 +162,7 @@ export class RTSPOverWebSocket extends HTMLElement {
   // ---- fields with no constructor initializer in legacy (first assigned by
   // their own property setter or DOM-builder method; typed here as optional
   // to match that lazy-initialization) ----
-  private _startTime?: string;
+  private _startTime?: string | null;
   private _endTime?: string | null;
   private _seekingTime?: string | null;
   private _overlappedId?: string | null;
@@ -1428,11 +1428,28 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
-  get startTime(): string | undefined {
+  get startTime(): string | null | undefined {
     return this._startTime;
   }
-  set startTime(v: string) {
-    if (typeof v !== 'string') {
+  // Real bug fix (found live): unlike endTime right below (which has always
+  // accepted `null`, for exactly this "reset after stop" use case), this
+  // setter never allowed `null` at all -- `typeof null !== 'string'` threw
+  // unconditionally. videoControl.ts's onstatechange() STOPPED branch
+  // (`player.startTime = null`, resetting a finished playback's stale
+  // range) hit this on every stop, and since that setter call happens
+  // synchronously inside a dispatchEvent chain invoked from
+  // connectionCbFunc(), the thrown error unwound all the way back up
+  // through it -- aborting connectionCbFunc() before it ever reached its
+  // own responseDisconnectCallback firing, which is what calls
+  // StreamPlayer.close()'s Disconnect callback, which is what calls
+  // mediaRouter.terminate() (VideoTagPlayer.close(), which actually pauses
+  // the <video> tag and clears MSE). Net effect: clicking Stop sent a real
+  // TEARDOWN and got a real response, but the local <video> element was
+  // never told to stop, so it kept looping whatever was left in its
+  // buffered range. Found via a console trace the user added at
+  // connectionCbFunc()'s own catch block.
+  set startTime(v: string | null) {
+    if (typeof v !== 'string' && v !== null) {
       throw new RTSPOverWebSocketError({
         channelId: this.channel,
         elementId: this.getAttribute('id') ?? undefined,
@@ -1442,7 +1459,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       });
     }
 
-    if (!/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/.test(v) && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/.test(v)) {
+    if (!/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/.test(v as string) && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/.test(v as string) && v !== null) {
       throw new RTSPOverWebSocketError({
         channelId: this.channel,
         elementId: this.getAttribute('id') ?? undefined,
@@ -4647,6 +4664,7 @@ export class RTSPOverWebSocket extends HTMLElement {
           strRtspURL += '/media.smp';
         }
       } else if (this.info.media.type === 'playback') {
+        console.log('[generateRTSPURL] camera playback times:', { startTime: this.startTime, endTime: this.endTime, seekingTime: this.seekingTime });
         strRtspURL += playType + '/';
 
         if (this._useIso && this._useIso !== null) {
@@ -4790,6 +4808,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
 
       if (this.info.media.type.toLowerCase() === 'playback' || this.info.media.type.toLowerCase() === 'backup') {
+        if (this.info.media.type.toLowerCase() === 'playback') {
+          console.log('[generateRTSPURL] nvr playback times:', { startTime: this.startTime, endTime: this.endTime, seekingTime: this.seekingTime });
+        }
         if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
           if (this.startTime !== null || this.endTime !== null || this.overlappedId !== null) {
             const timezone = this.GMT * 3600 * 1000;
