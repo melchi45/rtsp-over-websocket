@@ -15,6 +15,7 @@
 | 2026-08-13 | Add `.env` support for the live-device test; fix `describe.skip` collection bug; docs |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-26 | Add `RTSPOverWebSocket.transportFactory` get/set — exposes `StreamPlayer`/`RtspClient`'s existing `transportFactory` constructor param as a settable element property |
+| 2026-09-01 | Fix mouse-wheel zoom anchoring on the wrong point: `ensureRTSPOverWebSocketWrapper()` now sets `transform-origin: 0 0` on the wrapper div |
 
 ---
 
@@ -471,7 +472,15 @@ tags to avoid injecting the same rule twice.
 video-content pixel coordinates, accounting for aspect-ratio letterboxing via `fitAxis()`/
 `gcd()`/`ratio()`), `handleClick`/`handleDoubleClick`/`handleMouseMove`/`handleMouseWheel`
 (`:982-1089`, double-click triggers the 10-second-increment rewind/forward gesture in playback
-mode; mouse wheel drives digital-zoom `scrolled()`/`update()` in live/playback mode),
+mode; mouse wheel drives cursor-anchored zoom via `scrolled()`/`update()` in live/playback mode —
+`scrolled()` (`:1071-1106`) computes `zoom_target` (the video-content point under the cursor,
+`(zoom_point - pos) / scale`) then re-derives `pos` so that same content point stays under the
+cursor at the new `scale`; `update()` (`:1108-1112`) applies `pos`/`scale` to
+`rtspOverWebSocketWrapperElement` as `transform: translate(...) scale(...)`. This math assumes the
+element scales from its top-left corner, so `ensureRTSPOverWebSocketWrapper()` (`:2337-2345`) sets
+`transform-origin: 0 0` on that div explicitly — without it, CSS's default `50% 50%` origin makes
+`scale()` pivot around the element's center instead, and the zoom visibly anchors near the video
+center rather than the cursor regardless of what `scrolled()` computed for `pos`),
 `toggleFullScreen(elem)`/`exitHandler()` (`:3175-3270`, cross-vendor fullscreen API shims).
 
 ### Call Stack

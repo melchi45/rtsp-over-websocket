@@ -1598,3 +1598,22 @@ same cached `nc` and independently increment it, potentially sending the same `n
 a narrower variant of the concurrent-`401`-race bug documented just above. Not fixed here since it requires the
 *caller* not to fire overlapping `init()`s in the first place (which `wisenet-camera-discovery` already has a
 documented, not-yet-ported-here guard for); worth revisiting if a consumer without that guard hits it.
+
+## Mouse-wheel zoom anchored on the wrong point — missing `transform-origin: 0 0` (fixed)
+
+Reported symptom: scrolling over the video anchors zoom near the video's center instead of the mouse cursor,
+even though `RTSPOverWebSocket.scrolled()` (`src/player/elements/RTSPOverWebSocket.ts:1071-1106`) explicitly
+computes `zoom_target`/`pos` to keep the content point under the cursor fixed across a zoom step.
+
+Root cause: that math is only correct if the CSS `transform: translate(...) scale(...)` applied in `update()`
+(`:1108-1112`) scales the wrapper element from its top-left corner. `ensureRTSPOverWebSocketWrapper()`
+(`:2337-2345`) creates that wrapper `<div>` without ever setting `transform-origin`, so it kept CSS's default
+`50% 50%` (center) origin. With a center origin, the actual rendered transform is
+`pos + scale*point + (1-scale)*center` — an extra `(1-scale)*center` offset `scrolled()` never accounted for —
+so the zoom visibly pivots toward/away from the element's center rather than the cursor, worse the further the
+cursor is from center.
+
+Fixed by adding `transform-origin: 0 0;` to the wrapper's `cssText` in `ensureRTSPOverWebSocketWrapper()`, which
+makes the DOM match the assumption `scrolled()`'s math already made. See
+`docs/player/01-elements-interface-exceptions.md`'s "Geometry / interaction helpers" section for the full
+derivation.

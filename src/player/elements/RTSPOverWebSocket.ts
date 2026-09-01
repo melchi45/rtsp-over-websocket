@@ -2338,7 +2338,10 @@ export class RTSPOverWebSocket extends HTMLElement {
     if (this.rtspOverWebSocketWrapperElement === undefined || this.rtspOverWebSocketWrapperElement === null) {
       this.rtspOverWebSocketWrapperElement = document.createElement('div');
       this.rtspOverWebSocketWrapperElement.id = 'rtsp-over-websocket-wrapper-' + this.id;
-      this.rtspOverWebSocketWrapperElement.style.cssText = 'min-width: auto; width: 100%; height: 100%; display: block; margin-left: auto; margin-right: auto;';
+      // transform-origin must stay 0 0: scrolled()'s mouse-anchored zoom math
+      // (:1090-1097) computes translate/scale assuming the element scales
+      // from its top-left corner, not CSS's default 50% 50% center.
+      this.rtspOverWebSocketWrapperElement.style.cssText = 'min-width: auto; width: 100%; height: 100%; display: block; margin-left: auto; margin-right: auto; transform-origin: 0 0;';
       this.appendChild(this.rtspOverWebSocketWrapperElement);
     }
     return this.rtspOverWebSocketWrapperElement;
