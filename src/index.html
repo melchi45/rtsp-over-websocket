@@ -1039,10 +1039,12 @@
             expect(el.info.device.channelId).toBe(2);
           });
 
-          it('parses gmt "null" string to a real null (not the literal string)', function () {
+          it('parses gmt "null" string to the default (0), not null', function () {
+            // GMT is unconditionally defaulted to 0 now (see MEMORY.md) --
+            // a cleared/'null' attribute normalizes back to 0, not null.
             var el = createPlayer();
             el.setAttribute('gmt', 'null');
-            expect(el.GMT).toBeNull();
+            expect(el.GMT).toBe(0);
           });
 
           it('throws for an invalid bestshotfilter-independent profile_number', function () {
@@ -1106,20 +1108,26 @@
             }).toThrow(RTSPOverWebSocketError);
           });
 
-          it('accepts null and clears the timezone', function () {
+          it('accepts null and normalizes it to the default (0), not null', function () {
+            // GMT is unconditionally defaulted to 0 now (see MEMORY.md) --
+            // an explicit reset normalizes back to 0, not null.
             var el = createPlayer();
             el.GMT = null;
-            expect(el.GMT).toBeNull();
+            expect(el.GMT).toBe(0);
           });
         });
 
         describe('bug preservation: seekingTime operator-precedence (dead ISO validation)', function () {
-          it('accepts a non-ISO string without throwing because of `!playType === INSTANTPLAYBACK`', function () {
+          it('accepts a non-ISO string, but normalizeTimeInputToUtcIso() still rejects it as unparseable', function () {
+            // The operator-precedence bug still means the format-validation
+            // regex above never runs (preserved, see MEMORY.md) -- but
+            // seekingTime now unconditionally normalizes to UTC at the
+            // setter, and 'not-an-iso-date' + 'Z' isn't a parseable Date,
+            // so it throws there instead of echoing back verbatim.
             var el = createPlayer();
             expect(function () {
               el.seekingTime = 'not-an-iso-date';
-            }).not.toThrow();
-            expect(el.seekingTime).toBe('not-an-iso-date');
+            }).toThrow(RTSPOverWebSocketError);
           });
 
           it('still throws for a genuinely non-string value (the type check above the precedence bug)', function () {

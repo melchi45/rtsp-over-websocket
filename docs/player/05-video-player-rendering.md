@@ -3,7 +3,7 @@
 *Per-class reference for the rendering hierarchy that turns a decoded (or, for MJPEG, still-encoded JPEG) video
 frame into visible pixels: the canvas/WebGL pipeline and the `<video>`-tag/MSE pipeline.*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim
+**Version:** 1.2.0 · **Author:** Youngho Kim
 
 **History**
 
@@ -15,6 +15,7 @@ frame into visible pixels: the canvas/WebGL pipeline and the `<video>`-tag/MSE p
 | 2026-08-11 | Guard `VideoTagPlayer.createAudioSample()` against undefined `frameData` |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-26 | Cross-link the new box-level MP4 container generation doc (file 09) |
+| 2026-09-02 | Fix `StepBufferList.setBufferingLength()` never guarding against a `NaN` input — reported live as `#forward`/`#backward` staying disabled forever with no crash/error. A stream whose SDP has no optional `a=framerate:` line (`RtspClient.ts`) leaves `videoInfo.framerate` `undefined`, so `push()`'s `videoInfo.framerate * 4` auto-tune passed `NaN` straight through both clamp checks (neither `> MAX` nor `< MIN` ever matches `NaN`), leaving `bufferingLength` permanently `NaN` and `push()` permanently unable to return `false` ("buffer full") — the exact edge case this file's own code comment had already flagged as theoretically possible but never actually guarded. Fixed by falling back to `DEFAULT_BUFFERING_LENGTH` for any non-finite `length` before clamping. See MEMORY.md. |
 
 ---
 
@@ -215,6 +216,17 @@ MP4 directly and feeds it to a native `<video>` element via Media Source Extensi
     `setFrameRate`, `setDecoderIndex`, `useDropPacket`, `playMode`.
   - `onVideoData(playMode, streamData, videoInfo)` (`:335-390`, overrides `VideoPlayer`) — the
     per-frame entry point from `MediaRouter`/`PlaybackBufferManager`. Calls `checkPlayer`, then
+    tags `streamData.timeStamp.mode = this.playmode` (`'live'`/`'playback'`, already lowercased by
+    `MediaRouter.selectVideoPlayer()`'s `player.playmode = playMode.toString().toLowerCase()`)
+    before anything else — real bug fix, found live: `VideoTagPlayer` has always tagged its own
+    per-sample `timeStamp.mode` this way (`updateVideoTimestamp`/`onVideoSourceUpdateEnd`), but
+    this class never did, so every consumer that switches on the dispatched `'timestamp'` event's
+    `mode` field (e.g. an app's Live-vs-Playback timestamp readout) silently no-opped for every
+    canvas-rendered frame. Tagged once on `streamData.timeStamp` here rather than at each of the
+    three places that later hand it to `timeStampCallback` (the `checkFrameDrop` early-return right
+    below, the MJPEG `mjpegDraw` closure, and the H264/H265 decoder-worker round trip) — the
+    decoder-worker path structured-clones this same object into the worker and echoes it straight
+    back as the `'decoded'` message's `data.time`, so the one assignment covers all three. Then
     `checkFrameDrop` (MJPEG-only frame-skip logic driven by `videoInfo.dropOut`). For MJPEG:
     schedules `renderer.draw(frameData, videoInfo, callback)` via `setTimeout` with a
     size-tiered delay (`FRAME_SIZE.HD/FHD/UHD` thresholds → 200/160/120/80ms) that throttles
@@ -374,8 +386,21 @@ flowchart LR
   under `bufferingLength`; returns whether the caller may keep pushing (`false` once full) — note
   the code comment at `:57-61` explaining why the return expression is written as
   `length >= bufferingLength ? false : true` rather than the seemingly-equivalent `<` form: they
-  diverge under `NaN` (a possible `bufferingLength` if `videoInfo.framerate` was missing), and the
-  `>=`-based form is what legacy actually used. `forward()`/`backward()` (`:65-85`) — step
+  diverge under `NaN`, and the `>=`-based form is what legacy actually used. **Real bug fix, found
+  live (2026-09-02)**: the `NaN` case this comment already flagged as theoretically possible
+  ("a possible `bufferingLength` if `videoInfo.framerate` was missing") turned out to be real —
+  `RtspClient.ts`'s SDP parser only sets `session.Framerate` `if` an `a=framerate:` attribute is
+  present (`:643-646`, an optional SDP line some cameras simply don't send), leaving
+  `videoInfo.framerate` `undefined` for such a stream. `setBufferingLength(undefined * 4)` =
+  `setBufferingLength(NaN)`, and neither of its own clamp comparisons (`> MAX`/`< MIN`) ever matches
+  `NaN`, so `bufferingLength` stayed `NaN` permanently — meaning `push()`'s own `length >=
+  bufferingLength` check could never be `true`, so `push()` could never return `false` ("buffer
+  full"), so a `forward()`/`backward()` step could never reach `stepStatus = 'complete'` and
+  `#forward`/`#backward` stayed disabled forever, with no crash and no RTSP-level error at all —
+  reported live as exactly that ("영원히 활성화 안된다", "never re-enables"). Fixed by validating
+  `length` is finite in `setBufferingLength()` before using it, falling back to
+  `DEFAULT_BUFFERING_LENGTH` otherwise (which then clamps normally, same as if a "reasonable"
+  framerate had been supplied). `forward()`/`backward()` (`:65-85`) — step
   `curIndex` and return the node at the new position; `backward()` additionally *skips* forward
   through non-keyframes, only returning on an I-frame or MJPEG node (frame-accurate step-back needs
   a decodable start point); both call `clear()` (reset to empty) when they run off either end.

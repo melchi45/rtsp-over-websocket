@@ -64,6 +64,12 @@ export interface TimeStampInfo {
   timezone?: number;
   utcTimeStamp?: number;
   utcDatetime?: Date;
+  // Set by the video player right before handing a frame's timestamp to its
+  // `timeStampCallback` -- VideoTagPlayer already did this (see its own
+  // `sample.timeStamp.mode = 'live'|'playback'` assignments); CanvasTagPlayer
+  // never did, so the consuming app's `'live'`/`'playback'`-keyed timestamp
+  // event handler silently no-ops for every canvas-rendered frame.
+  mode?: string;
 }
 
 export interface VideoStreamData {
@@ -261,6 +267,11 @@ export interface MediaRouterErrorEvent {
   duration?: number;
   mode?: string;
   newProfileType?: string;
+  // Set on a 'rtp packet lost' waiting event (see onWaiting()) when the
+  // packet loss also tore down this.player (close()+null) -- lets
+  // consumers know forward()/backward() would hit a null player until the
+  // next 'statechange' PLAYING event confirms a new one was created.
+  playerClosed?: boolean;
 }
 
 export type MediaRouterListenerType =
@@ -275,7 +286,8 @@ export type MediaRouterListenerType =
   | 'statistics'
   | 'capture'
   | 'instantplayback'
-  | 'gotAudioSupport';
+  | 'gotAudioSupport'
+  | 'playerAvailability';
 
 export type MediaRouterCommandType =
   | 'capture'
@@ -388,6 +400,12 @@ export class MediaRouter {
   private isBackup = false;
 
   private errorCallback: ((event: MediaRouterErrorEvent) => void) | null = null;
+  // Fired by the `player` setter below on every null <-> non-null
+  // transition -- the one authoritative "is a live decoder instance
+  // available right now" signal, independent of readyState/statechange
+  // semantics (which can report PAUSED/PLAYING for reasons unrelated to
+  // whether `player` itself currently exists -- see MEMORY.md).
+  private playerAvailabilityCallback: ((available: boolean) => void) | null = null;
   private timeStampCallback: ((timeStamp: unknown, stepFlag: boolean) => void) | null = null;
   private resizeCallback: ((info: VideoResizeInfo) => void) | null = null;
   private stepRequestCallback: ((status: string, data?: unknown) => void) | null = null;
@@ -505,7 +523,12 @@ export class MediaRouter {
     return this._videoPlayer;
   }
   set player(v: VideoPlayerLike | null) {
+    const wasAvailable = this._videoPlayer !== null;
     this._videoPlayer = v;
+    const isAvailable = v !== null;
+    if (isAvailable !== wasAvailable) {
+      this.playerAvailabilityCallback?.(isAvailable);
+    }
   }
 
   get minimapRefreshInterval(): number {
@@ -841,7 +864,21 @@ export class MediaRouter {
       const isBufferManagerAvailable = self.checkBufferManagerAvailable(playMode, streamData.codecType);
       if (self.stepFlag === true) {
         if (self.deviceType === 'camera') {
+          // Temporary diagnostic (2026-09-02): investigating a live report
+          // that forward()/backward() leave the step permanently stuck --
+          // #forward/#backward never re-enable, no crash, no 457/error.
+          // Logs on every buffered frame while stepping so we can see
+          // whether frames are arriving at all, what tagMode is actually in
+          // use, and how close the buffer is to `ret === false` (step
+          // completion).
+          console.log('[MediaRouter] step buffering:', {
+            tagMode: self.tagMode,
+            stepCmd: self.stepCmd,
+            stepStatus: self.stepStatus,
+            playerCtor: (self.player as unknown as { constructor?: { name?: string } })?.constructor?.name,
+          });
           const ret = self.player.bufferingVideoData(playMode, streamData, videoInfo);
+          console.log('[MediaRouter] step buffering result:', { ret });
           if (ret === false && self.stepStatus === 'request') {
             self.stepStatus = 'complete';
             self.stepRequestCallback?.('complete');
@@ -968,6 +1005,8 @@ export class MediaRouter {
       this.player.onWaitingPackets(waiting);
     }
 
+    const willClosePlayer = this.player !== null && typeof this.player !== 'undefined' && waiting.media === 'video' && this.supportCovertAndOff;
+
     this.errorCallback?.({
       channelId: this.channelId,
       errorCode: fromHex('0x0107'),
@@ -976,11 +1015,12 @@ export class MediaRouter {
       waiting: waiting.islost,
       duration: waiting.duration,
       description: 'rtp packet lost message',
-      place: 'MediaRouter.ts:onWaiting'
+      place: 'MediaRouter.ts:onWaiting',
+      playerClosed: willClosePlayer
     });
 
-    if (this.player !== null && typeof this.player !== 'undefined' && waiting.media === 'video' && this.supportCovertAndOff) {
-      this.player.close();
+    if (willClosePlayer) {
+      this.player!.close();
       this.player = null;
     }
   }
@@ -1133,7 +1173,7 @@ export class MediaRouter {
         this.stepCmd = 'forward';
         if (this.stepFlag === false) {
           this.stepRequest();
-        } else if (!this.player!.forward()) {
+        } else if (this.player !== null && !this.player.forward()) {
           this.stepStatus = 'request';
           this.stepRequestCallback?.('request', this.stepObj);
         }
@@ -1142,7 +1182,7 @@ export class MediaRouter {
         this.stepCmd = 'backward';
         if (this.stepFlag === false) {
           this.stepRequest();
-        } else if (!this.player!.backward()) {
+        } else if (this.player !== null && !this.player.backward()) {
           this.stepStatus = 'request';
           this.stepRequestCallback?.('request', this.stepObj);
         }
@@ -1286,6 +1326,9 @@ export class MediaRouter {
         break;
       case 'gotAudioSupport':
         this.gotAudioSupportCallback = func as (supported: boolean) => void;
+        break;
+      case 'playerAvailability':
+        this.playerAvailabilityCallback = func as (available: boolean) => void;
         break;
       default:
         break;
@@ -1443,16 +1486,38 @@ export class MediaRouter {
         const mediaSourceIsTypeSupported = (globalThis as unknown as { MediaSource?: { isTypeSupported(t: string): boolean } }).MediaSource
           ?.isTypeSupported;
         if (mediaSourceIsTypeSupported?.(mimeType)) {
-          if (codecType === 'H264') {
-            if (this.defaultVideoTagMode !== null) {
-              this.tagMode = this.defaultVideoTagMode as 'canvas' | 'video';
-            } else if (this.deviceType === 'nvr') {
-              this.tagMode = 'video';
-            } else {
-              this.tagMode = size > LIMIT_SIZE[playMode] ? 'video' : 'canvas';
-            }
-          } else {
+          // Real bug fix, found live (reported directly by the user: chose
+          // `#renderer_type` "canvas" against a camera negotiating H265, but
+          // the player still used a <video> tag). Two related issues, both
+          // in this block:
+          // (1) `defaultVideoTagMode` used to only be checked inside a
+          //     `codecType === 'H264'` branch -- H265 fell straight to an
+          //     unconditional `tagMode = 'video'`, ignoring any explicit
+          //     caller request. The no-MSE-support branch right below
+          //     already checks `defaultVideoTagMode` first for BOTH codecs
+          //     (see its own 2026-08-26 fix), and
+          //     docs/player/03-mediaSession-core-video.md's
+          //     `selectVideoPlayer` entry already documented this
+          //     MSE-supported branch as doing the same -- it didn't, until
+          //     now.
+          // (2) Even with no explicit override, H265 has no principled
+          //     reason to always prefer 'video' while H264 gets a real
+          //     nvr/size-based choice -- the no-MSE-support branch below
+          //     already lets H265 land on 'canvas' (gated only by SPS
+          //     profile being 'Main', a decode-capability check unrelated to
+          //     this branch's own MSE-native decode path). Folded H265 into
+          //     the same auto-detect heuristic as H264 rather than keeping a
+          //     separate `codecType === 'H264'` guard here, since within
+          //     this `case 'H264': case 'H265':` block that guard's `else`
+          //     could only ever mean "codecType is H265" anyway -- a
+          //     tautological condition hiding what was actually a
+          //     codec-specific carve-out.
+          if (this.defaultVideoTagMode !== null) {
+            this.tagMode = this.defaultVideoTagMode as 'canvas' | 'video';
+          } else if (this.deviceType === 'nvr') {
             this.tagMode = 'video';
+          } else {
+            this.tagMode = size > LIMIT_SIZE[playMode] ? 'video' : 'canvas';
           }
         } else {
           if (this.defaultVideoTagMode !== null) {

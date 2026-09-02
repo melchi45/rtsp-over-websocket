@@ -335,6 +335,23 @@ export class CanvasTagPlayer extends VideoPlayer {
   override onVideoData(playMode: string, streamData: VideoStreamData, videoInfo: VideoInfo): void {
     this.checkPlayer(streamData, videoInfo, playMode);
 
+    // VideoTagPlayer tags every sample's timeStamp with 'live'/'playback'
+    // before handing it to its own timeStampCallback (see its
+    // updateVideoTimestamp()/onVideoSourceUpdateEnd() `.mode =` assignments);
+    // this player never did, so the consuming app's mode-keyed 'timestamp'
+    // event handler (switching on `event.detail.mode`) silently no-ops for
+    // every canvas-rendered frame -- reported directly by the user as
+    // "#timestamp_date/#timestamp_time never show up in canvas Playback"
+    // (Live happened to still be going through VideoTagPlayer at the time,
+    // masking the same gap there). Tagged once here, on the same
+    // `streamData.timeStamp` object instance that both the frame-drop
+    // early-return below and the MJPEG/decoder-worker paths further down
+    // forward on unchanged -- the H264/H265 decoder-worker path structured
+    // -clones this object into the worker and echoes it straight back as
+    // the 'decoded' message's `data.time`, so this single assignment covers
+    // that round trip too.
+    streamData.timeStamp.mode = this.playmode;
+
     if (this.checkFrameDrop(streamData.codecType, videoInfo.dropOut) === true) {
       (this.timeStampCallback as (timeStamp: unknown) => void)(streamData.timeStamp);
       return;

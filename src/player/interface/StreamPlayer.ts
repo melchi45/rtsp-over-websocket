@@ -87,6 +87,7 @@ export interface StreamPlayerCallbacks {
   instantplayback?: (...args: unknown[]) => void;
   backup?: (...args: unknown[]) => void;
   gotAudioSupport?: (...args: unknown[]) => void;
+  playerAvailability?: (...args: unknown[]) => void;
 }
 
 export interface StreamPlayerInfo {
@@ -208,6 +209,7 @@ export class StreamPlayer {
     onInstantPlayback?: (...args: unknown[]) => void;
     onBackup?: (...args: unknown[]) => void;
     gotAudioSupport?: (...args: unknown[]) => void;
+    onPlayerAvailability?: (...args: unknown[]) => void;
   } = {};
 
   constructor(
@@ -346,6 +348,7 @@ export class StreamPlayer {
       this.callbackInfo.onInstantPlayback = info.callback.instantplayback;
       this.callbackInfo.onBackup = info.callback.backup;
       this.callbackInfo.gotAudioSupport = info.callback.gotAudioSupport;
+      this.callbackInfo.onPlayerAvailability = info.callback.playerAvailability;
 
       this.close(null, () => {
         if (this.rtspClient.getCurrentState() === 'Options' || this.rtspClient.getCurrentState() === 'Teardown') {
@@ -471,6 +474,9 @@ export class StreamPlayer {
     }
     if (typeof this.callbackInfo.onStatistics !== 'undefined' && this.callbackInfo.onStatistics !== null) {
       this.mediaRouter.addListener('statistics', this.callbackInfo.onStatistics);
+    }
+    if (typeof this.callbackInfo.onPlayerAvailability !== 'undefined' && this.callbackInfo.onPlayerAvailability !== null) {
+      this.mediaRouter.addListener('playerAvailability', this.callbackInfo.onPlayerAvailability);
     }
     if (typeof this.callbackInfo.onCapture !== 'undefined' && this.callbackInfo.onCapture !== null) {
       this.mediaRouter.addListener('capture', this.callbackInfo.onCapture);

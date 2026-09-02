@@ -3,7 +3,7 @@
 *Per-class reference for the public custom element (`elements/`), its per-channel orchestration layer
 (`interface/`), the React wrapper (`react/`), and the error hierarchy (`exceptions/`).*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim
+**Version:** 1.7.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -19,6 +19,20 @@
 | 2026-09-01 | Fix `statistics` attribute requiring two toggles to hide the panel: `attributeChangedCallback`'s `'statistics'` case now treats a removed attribute as off, matching the sibling boolean-attribute convention |
 | 2026-09-01 | Fix camera-device drag-seek sending the wrong time: `generateRTSPURL()` no longer double-applies `GMT` to `seekingTime`, and `seeking()`'s camera branch now always recomputes `rangeClock` from `seekingTime` (was stuck on stale `_useIso`-gated logic) with the trailing `Z` stripped to match the camera's `samsung-replay-timezone` extension |
 | 2026-09-01 | Fix Stop button not actually stopping `<video>` playback: `startTime` setter now accepts `null` (matching `endTime`), which was throwing mid-teardown and aborting the disconnect callback chain before `VideoTagPlayer.close()` ran; added temporary diagnostic `console.log`s across the teardown chain and `generateRTSPURL()`'s playback branches for an ongoing investigation |
+| 2026-09-02 | Fix `forward()`/`backward()` (first click, camera device) getting rejected with RTSP `457 Invalid Range` and tearing the connection down: `seeking()` now resets `requestInfo.scale = 1` up front. Root cause was a stale `scale = 0.0` left by `forward()`/`backward()` (set for their own eventual PLAY, tagged with a direction hint for correct serialization) bleeding into `seeking()` whenever `MediaRouter.ts`'s `stepRequest()` fallback called it instead — `seeking()`'s own scale-header call has no direction hint, so the stale value serialized as a bare, unsigned `Scale: 0.00`. Found via a raw RTSP trace against a real camera. |
+| 2026-09-02 | Fix `forward()` computing its non-seeking-time `currentDateTime` from `_localTimestamp` (GMT-adjusted) for *camera* devices whenever `GMT` happened to be set — GMT/`_localTimestamp` is an nvr-only concept everywhere else in this class; now gated on `_deviceType === 'nvr'`, matching `seeking()`'s existing camera/nvr split. Reported directly by the user. Also added debug `console.log`s to `forward()`/`backward()` (computed time/rangeClock/scale/url, just before `player.control(info)`), at the user's request. |
+| 2026-09-02 | Fix `onRTSPOverWebSocketStep('request')`'s `-2000ms` re-seek target being formatted with `toYYYYMMDDHHMMSS()` (local timezone by design) instead of UTC — shifted the target by this machine's own UTC offset (confirmed ~9 hours under KST via a raw RTSP trace the user captured: `Range: clock=...04:34:59-` from a `currentTimestamp` around `19:35:...`), which the camera rejected with `457 Invalid Range`. Now builds `_seekingTime` the same way `onCustomTimeSeek`'s already-working assignments do (`toISOString().split('.')[0] + 'Z'`), reaching `seeking()`'s existing camera-branch stripping logic in the shape it already handles correctly; removed the now-dead `toYYYYMMDDHHMMSS` import (the shared utility itself is untouched — its local-timezone behavior stays intentional). |
+| 2026-09-02 | Fix `seeking()` only clearing `_seekingTime` at the very end of the method (after `generateRTSPURL()`/`player.control()` already ran) — any exception thrown in between left it stuck, and `generateRTSPURL()`'s camera-playback branch always prioritizes a non-null `seekingTime` over `_currentTimestamp`/`startTime`, so a value stuck from one interrupted seek silently overrode the start time of every later, unrelated camera playback search (confirmed live: a fresh `06:07:31`–`06:11:32` search actually played `2026-09-01T21:07:31`–, matching a leftover value from an earlier interrupted seek, not the requested time). Wrapped the method body in `try`/`finally` so the reset always runs. Requested directly by the user, who asked for a full audit of `play()`/`seeking()`/`forward()`/`backward()`/`pause()`/`resume()`/`speed()`'s time handling — the others were all found consistent (camera branches either don't touch GMT or already clear `seekingTime` immediately on read). |
+| 2026-09-02 | Fix `onRTSPOverWebSocketTimestamp()` assigning `_localTimestamp` an unshifted `curDate.toISOString()` copy — byte-identical to `_currentTimestamp` — instead of the already-computed, correctly GMT-shifted `localTimestamp` local variable a few lines below (used only for the dispatched event/debug display, never written back). Confirmed against the class's own stated contract by the user: `currentTimestamp` is GMT-0/UTC, `_localTimestamp` is that instant shifted to the device's local wall clock. Every nvr branch reading `_localTimestamp` (`pause()`/`resume()`/`speed()`/`forward()`/`backward()`) expects it pre-shifted and subtracts the GMT offset back off to recover true UTC — with it never actually shifted, that subtraction moved nvr `rangeClock` values further from correct instead of recovering them, on every call. |
+| 2026-09-02 | Cleanup, confirmed correct behavior first (reviewed with the user): `generateRTSPURL()`'s nvr `playback`/`backup` `strStart`/`strEnd` construction (`:4851-4869`) computed `const timezone = this.GMT * 3600 * 1000` and then discarded it (`void timezone;`), dead code left over from an earlier fix to a real double-GMT-application bug — `startTime`/`endTime` digits already represent the intended wall-clock instant (same convention `seekingTime` uses), so no further shift belongs here. Removed the dead computation; behavior is unchanged, now just without the misleading unused variable. |
+| 2026-09-02 | Removed `_useIso`/`useIsoTimeFormat` entirely (private field, public getter/setter, and all nine branch sites in `play()`/`pause()`/`resume()`/`speed()`/`forward()`-unaffected/`backward()`-unaffected/`seeking()`-unaffected/`startBackup()`/`generateRTSPURL()`). Requested by the user after reviewing every branch: `_useIso === true` was a dead `TODO: camera iso time style generate (legacy: unimplemented)` stub in `generateRTSPURL()`'s two camera branches (checking it produced a URL with no start/end embedded at all), and its only real nvr-side effect (millisecond-fraction inclusion; `Z` was present in both states, contrary to an initial assumption during the same review) had no known real-device rationale. Every former no-GMT branch now unconditionally behaves the way `useIso === true` did — the real camera implementation, and the fraction-dropping nvr shape. `GMT`-present branches are untouched (a separate axis: `GMT` performs an actual timezone subtraction, `_useIso` never did). See MEMORY.md. |
+| 2026-09-02 | `GMT` now unconditionally defaults to `0` (UTC) instead of `null` — `_gmt` field, the `GMT` setter's `v === null` case, and `attributeChangedCallback`'s `'gmt'` case all normalize to `0`; `get GMT()` narrowed to always return `number`. At the user's explicit request, every `typeof this.GMT !== 'undefined' && this.GMT !== null` check across `play()`/`generateRTSPURL()`/`pause()`/`resume()`/`speed()`/`forward()` (×2)/`backward()`/`seeking()`/`startBackup()`/the mouse-wheel click-to-seek handler in `update()` had its `else` branch converted from a silent, differently-computed fallback into a `throw new RTSPOverWebSocketError({errorCode: 0x0414, message: 'GMT is required but not set', ...})` — since `GMT` is now always defined through the public API, reaching one of these `else`s means something upstream left it unset, which is a bug to surface, not a legitimate state to degrade for. `backup()`'s `info.device.gmt = this.GMT` assignment (no prior `else`) was simplified to unconditional. `onRTSPOverWebSocketTimestamp()` — a hot per-frame callback, not a user-triggered precondition check — was simplified instead of given a throw: the `hasExplicitGMT` guard was removed entirely (both the `timestamp.timezone` assignment and `_localTimestamp` write are now unconditional), and the debug `timestampElement` display's now-dead GMT-unset fallback branch was removed. The `update()` mouse-wheel site is flagged as needing extra scrutiny beyond the rest: it is the one throw-converted site reachable directly from a live end-user gesture (drag/click-to-seek) rather than purely internal request-building — see MEMORY.md. Deferred, not part of this change: normalizing `startTime`/`endTime`/`seekingTime` through a GMT-conversion function at the setter level (reviewed with the user, judged a separate, larger follow-up). |
+| 2026-09-02 | Fix `generateRTSPURL()`'s camera `playback` branch resuming/starting playback exactly `GMT` hours in the past on a positive-offset timezone (reported live: "GMT+9 카메라에서 pause/resume하면 9시간 전으로 재생됨") — its `strStart` fallback (used whenever `seekingTime` is unset, e.g. a plain pause→resume with no drag-seek in between) read `this._currentTimestamp`, which per this class's own confirmed contract is GMT-0/UTC, and embedded its digits directly with no shift — the same "no further shift, digits are already local" treatment `seekingTime`/`endTime` correctly get in this branch (because *those* are pre-shifted by the caller before being set), but wrong for `_currentTimestamp`, which never is. Fixed by reading `this._localTimestamp` instead — the same instant, already GMT-shifted to local wall clock by `onRTSPOverWebSocketTimestamp()` — matching the convention every other value in this branch already follows. Camera `pause()`/`resume()` do no GMT math of their own ("legacy: no-op" for camera devices, see their Method Analysis entries below), so this one line was the sole source of the correct playback position on resume for camera devices. |
+| 2026-09-02 | `startTime`/`endTime`/`seekingTime` setters now normalize any accepted input to a canonical true-UTC ISO string, via a new private `normalizeTimeInputToUtcIso()` helper: a string carrying an explicit timezone designator (`Z` or `±HH:MM`/`±HHMM`) is trusted as-is via standard ISO parsing; a naive string (no designator) is treated as local wall-clock digits in the `GMT` zone and converted by subtracting `GMT` hours. Requested by the user, who wanted every internal time computation in this class to operate on one unambiguous representation instead of each caller/consumption site separately knowing, per device type, whether stored digits were pre-shifted to local or already true UTC — the exact ambiguity behind the two GMT-direction bugs fixed earlier the same day (seekingTime double-shifted +9h on camera drag-seek; camera pause/resume landing 9h in the past). Every nvr consumption site that used to subtract `GMT` from a stored value to "recover" true UTC (`play()`, `resume()`, `speed()`, `forward()`, `backward()`, `startBackup()`) now simply uses it directly; every camera consumption site (`generateRTSPURL()`'s `playback`/`backup` branches, `seeking()`'s camera branch — the only places camera wire values are built, since camera `pause()`/`resume()`/`speed()`/`forward()`/`backward()`/`startBackup()` are documented no-ops that rely on `generateRTSPURL()` being re-called) now shifts the stored true-UTC value forward by `GMT` itself before stripping punctuation, since storage is no longer pre-shifted for it. `coordinatedUniversalTime` (public property + `_coordinatedUniversalTime` field) removed entirely — same shape as `_useIso`'s earlier removal — since its `true` state (no GMT subtraction) is now the only correct behavior everywhere it was checked. The double-click/click-to-seek handler (`handleDoubleClick()`, historically referred to as "update()'s mouse-wheel handler" in earlier entries — the actual mouse-wheel handler is `scrolled()`, a pan/zoom feature unrelated to time) had its own GMT-unset throw (added earlier the same day) removed along with the `GMT` term in its formula entirely: it now computes its seek target from `_currentTimestamp` (already true UTC) plus only the click delta, instead of double-shifting `_localTimestamp` by `GMT` again. Not verified against real hardware (WSL2 can't reach real devices, see `CLAUDE.md`) — flagged to the user as needing camera *and* nvr testing with `GMT ≠ 0` before this is considered done. |
+| 2026-09-02 | Fix `generateRTSPURL()`'s camera `playback` branch producing a URL with no start segment at all on a *fresh* Play (reported live, real device: `.../recording/-20260902090643/OverlappedID=0/play.smp`) — a direct regression from the `_currentTimestamp` → `_localTimestamp` fix earlier the same day (see History above): `_localTimestamp` is only ever populated by a live `'timestamp'` event, so it's still `null` before any playback has actually started, and with no `seekingTime` set either (a fresh Play, not a seek), `strStart` fell through both checks entirely. The old `_currentTimestamp`-based code never hit this, because `startTime`'s own setter always mirrors into `_currentTimestamp` immediately, independent of any live stream. Added `startTime` (now true UTC like `_currentTimestamp` always was, shifted forward by `GMT` before stripping) as a fallback, kept lower priority than `_localTimestamp` so an already-flowing stream's current position (not the original search start) is still what pause/resume/speed changes reuse. |
+| 2026-09-02 | `onRTSPOverWebSocketError`'s `0x0107` case's `'waiting'` DOM event now also carries `playerClosed` (from `MediaRouter.ts`'s matching fix — see `03-mediaSession-core-video.md`'s History), flagging when *this* waiting notice also tore down `MediaRouter`'s internal player. Root cause of the underlying crash was in `MediaSession/MediaRouter.ts`, not this class (`sendCommandData`'s `forward`/`backward` asserting `player!` non-null instead of guarding it, same fix), but the DOM-event surface consumers actually listen on is here — a host page's `'waiting'` listener can now disable step-forward/backward buttons for that window instead of leaving them clickable into a null player. See MEMORY.md. |
+| 2026-09-02 | Added `onRTSPOverWebSocketPlayerAvailability(available)`, wired as `info.callback.playerAvailability` and dispatching a new public `'playerstatechange'` DOM event (`{ available: boolean }`). Direct follow-up to the entry above, from a fresh live console trace after that fix shipped: `playerClosed` on `'waiting'` only covers `onWaiting()`'s own covert-mode teardown — the *other* place `MediaRouter.player` goes null (`initVideoPlayer()`, called from `stepRequest()`/the `resume`/`seek` command cases) had no consumer-visible signal at all, so a host page gating step buttons on `'statechange'` PAUSED/PLAYING/STEP could still have a click reach a null player: a step's own auto-pause ack (PAUSED) can arrive and re-enable those buttons while an *unrelated*, still-in-flight buffer-refill re-seek (from an earlier step) has the player null. This event is sourced directly from `MediaRouter.ts`'s `player` getter/setter (see that file's History) rather than from any particular code path, so it covers every null/non-null transition uniformly — not just covert-mode teardown. See `MEMORY.md`. |
+| 2026-09-02 | Fix selecting a new event on a host page's timeline (`player.startTime = ...`) while a stream is already playing silently having no effect on the next `play()` — reported directly by the user. Root cause: `generateRTSPURL()`'s camera `playback` branch intentionally prioritizes `_localTimestamp` (an already-flowing stream's *current* position) over `startTime`, but `_localTimestamp` used to only get cleared by `stop()` or the `GMT` setter, not by `startTime` itself — so a fresh `startTime` assignment left the *previous* stream's stale `_localTimestamp` in place and got silently outranked by it, unlike `seekingTime`, which unconditionally overrides `strStart` regardless of priority. The `startTime` setter (`:~1482`) now also clears `_localTimestamp`, so an explicit new `startTime` always wins on the next `play()`; the pause/resume/speed path is unaffected since it reads `_localTimestamp` directly and never goes through this setter. |
 
 ---
 
@@ -330,13 +344,59 @@ their exact location rather than fixed silently (file header comment,
   empty), so this purely-for-display URL no longer leaks a plaintext username/password once one is
   attached, regardless of whether `username`/`password` still happen to be set on the element.
 
+**Time normalization** (`startTime`/`endTime`/`seekingTime` setters + `normalizeTimeInputToUtcIso()`)
+
+- `set startTime`/`set endTime`/`set seekingTime` (`:~1461`/`:~1488`/`:~1513`, format-validation
+  regex broadened to accept a naive string, `Z`, or an explicit `±HH:MM`/`±HHMM` offset) each run
+  their accepted input through the new private `normalizeTimeInputToUtcIso(v)` (`:~1441`) before
+  storing: a string carrying an explicit timezone designator is trusted as-is via standard ISO
+  parsing (`new Date(v).toISOString()`); a naive string (no designator) is treated as local
+  wall-clock digits in the `GMT` zone and converted to true UTC by subtracting `GMT` hours. All
+  three properties are therefore *always* true UTC internally, regardless of what shape the caller
+  supplied or which device type is in play — no more per-consumption-site "was this pre-shifted to
+  local, or is it already UTC?" ambiguity. `startTime`'s setter still mirrors the result into
+  `_currentTimestamp` right after, same as before. It also clears `_localTimestamp` (see History's
+  2026-09-02 "selecting a new event on a host page's timeline" entry) — an explicit new `startTime`
+  is a request to start somewhere new, and must not be outranked by a previous stream's stale
+  current-position value.
+- Every nvr consumption site that used to subtract `GMT` from a stored value to "recover" true UTC
+  (`play()`, `resume()`, `speed()`, `forward()`, `backward()`, `startBackup()`) now uses it
+  directly — the subtraction was undoing a pre-shift that no longer happens. `generateRTSPURL()`'s
+  nvr branch and `seeking()`'s nvr branch were already in this shape (fixed earlier the same day,
+  see History) and needed no change.
+- Every camera consumption site — confined entirely to `generateRTSPURL()`'s `playback`/`backup`
+  branches and `seeking()`'s camera branch, since camera `pause()`/`resume()`/`speed()`/`forward()`/
+  `backward()`/`startBackup()` are documented no-ops that rely on `generateRTSPURL()` being
+  re-called — now explicitly shifts the stored true-UTC value forward by `GMT` (`new Date(...).getTime()
+  + this.GMT * 3600 * 1000`) before stripping `-`/`:`/`T`/`Z`, since storage is no longer
+  pre-shifted to local wall clock for it the way it used to be. `generateRTSPURL()`'s camera
+  `playback` branch's `strStart` priority (highest first): `seekingTime` (explicit seek target) >
+  `_localTimestamp` (an already-flowing stream's *current* position — unrelated to this change) >
+  `startTime` (fresh-Play fallback, added right after this change shipped — see History's
+  immediately-following entry for why `_localTimestamp` alone isn't enough here). `startTime`'s
+  setter clears `_localTimestamp` as of the 2026-09-02 fix later in History, so this priority order
+  only ever falls back to a *stale* `_localTimestamp` for pause/resume/speed changes on the same
+  stream, never after an explicit new `startTime`.
+- `coordinatedUniversalTime` (public getter/setter, `_coordinatedUniversalTime` field) removed
+  entirely, same shape as `_useIso`'s earlier removal (see History) — every branch it gated now
+  unconditionally behaves the way its `true` state did.
+- `handleDoubleClick()`'s click-to-seek handler (`:~1133-1174`, historically referred to as
+  "`update()`'s mouse-wheel handler" in an earlier History entry — the actual mouse-wheel handler is
+  `scrolled()`, an unrelated pan/zoom feature) had its own GMT-unset throw (added earlier the same
+  day) removed along with `GMT` itself: the formula no longer shifts `_localTimestamp` by `GMT`
+  *again* on top of the click delta (a real double-shift once the setter stopped absorbing it
+  silently) — it now computes from `_currentTimestamp` (already true UTC) plus only the click
+  delta.
+
 **Playback control** (all public; all throw `RTSPOverWebSocketError` with `errorCode: 0x1000` if
 `this.player` doesn't exist yet)
 
 - `play()` (`:3979-4139`) — normalizes `mode` to `'live'` if unset; for `INSTANTPLAYBACK` just
   forwards an `{cmd:'init'}` command; for `LIVE` sets `boxsize`; for anything else (`playback`)
-  requires `startTime`, computes `rangeClock` (GMT-aware or ISO, depending on `useIsoTimeFormat`/
-  `GMT`). Rewires `info.callback.{close,error,status,vmode}` to this instance's own handlers,
+  requires `startTime`, computes a GMT-aware `rangeClock` (`GMT` is unconditionally defaulted to
+  `0` now, see History — reaching this method with it somehow unset/cleared throws `0x0414` instead
+  of silently falling back to the old fraction-dropping shape). Rewires
+  `info.callback.{close,error,status,vmode}` to this instance's own handlers,
   regenerates the RTSP URL (unless `src` already supplied one), lazily constructs `this.player =
   new StreamPlayer(...)` if absent, and finally calls `player.control(this.info)`. **No longer
   throws up front for missing username/password** (see the 401-handling section below) — a long
@@ -344,19 +404,23 @@ their exact location rather than fixed silently (file header comment,
 - `stop()` (`:4594-4625`) — regenerates the URL if needed, sets `cmd:'close'`, resets `playSpeed`
   to 1x for playback sessions (unless this is an error-triggered stop, tracked via
   `_withErrorStop`), calls `player.control(info)`, sets `_readyState = STOPPED`.
-- `pause()` / `resume()` (`:4627-4778`) — device/GMT-aware `rangeClock` recomputation (playback
-  mode only), state-consistency checks (throws `0x1004` if already in the target state),
-  `player.control(info)`. `INSTANTPLAYBACK` is special-cased in both (different `cmd` values, and
-  `resume()` restores `_oldPlayType`).
-- `seeking()` (`:5534-5633`), `speed()` (`:4928-5015`), `forward()`/`backward()`
-  (`:5017-5178`) — playback-only trick-play commands; each recomputes `rangeClock`/`scale` from
+- `pause()` / `resume()` (`:4627-4778`) — device/GMT-aware `rangeClock` recomputation (nvr playback
+  mode only — camera is a documented no-op here, see the `generateRTSPURL()` fix note above),
+  state-consistency checks (throws `0x1004` if already in the target state), `player.control(info)`.
+  `INSTANTPLAYBACK` is special-cased in both (different `cmd` values, and `resume()` restores
+  `_oldPlayType`). Both now `console.log('[pause] request:', ...)`/`console.log('[resume] request:',
+  ...)` (device type, `GMT`, `currentTimestamp`, `localTimestamp`, computed `rangeClock`/`url`) just
+  before `player.control(info)`, added 2026-09-02 while investigating the GMT+9 pause/resume report
+  above — temporary diagnostic tracing, same pattern as `forward()`/`backward()`'s existing logs.
+- `seeking()` (`:5580-5679`), `speed()` (`:4928-5015`), `forward()`/`backward()`
+  (`:5386-5578`) — playback-only trick-play commands; each recomputes `rangeClock`/`scale` from
   `seekingTime`/`currentTimestamp`/`GMT` and forwards through `player.control(info)`. `speed()`
   has a preserved legacy typo (`:4942-4946`): for camera devices it writes the regenerated URL to
   `requestInfo.utl` (not `.url`), so speed changes never actually refresh the RTSP URL for
-  cameras. `seeking()`'s camera branch (`:5564-5596`) had **two real bug fixes (found live,
-  2026-09-01)**: (1) it used to only recompute `rangeClock` when `_useIso` was truthy (never set by
-  this app's caller), so `rangeClock` silently kept whatever stale value `speed()`'s camera branch
-  had just written from the *old* `currentTimestamp` — every drag-seek sent `Range: clock=<current
+  cameras. `seeking()`'s camera branch had **three real bug fixes (found live, 2026-09-01/2026-09-02)**:
+  (1) it used to only recompute `rangeClock` when `_useIso` was truthy (never set by this app's
+  caller), so `rangeClock` silently kept whatever stale value `speed()`'s camera branch had just
+  written from the *old* `currentTimestamp` — every drag-seek sent `Range: clock=<current
   position>-`, i.e. "resume where you already are," regardless of where the marker was dropped; now
   always recomputed from `this.seekingTime` regardless of `_useIso`. (2) the fix for (1) initially
   kept `seekingTime`'s trailing `Z` (RFC 2326 `utc-time` grammar, matching the nvr branch just
@@ -364,8 +428,99 @@ their exact location rather than fixed silently (file header comment,
   camera-bound clock value in this class (`generateRTSPURL()`'s own `strStart`/`strEnd`, `speed()`'s
   camera branch) strips `Z` for the camera's proprietary `samsung-replay-timezone` RTSP extension,
   and only nvr's `onvif-replay` extension expects it kept; `seeking()`'s camera branch now strips
-  `Z` too, matching the rest of the camera code paths. nvr's own branch (`:5597-5602`) is untouched
-  and still applies `GMT` as before.
+  `Z` too, matching the rest of the camera code paths. (3) `seeking()` now unconditionally resets
+  `requestInfo.scale = 1` up front (before either branch, `:5595`) — it never used to touch `scale`
+  at all, so a stale `0.0` left by `forward()`/`backward()` (each sets `scale = 0.0` for their own
+  eventual PLAY, tagged with a `'forward'`/`'backward'` direction hint so `RtspClient.ts`'s
+  `toStringExtensionScale()` serializes it as the camera-recognized `Scale: +0.00`/`Scale: -0.00`)
+  would bleed in whenever `MediaRouter.ts`'s `stepRequest()` fallback (first `forward()`/`backward()`
+  click on a device, before its own local frame buffer is primed) called `seeking()` instead of
+  sending `forward()`/`backward()`'s own request — `seeking()`'s own `scaleHeaderOrDefault()` call
+  has no direction hint, so the stale `0.0` serialized as a bare, unsigned `Scale: 0.00`, which real
+  hardware rejected with `457 Invalid Range`, tearing the connection down with no video ever
+  playing; found via a raw RTSP request/response trace against a real camera. nvr's own branch is
+  untouched and still applies `GMT` as before. **Fourth fix**: `_seekingTime` used to only be
+  cleared (`this._seekingTime = null`) at the very end of the method, after
+  `generateRTSPURL()`/`player.control()` had already run — any exception in between left it stuck,
+  and `generateRTSPURL()`'s camera-playback branch always prefers a non-null `seekingTime` over
+  `_currentTimestamp`/`startTime`, so a value stuck from one interrupted seek silently overrode the
+  start time of every *later, unrelated* camera playback search until something else happened to
+  clear it. The entire method body (after the two precondition checks) is now wrapped in
+  `try`/`finally`, guaranteeing the reset on every exit path.
+- `forward()`'s own non-seeking-time `currentDateTime` computation (`:5403-5411`) had a related
+  **fourth real bug (found live, 2026-09-02, same investigation)**: it checked `this.GMT` before
+  even knowing `_deviceType`, so a *camera* device with `GMT` set (`device.ts` parses a camera's own
+  `TimeZoneIndex` into `player.GMT` too, not just nvr's) would wrongly compute from
+  `_localTimestamp` instead of `currentTimestamp` — GMT/`_localTimestamp` substitution is an
+  nvr-only concept everywhere else in this class (`seeking()`'s camera branch above never touches
+  GMT at all). Reported directly by the user, pointing at `seeking()`'s existing camera/nvr split as
+  the reference; now gated on `this._deviceType === 'nvr' && ...`, matching that split.
+  `backward()`'s equivalent block (`:5487-5489`) never had this GMT check to begin with, so it
+  needed no corresponding change. Debug tracing added at the same time: both `forward()` and
+  `backward()` now `console.log` their computed `isoTimeString`/`rangeClock`/`scale`/final `url`
+  just before `player.control(info)`, at the user's own request, to keep verifying this class of fix
+  against real hardware traces going forward.
+- `onRTSPOverWebSocketTimestamp(time)` (`:3853-3928`) — the `'time'` player callback: sets
+  `_currentTimestamp` (GMT-0/UTC, `curDate.toISOString()`) on every rendered frame, and — this
+  class's stated contract, confirmed directly by the user — `_localTimestamp` is meant to be that
+  *same instant, GMT-shifted to the device's own local wall clock*, for nvr code paths that need it
+  pre-shifted. **Real bug fix (found live, 2026-09-02)**: `_localTimestamp` used to be assigned
+  `curDate.toISOString()` directly — no offset applied — making it always byte-identical to
+  `_currentTimestamp`. The correctly GMT-shifted value was computed a few lines below as a local
+  `localTimestamp` variable (lowercase, no underscore — easy to conflate with the instance field at
+  a glance), but only ever consumed for the dispatched `timestamp` event's `local` field and the
+  debug `timestampElement` display; nothing wrote it back to `this._localTimestamp`. Every nvr
+  branch across this class that reads `this._localTimestamp` (`pause()`, `resume()`, `speed()`,
+  `forward()`, `backward()`, all documented above) does so expecting an already-forward-shifted
+  value, then subtracts the same GMT offset back off to recover true UTC for the outgoing
+  `rangeClock` — with `_localTimestamp` never actually shifted, that subtraction moved an nvr's
+  `rangeClock` further *away* from the correct instant instead of recovering it, on every call.
+  Fixed by writing the already-computed `localTimestamp` back to `this._localTimestamp` (at the
+  time, still gated on `GMT` being explicitly set, matching the original guard) instead of the
+  unshifted `curDate` copy. **Simplified again, 2026-09-02**: now that `GMT` is unconditionally
+  defaulted to `0` (see History), that guard (`hasExplicitGMT`) is always true and was removed —
+  `timestamp.timezone`/`_localTimestamp` are unconditionally computed on every call. This method is
+  on the hot per-frame timestamp-event path, so unlike the playback-control methods below it does
+  **not** throw when `GMT` is somehow unset; it just always trusts `this.GMT`.
+- `onRTSPOverWebSocketStep(step)` (`:4075-4111`) — the `'step'` player callback, fired by
+  `MediaSession/MediaRouter.ts`'s `stepRequestCallback`: on the *first* `forward()`/`backward()`
+  click on a device, via `stepRequest()`'s fallback (before its own local frame buffer is primed,
+  see `forward()`/`backward()` above) — **and, correcting this doc's own prior wording, also on
+  every *later* click within an already-active step sequence whose local buffer has simply run dry
+  in that direction** (`sendCommandData`'s `forward`/`backward` cases call the same
+  `stepRequestCallback('request', ...)` whenever `player.forward()`/`.backward()` itself returns
+  `false`, not only from `stepRequest()`) — `'request'` re-seeks a *camera* device 2 seconds behind
+  `currentTimestamp` (via `seeking()`) to start buffering fresh decode data; `'complete'` pauses
+  (camera only) and dispatches `statechange(STEP)`. Both re-fetch paths eventually close and
+  recreate `MediaRouter.player` (see `03-mediaSession-core-video.md`'s `player`
+  getter/setter History entry), which is what the new `onRTSPOverWebSocketPlayerAvailability`
+  below exists to surface. **Real bug fix (found live, 2026-09-02, via a raw RTSP trace the user
+  captured)**: the `'request'` case used to format its `-2000ms` target with
+  `util/dateFormat.ts`'s `toYYYYMMDDHHMMSS()` — which formats in the *local* timezone by design (see
+  that function's own doc comment; a deliberate, documented behavior, not a bug in that shared
+  utility itself). Every camera-bound clock string this class builds elsewhere represents a
+  UTC-labeled instant as UTC-labeled digits (stripped from a `.toISOString()`) — using local-timezone
+  digits here shifted the seek target by this machine's own UTC offset before it ever reached
+  `seeking()`'s own (already-correct) camera-branch stripping logic. Confirmed live under KST (+9): a
+  `currentTimestamp` around `19:35:...` produced an outgoing `Range: clock=...04:34:59-` — off by
+  essentially exactly 9 hours — which the camera rejected with `457 Invalid Range`, tearing the
+  connection down (and, since `play()`'s own camera branch never sets `requestInfo.rangeClock` at
+  all — "legacy: no-op" — that same wrong value could persist and resurface on a subsequent
+  reconnect's fresh PLAY too). Fixed at the call site, not in the shared utility (its local-timezone
+  behavior stays intentional for whatever else might use it): now builds `_seekingTime` as
+  `targetDateTime.toISOString().split('.')[0] + 'Z'` — the same shape (`'...T...Z'`, no
+  milliseconds) `onCustomTimeSeek`'s already-working `seekingTime` assignments use, so it reaches
+  `seeking()`'s existing stripping logic in the exact form it already handles correctly. The now-dead
+  `toYYYYMMDDHHMMSS` import was removed from this file.
+- `onRTSPOverWebSocketPlayerAvailability(available)` (added 2026-09-02) — the `'playerAvailability'`
+  player callback (`info.callback.playerAvailability`), fired by `MediaRouter.ts`'s `player`
+  getter/setter itself on every null <-> non-null transition. Just forwards to a public
+  `'playerstatechange'` DOM event (`{ available }`) — see this file's own History and
+  `03-mediaSession-core-video.md`'s `player` entry for why this needed to be sourced from the
+  setter directly rather than any particular code path: `'waiting'`'s `playerClosed` field (added
+  earlier the same day) only covers `onWaiting()`'s own covert-mode teardown, not `initVideoPlayer()`
+  being called from `stepRequest()`/the `resume`/`seek` commands, so a host page gating UI on
+  `'statechange'` readyState alone could still race a still-in-flight buffer-refill.
 - `capture(filename?)` (`:5253-5279`), `talk(flag)` (`:5281-5299`), `backup(flag)`
   (`:5301-5340`) plus `startBackup()`/`endBackup()` (`:5342-5480`) — capture/two-way-audio/backup
   session control; `backup()`/`startBackup()` construct/reuse the separate `backupplayer`
@@ -461,7 +616,8 @@ their exact location rather than fixed silently (file header comment,
 
 - `onRTSPOverWebSocketError(error)` (`:3445-3629`) — the largest handler: a `switch` on
   `toHex(error.errorCode)` covering connection-state transitions (`0x0000` play/pause,
-  `0x0001` stop/teardown), the loading spinner (`0x0107`), backup progress (`0x0601`/`0x0602`/
+  `0x0001` stop/teardown), the loading spinner (`0x0107`, **its dispatched `'waiting'` event now
+  also forwards `error.playerClosed` — see History, 2026-09-02**), backup progress (`0x0601`/`0x0602`/
   `0x0607`/`0x0609`, delegated to `onRTSPOverWebSocketBackup`), auto-retry-on-error for live/
   playback sessions (`0x0005`/`0x0006`/`0x0008`/`0x0100`/`0x0203`/`0x0205`/`0x0209`/`0x0210`/
   `0x030A` — `stop()` then `play()` again if `_retryFlag` is set), network-quality state

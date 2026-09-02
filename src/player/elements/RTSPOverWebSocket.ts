@@ -3,7 +3,6 @@ import { AuthError } from '../exceptions/AuthError';
 import { SunapiError } from '../exceptions/SunapiError';
 import { fromHex, toHex } from '../util/hex';
 import { formatBytes, formatBps } from '../util/formatBytes';
-import { toYYYYMMDDHHMMSS } from '../util/dateFormat';
 import { getElementByAttributeValue } from '../util/getElementByAttributeValue';
 import { SunapiManager, type SunapiManagerDeviceInfo } from '../network/http/SunapiManager';
 import { RtspControlType, type SunapiClientLike } from '../network/rtspOverWebsocket/RtspClient';
@@ -116,7 +115,6 @@ export class RTSPOverWebSocket extends HTMLElement {
   private _proxy: string | null = null;
   private _port: string | null = null;
   private _secure = false;
-  private _useIso: boolean | null = null;
   timezone_offset: number | null = null;
   private _filename: string | null = null;
 
@@ -130,14 +128,14 @@ export class RTSPOverWebSocket extends HTMLElement {
   private _network = false;
   private _networkState = 'good';
 
-  private _gmt: number | null = null;
+  // Unconditionally defaults to UTC (`0`), not `null` -- see MEMORY.md.
+  private _gmt = 0;
   private _withErrorStop = false;
   private _retryFlag = true;
   private _useLoading = false;
   private _fullscreen = false;
   private _channelLabel = true;
   private _initSunapi = false;
-  private _coordinatedUniversalTime = false;
   private _clickCount = 0;
   private _bestshotFilter: (typeof RTSPOverWebSocketBestshotFilter)[keyof typeof RTSPOverWebSocketBestshotFilter] | null = null;
   private _minimap = false;
@@ -267,7 +265,8 @@ export class RTSPOverWebSocket extends HTMLElement {
         instantplayback: (...args: unknown[]) => this.onRTSPOverWebSocketInstantPlayback(args[0] as RTSPOverWebSocketInstantPlaybackEvent),
         backup: (...args: unknown[]) => this.onRTSPOverWebSocketBackup(args[0] as RTSPOverWebSocketBackupEvent),
         recv: (...args: unknown[]) => this.onRTSPOverWebSocketRecv(args[0] as RTSPOverWebSocketRecvEvent),
-        rtsp: (...args: unknown[]) => this.onRTSPPacket(args[0])
+        rtsp: (...args: unknown[]) => this.onRTSPPacket(args[0]),
+        playerAvailability: (...args: unknown[]) => this.onRTSPOverWebSocketPlayerAvailability(args[0] as boolean)
       },
       device: {
         ClientIPAddress: '127.0.0.1',
@@ -283,7 +282,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         proxy: '',
         retry: false,
         serverType: 'camera',
-        gmt: this._gmt ?? undefined
+        gmt: this._gmt
       },
       media: {
         audioOutStatus: false,
@@ -561,7 +560,10 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (typeof gmtValue === 'string' && (gmtValue === 'null' || gmtValue === 'undefined')) {
           gmtValue = null;
         }
-        this.info.device.gmt = this._gmt = gmtValue as number | null;
+        // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md) --
+        // normalize a cleared/absent attribute to the default instead of
+        // `null`.
+        this.info.device.gmt = this._gmt = (gmtValue === null || gmtValue === undefined) ? 0 : (gmtValue as number);
         this.dispatch('changetimezone', { timezone: this._gmt });
         break;
       }
@@ -1150,16 +1152,19 @@ export class RTSPOverWebSocket extends HTMLElement {
           direction = 0;
         }
 
-        if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
-          if (direction !== 0) {
-            const timezone = this.GMT * 3600 * 1000 + 10 * 1000 * direction * this._clickCount;
-            this.seekingTime = new Date(new Date(this._localTimestamp as string).getTime() + timezone).toISOString();
-          }
-        } else {
-          const caltime = 10 * 1000 * direction * this._clickCount;
-          if (direction !== 0) {
-            this.seekingTime = new Date(new Date(this.currentTimestamp as string).getTime() + caltime).toISOString();
-          }
+        // `seekingTime` is now unconditionally normalized to true UTC at
+        // the setter (see MEMORY.md) -- this must compute a genuine true-UTC
+        // target itself, not a local-wall-clock-labeled string. Previously
+        // this shifted `_localTimestamp` (already local wall clock) forward
+        // by `GMT` *again* plus the click delta; that double-shift is
+        // exactly what the old setter's "store verbatim, interpret per
+        // device type" contract silently absorbed. Now: `_currentTimestamp`
+        // (already true UTC) plus only the click delta -- `GMT` no longer
+        // has any part in this computation, so there's nothing left to
+        // guard here.
+        if (direction !== 0) {
+          const delta = 10 * 1000 * direction * this._clickCount;
+          this.seekingTime = new Date(new Date(this._currentTimestamp as string).getTime() + delta).toISOString();
         }
 
         this._clickCount = 0;
@@ -1428,6 +1433,32 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
+  /**
+   * Normalizes any accepted `startTime`/`endTime`/`seekingTime` input to a
+   * canonical true-UTC ISO string, so every internal consumer of these
+   * three properties can treat them uniformly (see MEMORY.md). Two input
+   * shapes are accepted:
+   * - Explicit timezone designator (`Z` or `±HH:MM`/`±HHMM`): trusted as-is
+   *   via standard ISO parsing — the string already unambiguously names an
+   *   instant, `GMT` plays no part.
+   * - Naive (no designator): treated as local wall-clock digits in the
+   *   `GMT` zone and converted to true UTC by subtracting `GMT` hours.
+   */
+  private normalizeTimeInputToUtcIso(v: string): string {
+    const hasDesignator = /(Z|[+-]\d{2}:?\d{2})$/i.test(v);
+    const parsed = hasDesignator ? new Date(v) : new Date(v + 'Z');
+    if (isNaN(parsed.getTime())) {
+      throw new RTSPOverWebSocketError({
+        channelId: this.channel,
+        elementId: this.getAttribute('id') ?? undefined,
+        errorCode: fromHex('0x0414'),
+        place: 'RTSPOverWebSocket.ts:normalizeTimeInputToUtcIso',
+        message: 'Invalid input parameter type, check input time format.\r\nYou have to input ISO time format like YYYY-MM-DDTHH:mm:ss.SSSZ.'
+      });
+    }
+    return hasDesignator ? parsed.toISOString() : new Date(parsed.getTime() - this.GMT * 3600 * 1000).toISOString();
+  }
+
   get startTime(): string | null | undefined {
     return this._startTime;
   }
@@ -1459,7 +1490,10 @@ export class RTSPOverWebSocket extends HTMLElement {
       });
     }
 
-    if (!/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/.test(v as string) && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/.test(v as string) && v !== null) {
+    // Broadened (see MEMORY.md) to also accept a naive form (no trailing
+    // designator) and an explicit `±HH:MM`/`±HHMM` offset, not just `Z` --
+    // `normalizeTimeInputToUtcIso()` below decides how each is handled.
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?$/i.test(v as string) && v !== null) {
       throw new RTSPOverWebSocketError({
         channelId: this.channel,
         elementId: this.getAttribute('id') ?? undefined,
@@ -1468,8 +1502,22 @@ export class RTSPOverWebSocket extends HTMLElement {
         message: 'Invalid input parameter type, check input time format.\r\nYou have to input ISO time format like YYYY-MM-DDTHH:mm:ss.SSSZ.'
       });
     }
-    this._startTime = v;
+    this._startTime = v === null ? null : this.normalizeTimeInputToUtcIso(v);
     this._currentTimestamp = this._startTime;
+    // Real bug fix (found live, reported by the user): `generateRTSPURL()`'s camera
+    // `playback` branch prioritizes `_localTimestamp` (an already-flowing stream's *current*
+    // position) over `startTime` on purpose, so pause/resume/speed changes keep resuming
+    // where playback actually is. But `_localTimestamp` used to only get cleared by `stop()`
+    // or the `GMT` setter -- an explicit new `startTime` assignment (e.g. selecting a
+    // different event on the timeline while a stream is already playing) left the *previous*
+    // stream's stale `_localTimestamp` in place, so the next `play()`/`generateRTSPURL()`
+    // call silently ignored the new `startTime` and kept resuming the old position instead.
+    // `seekingTime` never had this problem -- it unconditionally overrides `strStart` after
+    // the `_localTimestamp` check, regardless of priority. Clearing `_localTimestamp` here
+    // makes an explicit `startTime` assignment win the same way, without touching the
+    // pause/resume/speed path (which reads `_localTimestamp` directly and never goes through
+    // this setter).
+    this._localTimestamp = null;
   }
 
   get endTime(): string | null | undefined {
@@ -1485,7 +1533,10 @@ export class RTSPOverWebSocket extends HTMLElement {
         message: 'invalid input parameter type, check your input parameter type'
       });
     }
-    if (!/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/.test(v as string) && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/.test(v as string) && v !== null) {
+    // Broadened (see MEMORY.md) to also accept a naive form (no trailing
+    // designator) and an explicit `±HH:MM`/`±HHMM` offset, not just `Z` --
+    // `normalizeTimeInputToUtcIso()` decides how each is handled.
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?$/i.test(v as string) && v !== null) {
       throw new RTSPOverWebSocketError({
         channelId: this.channel,
         elementId: this.getAttribute('id') ?? undefined,
@@ -1494,7 +1545,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         message: 'Invalid input parameter type, check input time format.\r\nYou have to input ISO time format like YYYY-MM-DDTHH:mm:ss.SSSZ.'
       });
     }
-    this._endTime = v;
+    this._endTime = v === null ? null : this.normalizeTimeInputToUtcIso(v);
   }
 
   get seekingTime(): string | null | undefined {
@@ -1516,8 +1567,13 @@ export class RTSPOverWebSocket extends HTMLElement {
     // RTSPOverWebSocketPlayType.INSTANTPLAYBACK` — always `false` (a boolean can never
     // equal `3`) — so the ISO-date-format validation below never actually
     // runs, regardless of playType.
+    // Broadened (see MEMORY.md) to also accept a naive form (no trailing
+    // designator) and an explicit `±HH:MM`/`±HHMM` offset, not just `Z` --
+    // `normalizeTimeInputToUtcIso()` decides how each is handled. (This
+    // validation branch itself never actually runs -- legacy operator-
+    // precedence bug preserved above, unchanged.)
     if (!(this._playType as unknown as boolean) === (RTSPOverWebSocketPlayType.INSTANTPLAYBACK as unknown as boolean)) {
-      if (!/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/.test(v) && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/.test(v)) {
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?$/i.test(v)) {
         throw new RTSPOverWebSocketError({
           channelId: this.channel,
           elementId: this.getAttribute('id') ?? undefined,
@@ -1527,7 +1583,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         });
       }
     }
-    this._seekingTime = v;
+    this._seekingTime = this.normalizeTimeInputToUtcIso(v);
     if ((this.isplay && this._seekingTime !== null && this._seekingTime !== undefined) || (this._playType === RTSPOverWebSocketPlayType.INSTANTPLAYBACK && this._seekingTime !== null && this._seekingTime !== undefined)) {
       this.seeking();
     }
@@ -1542,6 +1598,10 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   get currentTimestamp(): string | null {
     return this._currentTimestamp;
+  }
+
+  get localTimestamp(): string | null {
+    return this._localTimestamp;
   }
 
   get client(): string | undefined {
@@ -1797,22 +1857,6 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.setAttribute('src', v);
   }
 
-  get useIsoTimeFormat(): boolean | null {
-    return this._useIso;
-  }
-  set useIsoTimeFormat(v: boolean) {
-    if (typeof v !== 'boolean') {
-      throw new RTSPOverWebSocketError({
-        channelId: this.channel,
-        elementId: this.getAttribute('id') ?? undefined,
-        errorCode: fromHex('0x0414'),
-        place: 'RTSPOverWebSocket.ts:supportDrop',
-        message: 'invalid input parameter type, check your input parameter type, this value need to a boolean type'
-      });
-    }
-    this._useIso = v;
-  }
-
   get statistics(): boolean {
     return this._statistics;
   }
@@ -1841,7 +1885,7 @@ export class RTSPOverWebSocket extends HTMLElement {
     this._filename = v;
   }
 
-  get GMT(): number | null {
+  get GMT(): number {
     return this._gmt;
   }
   set GMT(v: number | null | undefined) {
@@ -1859,7 +1903,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       });
     } else {
       if (v === null) {
-        this.info.device.gmt = this._gmt = null;
+        // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md) --
+        // normalize an explicit reset to the default instead of `null`.
+        this.info.device.gmt = this._gmt = 0;
         return;
       }
     }
@@ -1951,13 +1997,6 @@ export class RTSPOverWebSocket extends HTMLElement {
 
     this.info.media.bestshot = v;
     this.dispatch('changebestshot', { bestshot: this.info.media.bestshot });
-  }
-
-  get coordinatedUniversalTime(): boolean {
-    return this._coordinatedUniversalTime;
-  }
-  set coordinatedUniversalTime(v: boolean) {
-    this._coordinatedUniversalTime = v;
   }
 
   /**
@@ -3682,7 +3721,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
       case '0x0107': {
         if (this._readyState !== RTSPOverWebSocketPlayState.STOPPED) {
-          this.dispatch('waiting', { error: error.errorCode, codec: error.codec, media: error.media, waiting: error.waiting, message: error.description, place: error.place });
+          this.dispatch('waiting', { error: error.errorCode, codec: error.codec, media: error.media, waiting: error.waiting, message: error.description, place: error.place, playerClosed: error.playerClosed });
 
           if (this._useLoading && error.media === 'video') {
             if (this.playType !== RTSPOverWebSocketPlayType.INSTANTPLAYBACK && this._readyState !== RTSPOverWebSocketPlayState.PAUSED && error.waiting === true) {
@@ -3860,15 +3899,33 @@ export class RTSPOverWebSocket extends HTMLElement {
       const curDate = new Date(timestamp.timestamp * 1000 + timestamp.timestamp_usec);
       this._currentTimestamp = curDate.toISOString();
 
-      let localTimestamp: Date | undefined;
-      if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
-        timestamp.timezone = this.GMT * 60;
-        this._localTimestamp = curDate.toISOString();
-      }
+      // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md), so
+      // this is always available -- no more conditional guard needed here.
+      timestamp.timezone = this.GMT * 60;
 
+      // Real bug fix, found live (reported directly by the user, who
+      // supplied the exact intended contract: `currentTimestamp` is GMT-0/
+      // UTC, `_localTimestamp` is that same instant GMT-shifted to the
+      // device's own local wall clock). `this._localTimestamp` used to be
+      // assigned `curDate.toISOString()` directly above -- no offset
+      // applied at all, making it always identical to `_currentTimestamp`.
+      // The correctly GMT-shifted value was computed right here as the
+      // local `localTimestamp` variable, but only ever used for the
+      // dispatched `timestamp` event's `local` field and the debug
+      // `timestampElement` display -- never written back to
+      // `this._localTimestamp`. Every nvr branch across this class
+      // (`pause()`/`resume()`/`speed()`/`forward()`/`backward()`) reads
+      // `this._localTimestamp` expecting it to already be GMT-shifted
+      // forward, then subtracts the same GMT offset back off to recover
+      // true UTC for the outgoing `rangeClock` -- with `_localTimestamp`
+      // never actually shifted, that subtraction shifted an nvr's rangeClock
+      // further *away* from the correct instant instead of recovering it,
+      // on every one of those calls.
+      let localTimestamp: Date | undefined;
       if (timestamp.timezone !== null && timestamp.timezone !== undefined) {
         this.timezone_offset = timestamp.timezone / 60;
         localTimestamp = new Date(curDate.valueOf() + this.timezone_offset * 3600 * 1000);
+        this._localTimestamp = localTimestamp.toISOString();
       }
 
       this.dispatch('timestamp', {
@@ -3881,16 +3938,10 @@ export class RTSPOverWebSocket extends HTMLElement {
       });
 
       if (this.timestampElement !== null && this.timestampElement !== undefined && this._currentTimestamp !== undefined && this._currentTimestamp !== null) {
-        if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
-          this.timestampElement.textContent = (localTimestamp as Date).toISOString();
-        } else {
-          if (this.device === 'camera' && this._playType === RTSPOverWebSocketPlayType.PLAYBACK) {
-            this.timestampElement.textContent = new Date(curDate.valueOf() + (this.timezone_offset as number) * 3600 * 1000).toISOString();
-          } else {
-            const timezone = new Date().getTimezoneOffset();
-            this.timestampElement.textContent = new Date(curDate.getTime() - timezone).toISOString();
-          }
-        }
+        // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md), so
+        // `localTimestamp` above is always computed -- the old GMT-unset
+        // fallback branch is unreachable and was removed.
+        this.timestampElement.textContent = (localTimestamp as Date).toISOString();
       }
     } else {
       throw new RTSPOverWebSocketError({
@@ -4052,19 +4103,65 @@ export class RTSPOverWebSocket extends HTMLElement {
     switch (step) {
       case 'request':
         if (this._deviceType === 'camera') {
+          // Real bug fix, found live via a raw RTSP trace the user
+          // captured: `toYYYYMMDDHHMMSS()` formats in the *local* timezone
+          // by design (see its own doc comment) -- fine for whatever it was
+          // originally ported for, but wrong here. `currentTimestamp` is a
+          // UTC-labeled `currentDateTime.getTime()` instant; every other
+          // camera-bound clock string in this class represents that same
+          // kind of instant as UTC-labeled digits (stripped from a
+          // `.toISOString()`), not local-timezone digits. Formatting
+          // `targetDateTime` with local getters shifted the seek target by
+          // this machine's own UTC offset (confirmed live under KST, +9:
+          // a `currentTimestamp` of `19:35:...` produced a `Range:
+          // clock=` value of `...04:34:59-`, ~9 hours off), which the
+          // camera then rejected as an out-of-range/invalid clock target --
+          // 457 Invalid Range, tearing the connection down with no video
+          // ever playing. Built the same way `onCustomTimeSeek`'s normal,
+          // already-working `seekingTime` assignments are (`'...T...' +
+          // 'Z'`, no milliseconds) so this reaches `seeking()`'s existing
+          // camera-branch stripping logic in the exact shape it already
+          // handles correctly, rather than introducing yet another format.
           const currentDateTime = new Date(this.currentTimestamp as string);
           const targetDateTime = new Date(currentDateTime.getTime() - 2000);
-          this._seekingTime = toYYYYMMDDHHMMSS(targetDateTime);
+          this._seekingTime = targetDateTime.toISOString().split('.')[0] + 'Z';
+          // Temporary diagnostic (2026-09-02): investigating a live report
+          // of forward()/backward() getting stuck forever after this
+          // priming reseek (buttons never re-enable, no crash, no
+          // error/457) -- logs the actual rangeClock this seeking() call
+          // ends up sending, plus GMT, to rule in/out a bad Range value.
+          console.log('[onRTSPOverWebSocketStep] request:', { seekingTime: this._seekingTime, GMT: this.GMT, currentTimestamp: this.currentTimestamp });
           this.seeking();
+          console.log('[onRTSPOverWebSocketStep] request sent, rangeClock:', this.info.media.requestInfo.rangeClock);
         }
         break;
       case 'complete':
+        console.log('[onRTSPOverWebSocketStep] complete');
         if (this._deviceType === 'camera') {
           this.pause();
         }
         this.dispatch('statechange', { readyState: RTSPOverWebSocketPlayState.STEP });
         break;
     }
+  }
+
+  /** Forwards `MediaRouter`'s `player` availability (its internal decoder
+   * instance going null <-> non-null) as a public `'playerstatechange'`
+   * DOM event. This is the one signal a host page can trust to gate
+   * step-forward/backward UI on -- unlike `'statechange'`'s PAUSED/PLAYING/
+   * STEP readyStates, which can each legitimately fire for reasons
+   * unrelated to whether `MediaRouter.player` currently exists (e.g. the
+   * step's own auto-`pause()` ack racing a still-in-flight buffer-refill
+   * re-seek), so gating on those alone leaves a real window where a click
+   * reaches `MediaRouter.sendCommandData()` with a null player. Found live,
+   * reported directly by the user: a `backward()` crash whose window the
+   * FR-6.11/FR-6.10 v2.31/v2.32 fixes (`MediaRouter.ts`'s null guard, plus
+   * `videoControl.ts`'s disable-on-click/re-enable-on-STEP debounce) didn't
+   * fully close, because that debounce could be prematurely undone by an
+   * unrelated PAUSED ack before the buffer-refill's new player existed. See
+   * `MediaRouter.ts`'s `player` getter/setter and this repo's `MEMORY.md`. */
+  onRTSPOverWebSocketPlayerAvailability(available: boolean): void {
+    this.dispatch('playerstatechange', { available });
   }
 
   onRTSPOverWebSocketCapture(capture: RTSPOverWebSocketCaptureEvent): void {
@@ -4216,38 +4313,29 @@ export class RTSPOverWebSocket extends HTMLElement {
             } else if (typeof this._localTimestamp !== 'undefined' && this._localTimestamp !== null) {
               this.info.media.requestInfo.rangeClock = (new Date(new Date(this._localTimestamp).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
             } else {
-              if (!this._coordinatedUniversalTime) {
-                this.info.media.requestInfo.rangeClock = new Date(new Date(this.startTime).getTime() - timezone).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              } else {
-                this.info.media.requestInfo.rangeClock = new Date(this.startTime).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              }
+              // `startTime`/`endTime` are now unconditionally normalized to
+              // true UTC at the setter (see MEMORY.md) --
+              // `coordinatedUniversalTime` removed, this is always the
+              // former `true` shape.
+              this.info.media.requestInfo.rangeClock = new Date(this.startTime).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
             }
             if (this.endTime !== undefined && this.endTime !== null) {
-              if (!this._coordinatedUniversalTime) {
-                this.info.media.requestInfo.rangeClock += '-' + new Date(new Date(this.endTime).getTime() - timezone).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              } else {
-                this.info.media.requestInfo.rangeClock += '-' + new Date(this.endTime).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              }
+              this.info.media.requestInfo.rangeClock += '-' + new Date(this.endTime).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
             } else {
               this.info.media.requestInfo.rangeClock += '-';
             }
           }
         } else {
-          if (this._useIso && this._useIso !== null) {
-            this.info.media.requestInfo.rangeClock = ((this.currentTimestamp as string).split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            if (this.endTime !== undefined && this.endTime !== null) {
-              this.info.media.requestInfo.rangeClock += '-' + (this.endTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            } else {
-              this.info.media.requestInfo.rangeClock += '-';
-            }
-          } else {
-            this.info.media.requestInfo.rangeClock = (this.currentTimestamp as string).replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            if (this.endTime !== undefined && this.endTime !== null) {
-              this.info.media.requestInfo.rangeClock += '-' + this.endTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            } else {
-              this.info.media.requestInfo.rangeClock += '-';
-            }
-          }
+          // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md)
+          // -- reaching here means something upstream left it
+          // unset/cleared.
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:play()',
+            message: 'GMT is required but not set'
+          });
         }
       }
     }
@@ -4661,41 +4749,56 @@ export class RTSPOverWebSocket extends HTMLElement {
         console.log('[generateRTSPURL] camera playback times:', { startTime: this.startTime, endTime: this.endTime, seekingTime: this.seekingTime });
         strRtspURL += playType + '/';
 
-        if (this._useIso && this._useIso !== null) {
-          // TODO: camera iso time style generate (legacy: unimplemented)
-        } else {
-          if (this._currentTimestamp !== null && this._currentTimestamp !== undefined) {
-            strStart = (this._currentTimestamp.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
-          }
-          if (this.seekingTime !== null && this.seekingTime !== undefined) {
-            // Real bug fix (found live): this used to add `this.GMT * 3600 *
-            // 1000` on top of `this.seekingTime` whenever `this.GMT` was set
-            // (true for every camera device -- device.ts parses the
-            // camera's own TimeZoneIndex into player.GMT right after
-            // connecting), shifting the URL's embedded start time by a
-            // further GMT offset. `this.seekingTime` already IS the target
-            // wall-clock instant (callers build it as a UTC-labeled string
-            // whose digits are the intended local time, same convention
-            // `this.endTime`/`this._currentTimestamp` below use with no GMT
-            // adjustment of their own) -- adding GMT again pushed a KST
-            // (+9) target 9 hours into the future, confirmed via a live
-            // console trace: dragging to 16:31:28 produced a URL start of
-            // `20260902013312` (01:33, the next calendar day) instead of
-            // `20260901163128`, with the URL's own start/end pair landing
-            // in the wrong order.
-            strStart = (this.seekingTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
-          }
-          if (this.endTime !== null && this.endTime !== undefined) {
-            strEnd = (this.endTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
-          }
-          if (strStart !== undefined) {
-            strRtspURL += strStart;
-          }
-          if (strEnd !== undefined) {
-            strRtspURL += '-' + strEnd;
-          }
-          strRtspURL += '/';
+        // `_useIso` removed (see MEMORY.md) -- its `true` branch here was
+        // a literal `// TODO: camera iso time style generate (legacy:
+        // unimplemented)` no-op, meaning checking it produced a URL with
+        // no start/end embedded in the path at all. Always use the real
+        // implementation that used to be the `false` branch.
+        //
+        // `startTime`/`seekingTime`/`endTime` are now unconditionally
+        // normalized to true UTC at the setter (see MEMORY.md) -- unlike
+        // before, they no longer arrive pre-shifted to local wall clock, so
+        // this camera branch (which needs local-wall-clock digits for the
+        // camera's own `samsung-replay-timezone` RTSP extension) now shifts
+        // them forward by `GMT` itself before stripping punctuation,
+        // matching what `_localTimestamp` (below) has always done.
+        //
+        // Real bug fix (found live, 2026-09-02, immediately after the
+        // `_currentTimestamp` -> `_localTimestamp` fix above shipped): a
+        // *fresh* Play (no prior playback yet, so `_localTimestamp` -- only
+        // ever populated by a live `'timestamp'` event -- is still `null`)
+        // fell through both branches entirely, leaving `strStart` `undefined`
+        // and the URL missing its start segment outright (confirmed live:
+        // `.../recording/-20260902090643/OverlappedID=0/play.smp`, no digits
+        // before the `-`). The old `_currentTimestamp`-based code never hit
+        // this, because the `startTime` setter always mirrors into
+        // `_currentTimestamp` immediately, with no live stream required.
+        // `startTime` (now true UTC, like `_currentTimestamp` always was)
+        // restores that fresh-play fallback, kept lower priority than
+        // `_localTimestamp` so an already-flowing stream's *current* position
+        // (not the original search start) is what pause/resume/speed
+        // changes reuse.
+        if (this._localTimestamp !== null && this._localTimestamp !== undefined) {
+          strStart = (this._localTimestamp.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
+        } else if (this.startTime !== null && this.startTime !== undefined) {
+          const localStartTime = new Date(new Date(this.startTime).getTime() + this.GMT * 3600 * 1000).toISOString();
+          strStart = (localStartTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
         }
+        if (this.seekingTime !== null && this.seekingTime !== undefined) {
+          const localSeekingTime = new Date(new Date(this.seekingTime).getTime() + this.GMT * 3600 * 1000).toISOString();
+          strStart = (localSeekingTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
+        }
+        if (this.endTime !== null && this.endTime !== undefined) {
+          const localEndTime = new Date(new Date(this.endTime).getTime() + this.GMT * 3600 * 1000).toISOString();
+          strEnd = (localEndTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
+        }
+        if (strStart !== undefined) {
+          strRtspURL += strStart;
+        }
+        if (strEnd !== undefined) {
+          strRtspURL += '-' + strEnd;
+        }
+        strRtspURL += '/';
         if (this.overlappedId !== null && this.overlappedId !== undefined) {
           strRtspURL += 'OverlappedID=' + this.overlappedId + '/';
         }
@@ -4704,26 +4807,35 @@ export class RTSPOverWebSocket extends HTMLElement {
       } else if (this.info.media.type === 'backup') {
         strRtspURL += playType + '/';
 
-        if (this._useIso && this._useIso !== null) {
-          // TODO: camera iso time style generate (legacy: unimplemented)
-        } else {
-          if (this.startTime !== null && this.startTime !== undefined) {
-            strStart = (this.startTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
-          }
-          if (this.seekingTime !== null && this.seekingTime !== undefined) {
-            strStart = (this.seekingTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
-          }
-          if (this.endTime !== null && this.endTime !== undefined) {
-            strEnd = (this.endTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
-          }
-          if (strStart !== undefined) {
-            strRtspURL += strStart;
-          }
-          if (strEnd !== undefined) {
-            strRtspURL += '-' + strEnd;
-          }
-          strRtspURL += '/';
+        // `_useIso` removed (see MEMORY.md) -- its `true` branch here was
+        // a literal `// TODO: camera iso time style generate (legacy:
+        // unimplemented)` no-op, meaning checking it produced a URL with
+        // no start/end embedded in the path at all. Always use the real
+        // implementation that used to be the `false` branch.
+        //
+        // `startTime`/`seekingTime`/`endTime` are now unconditionally
+        // normalized to true UTC at the setter (see MEMORY.md) -- shift
+        // forward by `GMT` before stripping punctuation, matching the
+        // camera playback branch above.
+        if (this.startTime !== null && this.startTime !== undefined) {
+          const localStartTime = new Date(new Date(this.startTime).getTime() + this.GMT * 3600 * 1000).toISOString();
+          strStart = (localStartTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
         }
+        if (this.seekingTime !== null && this.seekingTime !== undefined) {
+          const localSeekingTime = new Date(new Date(this.seekingTime).getTime() + this.GMT * 3600 * 1000).toISOString();
+          strStart = (localSeekingTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
+        }
+        if (this.endTime !== null && this.endTime !== undefined) {
+          const localEndTime = new Date(new Date(this.endTime).getTime() + this.GMT * 3600 * 1000).toISOString();
+          strEnd = (localEndTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').replace(/T/gi, '').replace(/Z/gi, '').slice(0, 16);
+        }
+        if (strStart !== undefined) {
+          strRtspURL += strStart;
+        }
+        if (strEnd !== undefined) {
+          strRtspURL += '-' + strEnd;
+        }
+        strRtspURL += '/';
         if (this.overlappedId !== null && this.overlappedId !== undefined) {
           strRtspURL += 'OverlappedID=' + this.overlappedId + '/';
         }
@@ -4807,8 +4919,15 @@ export class RTSPOverWebSocket extends HTMLElement {
         }
         if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
           if (this.startTime !== null || this.endTime !== null || this.overlappedId !== null) {
-            const timezone = this.GMT * 3600 * 1000;
-            void timezone;
+            // Dead code removed here, confirmed correct as-is (found live,
+            // reviewed with the user, 2026-09-02): a `const timezone =
+            // this.GMT * 3600 * 1000;` was computed and then explicitly
+            // discarded (`void timezone;`), left over from an earlier fix to
+            // a real double-GMT-application bug -- `startTime`/`endTime`
+            // digits already represent the intended wall-clock instant (the
+            // same convention `seekingTime` uses elsewhere in this class),
+            // so no further GMT shift belongs here; applying `timezone`
+            // would have reintroduced that bug. Nothing to compute.
             if (typeof this.startTime !== 'undefined' && this.startTime !== null) {
               strStart = (new Date(new Date(this.startTime).getTime()).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
             } else {
@@ -4825,22 +4944,16 @@ export class RTSPOverWebSocket extends HTMLElement {
             }
           }
         } else {
-          if (this.startTime !== null || this.endTime !== null || this.overlappedId !== null) {
-            if (this.startTime !== null && this.startTime !== undefined) {
-              if (this._useIso && this._useIso !== null) {
-                strStart = (this.startTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              } else {
-                strStart = this.startTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              }
-            }
-            if (this.endTime !== null && this.endTime !== undefined) {
-              if (this._useIso && this._useIso !== null) {
-                strEnd = (this.endTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              } else {
-                strEnd = this.endTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              }
-            }
-          }
+          // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md)
+          // -- reaching here means something upstream left it
+          // unset/cleared.
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:generateRTSPURL()',
+            message: 'GMT is required but not set'
+          });
         }
         if (typeof strStart !== 'undefined' && strStart !== null) {
           queryParams.push('start=' + strStart);
@@ -5013,15 +5126,29 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (this._deviceType === 'camera') {
           // legacy: no-op (all logic commented out for camera devices)
         } else if (this._deviceType === 'nvr') {
-          if (typeof this.GMT !== 'undefined' && this.GMT !== null && typeof this._localTimestamp !== 'undefined' && this._localTimestamp !== null) {
+          // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md)
+          // -- split out of the compound condition this branch used to
+          // check, so only a genuinely-unset `GMT` throws; `_localTimestamp`
+          // being unset is a separate, still-legitimate fallback (unrelated
+          // to this change) preserved below.
+          if (typeof this.GMT === 'undefined' || this.GMT === null) {
+            throw new RTSPOverWebSocketError({
+              channelId: this.channel,
+              elementId: this.getAttribute('id') ?? undefined,
+              errorCode: fromHex('0x0414'),
+              place: 'RTSPOverWebSocket.ts:pause()',
+              message: 'GMT is required but not set'
+            });
+          }
+          if (typeof this._localTimestamp !== 'undefined' && this._localTimestamp !== null) {
             const timezone = this.GMT * 3600 * 1000;
             this.info.media.requestInfo.rangeClock = (new Date(new Date(this._localTimestamp).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
           } else {
-            if (this._useIso && this._useIso !== null) {
-              this.info.media.requestInfo.rangeClock = ((this.currentTimestamp as string).split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 16);
-            } else {
-              this.info.media.requestInfo.rangeClock = (this.currentTimestamp as string).replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            }
+            // `_useIso` removed (see MEMORY.md) -- always use the shape
+            // that used to be the `true` branch (drop the fraction, keep
+            // `Z`). The `.slice(0, 16)` here (vs `20` everywhere else) is a
+            // separate, pre-existing inconsistency, preserved as-is.
+            this.info.media.requestInfo.rangeClock = ((this.currentTimestamp as string).split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 16);
           }
         } else {
           throw new RTSPOverWebSocketError({
@@ -5053,6 +5180,16 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
       this.info.media.needToImmediate = false;
       this.info.media.requestInfo.cmd = 'pause';
+
+      console.log('[pause] request:', {
+        deviceType: this._deviceType,
+        GMT: this.GMT,
+        currentTimestamp: this.currentTimestamp,
+        localTimestamp: this._localTimestamp,
+        useClockRange: this._useClockRange,
+        rangeClock: this.info.media.requestInfo.rangeClock,
+        url: this.info.media.requestInfo.url,
+      });
 
       this.player.control(this.info);
     }
@@ -5095,28 +5232,27 @@ export class RTSPOverWebSocket extends HTMLElement {
       } else if (this._deviceType === 'nvr') {
         if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
           const timezone = this.GMT * 3600 * 1000;
+          // `seekingTime` is now unconditionally normalized to true UTC at
+          // the setter (see MEMORY.md) -- no more subtraction needed here.
+          // `_localTimestamp` fallback is untouched (not one of the three
+          // normalized properties).
           if (typeof this.seekingTime !== 'undefined' && this.seekingTime !== null) {
-            this.info.media.requestInfo.rangeClock = (new Date(new Date(this.seekingTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+            this.info.media.requestInfo.rangeClock = (new Date(this.seekingTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
             this._seekingTime = null;
           } else {
             this.info.media.requestInfo.rangeClock = (new Date(new Date(this._localTimestamp as string).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
           }
         } else {
-          if (this._useIso && this._useIso !== null) {
-            if (this.seekingTime !== null && this.seekingTime !== undefined) {
-              this.info.media.requestInfo.rangeClock = (this.seekingTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              this._seekingTime = null;
-            } else {
-              this.info.media.requestInfo.rangeClock = ((this.currentTimestamp as string).split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            }
-          } else {
-            if (this.seekingTime !== null && this.seekingTime !== undefined) {
-              this.info.media.requestInfo.rangeClock = this.seekingTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              this._seekingTime = null;
-            } else {
-              this.info.media.requestInfo.rangeClock = (this.currentTimestamp as string).replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            }
-          }
+          // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md)
+          // -- reaching here means something upstream left it
+          // unset/cleared.
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:resume()',
+            message: 'GMT is required but not set'
+          });
         }
       } else {
         throw new RTSPOverWebSocketError({
@@ -5142,6 +5278,17 @@ export class RTSPOverWebSocket extends HTMLElement {
     if (this.info.media.requestInfo.scale !== this._playSpeed.value) {
       this.info.media.requestInfo.scale = this._playSpeed.value;
     }
+
+    console.log('[resume] request:', {
+      deviceType: this._deviceType,
+      GMT: this.GMT,
+      currentTimestamp: this.currentTimestamp,
+      localTimestamp: this._localTimestamp,
+      seekingTime: this.seekingTime,
+      useClockRange: this._useClockRange,
+      rangeClock: this.info.media.requestInfo.rangeClock,
+      url: this.info.media.requestInfo.url,
+    });
 
     this.player.control(this.info);
   }
@@ -5316,45 +5463,28 @@ export class RTSPOverWebSocket extends HTMLElement {
       } else if (this._deviceType === 'nvr') {
         if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
           const timezone = this.GMT * 3600 * 1000;
-          if (this._playSpeed.value > 0) {
-            this.info.media.requestInfo.rangeClock = (new Date(new Date(this._localTimestamp as string).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            if (this.endTime !== undefined && this.endTime !== null) {
-              if (!this._coordinatedUniversalTime) {
-                this.info.media.requestInfo.rangeClock += '-' + (new Date(new Date(this.endTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              } else {
-                this.info.media.requestInfo.rangeClock += '-' + (new Date(this.endTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              }
-            } else {
-              this.info.media.requestInfo.rangeClock += '-';
-            }
+          // `endTime` is now unconditionally normalized to true UTC at the
+          // setter (see MEMORY.md) -- `coordinatedUniversalTime` removed,
+          // this is always its former `true` shape. `_localTimestamp` is
+          // untouched (not one of the three normalized properties); both
+          // speed-sign branches computed it identically already.
+          this.info.media.requestInfo.rangeClock = (new Date(new Date(this._localTimestamp as string).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+          if (this.endTime !== undefined && this.endTime !== null) {
+            this.info.media.requestInfo.rangeClock += '-' + (new Date(this.endTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
           } else {
-            this.info.media.requestInfo.rangeClock = (new Date(new Date(this._localTimestamp as string).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            if (this.endTime !== undefined && this.endTime !== null) {
-              if (!this._coordinatedUniversalTime) {
-                this.info.media.requestInfo.rangeClock += '-' + (new Date(new Date(this.endTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              } else {
-                this.info.media.requestInfo.rangeClock += '-' + (new Date(this.endTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              }
-            } else {
-              this.info.media.requestInfo.rangeClock += '-';
-            }
+            this.info.media.requestInfo.rangeClock += '-';
           }
         } else {
-          if (this._useIso && this._useIso !== null) {
-            this.info.media.requestInfo.rangeClock = ((this.currentTimestamp as string).split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            if (this.endTime !== undefined && this.endTime !== null) {
-              this.info.media.requestInfo.rangeClock += '-' + (this.endTime.split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            } else {
-              this.info.media.requestInfo.rangeClock += '-';
-            }
-          } else {
-            this.info.media.requestInfo.rangeClock = (this.currentTimestamp as string).replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            if (this.endTime !== undefined && this.endTime !== null) {
-              this.info.media.requestInfo.rangeClock += '-' + this.endTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            } else {
-              this.info.media.requestInfo.rangeClock += '-';
-            }
-          }
+          // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md)
+          // -- reaching here means something upstream left it
+          // unset/cleared.
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:speed()',
+            message: 'GMT is required but not set'
+          });
         }
       } else {
         throw new RTSPOverWebSocketError({
@@ -5394,8 +5524,8 @@ export class RTSPOverWebSocket extends HTMLElement {
       });
     }
 
+    let isoTimeString: string | undefined;
     if (this.info.media.type.toLowerCase() === 'playback') {
-      let isoTimeString: string;
       if (this.seekingTime !== null && this.seekingTime !== undefined) {
         const currentDateTime = new Date(this.seekingTime);
         isoTimeString = new Date(currentDateTime.getTime()).toISOString();
@@ -5405,7 +5535,16 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
           currentDateTime = new Date(this._localTimestamp as string);
         } else {
-          currentDateTime = new Date(this.currentTimestamp as string);
+          // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md)
+          // -- reaching here means something upstream left it
+          // unset/cleared.
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:forward()',
+            message: 'GMT is required but not set'
+          });
         }
         isoTimeString = new Date(currentDateTime.getTime() + 1000).toISOString();
       }
@@ -5416,14 +5555,27 @@ export class RTSPOverWebSocket extends HTMLElement {
       } else if (this._deviceType === 'nvr') {
         if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
           const timezone = this.GMT * 3600 * 1000;
+          // `seekingTime` is now unconditionally normalized to true UTC at
+          // the setter (see MEMORY.md) -- no more subtraction needed here.
+          // `_localTimestamp` fallback is untouched (not one of the three
+          // normalized properties).
           if (typeof this.seekingTime !== 'undefined' && this.seekingTime !== null) {
-            this.info.media.requestInfo.rangeClock = (new Date(new Date(this.seekingTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+            this.info.media.requestInfo.rangeClock = (new Date(this.seekingTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
             this._seekingTime = null;
           } else {
             this.info.media.requestInfo.rangeClock = (new Date(new Date(this._localTimestamp as string).getTime() - timezone + 1000).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
           }
         } else {
-          this.info.media.requestInfo.rangeClock = isoTimeString.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+          // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md)
+          // -- reaching here means something upstream left it
+          // unset/cleared.
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:forward()',
+            message: 'GMT is required but not set'
+          });
         }
       } else {
         throw new RTSPOverWebSocketError({
@@ -5447,11 +5599,23 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.info.media.type = 'playback';
     this.info.media.needToImmediate = true;
     this.info.media.requestInfo.cmd = 'forward';
-    this.info.media.requestInfo.scale = 0.0;
+    if (this._deviceType === 'nvr') {
+      this.info.media.requestInfo.scale = 0.0;
+    }
 
     if (this._source === null || this._source === undefined) {
       this.info.media.requestInfo.url = this.generateRTSPURL();
     }
+
+    console.log('[forward] request:', {
+      deviceType: this._deviceType,
+      currentTimestamp: this.currentTimestamp,
+      localTimestamp: this._localTimestamp,
+      isoTimeString,
+      rangeClock: this.info.media.requestInfo.rangeClock,
+      scale: this.info.media.requestInfo.scale,
+      url: this.info.media.requestInfo.url,
+    });
 
     this.player.control(this.info);
   }
@@ -5467,8 +5631,8 @@ export class RTSPOverWebSocket extends HTMLElement {
       });
     }
 
+    let isoTimeString: string | undefined;
     if (this.info.media.type.toLowerCase() === 'playback') {
-      let isoTimeString: string;
       if (this.seekingTime !== null && this.seekingTime !== undefined) {
         const currentDateTime = new Date(this.seekingTime);
         isoTimeString = new Date(currentDateTime.getTime()).toISOString();
@@ -5483,37 +5647,34 @@ export class RTSPOverWebSocket extends HTMLElement {
       } else if (this._deviceType === 'nvr') {
         if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
           const timezone = this.GMT * 3600 * 1000;
+          // `seekingTime`/`endTime` are now unconditionally normalized to
+          // true UTC at the setter (see MEMORY.md) -- no more subtraction
+          // needed for `seekingTime`, and `coordinatedUniversalTime`
+          // removed (`endTime` always takes its former `true` shape). The
+          // `_localTimestamp` fallback below is untouched (not one of the
+          // three normalized properties).
           if (typeof this.seekingTime !== 'undefined' && this.seekingTime !== null) {
-            this.info.media.requestInfo.rangeClock = (new Date(new Date(this.seekingTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+            this.info.media.requestInfo.rangeClock = (new Date(this.seekingTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
             this._seekingTime = null;
-            if (this.endTime !== undefined && this.endTime !== null) {
-              if (!this._coordinatedUniversalTime) {
-                this.info.media.requestInfo.rangeClock += '-' + (new Date(new Date(this.endTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              } else {
-                this.info.media.requestInfo.rangeClock += '-' + (new Date(this.endTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              }
-            } else {
-              this.info.media.requestInfo.rangeClock += '-';
-            }
           } else {
             this.info.media.requestInfo.rangeClock = (new Date(new Date(this._localTimestamp as string).getTime() - timezone - 1000).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-            if (this.endTime !== undefined && this.endTime !== null) {
-              if (!this._coordinatedUniversalTime) {
-                this.info.media.requestInfo.rangeClock += '-' + (new Date(new Date(this.endTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              } else {
-                this.info.media.requestInfo.rangeClock += '-' + (new Date(this.endTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-              }
-            } else {
-              this.info.media.requestInfo.rangeClock += '-';
-            }
           }
-        } else {
-          this.info.media.requestInfo.rangeClock = isoTimeString.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
           if (this.endTime !== undefined && this.endTime !== null) {
-            this.info.media.requestInfo.rangeClock += '-' + this.endTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+            this.info.media.requestInfo.rangeClock += '-' + (new Date(this.endTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
           } else {
             this.info.media.requestInfo.rangeClock += '-';
           }
+        } else {
+          // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md)
+          // -- reaching here means something upstream left it
+          // unset/cleared.
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:backward()',
+            message: 'GMT is required but not set'
+          });
         }
       } else {
         throw new RTSPOverWebSocketError({
@@ -5537,11 +5698,23 @@ export class RTSPOverWebSocket extends HTMLElement {
     this.info.media.type = 'playback';
     this.info.media.needToImmediate = true;
     this.info.media.requestInfo.cmd = 'backward';
-    this.info.media.requestInfo.scale = 0.0;
+    if (this._deviceType === 'nvr') {
+      this.info.media.requestInfo.scale = 0.0;
+    }
 
     if (this._source === null || this._source === undefined) {
       this.info.media.requestInfo.url = this.generateRTSPURL();
     }
+
+    console.log('[backward] request:', {
+      deviceType: this._deviceType,
+      currentTimestamp: this.currentTimestamp,
+      localTimestamp: this._localTimestamp,
+      isoTimeString,
+      rangeClock: this.info.media.requestInfo.rangeClock,
+      scale: this.info.media.requestInfo.scale,
+      url: this.info.media.requestInfo.url,
+    });
 
     this.player.control(this.info);
   }
@@ -5567,83 +5740,113 @@ export class RTSPOverWebSocket extends HTMLElement {
       });
     }
 
-    if (this._playType === RTSPOverWebSocketPlayType.INSTANTPLAYBACK) {
-      this.info.media.requestInfo.cmd = 'seek';
-      this.info.media.type = 'instantplayback';
-      this.info.media.requestInfo.rangeClock = this.seekingTime;
-      this.player.control(this.info);
-      this._seekingTime = null;
-      this.info.media.requestInfo.rangeClock = undefined;
-    } else {
-      if (this.info.media.type.toLowerCase() === 'playback') {
-        if (this._deviceType === 'camera') {
-          // Real bug fix (found live via a console trace, not a preserved
-          // legacy no-op): this branch used to only update rangeClock when
-          // `_useIso` was truthy, which this app's caller never sets --
-          // rangeClock silently kept whatever value speed()'s camera branch
-          // (line ~5285, which runs first: playback.ts's onCustomTimeSeek
-          // sets playSpeed = '1' immediately before seekingTime) had just
-          // written from the OLD `currentTimestamp`, not the newly
-          // requested seek target. Every drag-seek therefore sent
-          // `Range: clock=<current position>-`, i.e. "resume where you
-          // already are", regardless of where the marker was dropped.
-          // Always recomputing rangeClock from `this.seekingTime` here
-          // (the ISO/non-ISO URL-format distinction in generateRTSPURL()
-          // below is unrelated to this header) fixes it for both
-          // `useIsoTimeFormat` states.
-          //
-          // Second fix, found immediately after the first landed: this used
-          // to keep the trailing `Z` (`new Date(...).toISOString()`-style),
-          // matching the NVR branch below and RFC 2326's `utc-time` grammar
-          // ("...HHMMSS[.frac]Z"). But every OTHER place this codebase
-          // builds a camera-bound clock/URL value for the *camera*'s own
-          // proprietary `samsung-replay-timezone` RTSP extension --
-          // generateRTSPURL()'s own `strStart`/`strEnd` a few hundred lines
-          // up, and speed()'s camera branch -- strips `Z` (bare
-          // `YYYYMMDDTHHMMSS`, no trailing zone marker), and only NVR's
-          // `onvif-replay` extension keeps it. Sending the RFC-style
-          // Z-suffixed form to a camera stopped playback outright on every
-          // seek (reported live, immediately after the Z-suffixed version
-          // shipped) -- camera devices apparently reject/ignore a Range
-          // header in a format their own extension doesn't expect, rather
-          // than degrading gracefully. Stripped to match the rest of the
-          // camera code paths.
-          this.info.media.requestInfo.rangeClock = this.seekingTime.replace(/-/g, '').replace(/:/gi, '').replace(/Z/gi, '').slice(0, 20);
-        } else if (this._deviceType === 'nvr') {
-          if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
-            this.info.media.requestInfo.rangeClock = new Date(this.seekingTime).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+    // Real bug fix, found live (reported directly by the user: a
+    // seemingly-unrelated *later* playback search used the wrong start
+    // time -- a leftover position from an *earlier* forward()/backward()
+    // test the evening before). `_seekingTime` used to only get cleared at
+    // the very end of this method, after generateRTSPURL()/player.control()
+    // had already run -- any exception thrown in between (a connection
+    // drop, a reconnect race, any of the several throws this method and
+    // generateRTSPURL() itself can hit) left it stuck at whatever value it
+    // held, forever. generateRTSPURL()'s camera-playback branch prioritizes
+    // `this.seekingTime` over `_currentTimestamp` whenever it's non-null --
+    // so a stuck value from one interrupted seek kept silently overriding
+    // every *subsequent, otherwise-correct* startTime/_currentTimestamp for
+    // every future play()/resume()/seeking() call, indefinitely, with no
+    // way to tell without reading source. try/finally guarantees this
+    // resets on every path out of this method, success or failure.
+    try {
+      if (this._playType === RTSPOverWebSocketPlayType.INSTANTPLAYBACK) {
+        this.info.media.requestInfo.cmd = 'seek';
+        this.info.media.type = 'instantplayback';
+        this.info.media.requestInfo.rangeClock = this.seekingTime;
+        this.player.control(this.info);
+        this.info.media.requestInfo.rangeClock = undefined;
+      } else {
+        if (this.info.media.type.toLowerCase() === 'playback') {
+          if (this._deviceType === 'camera') {
+            // Real bug fix (found live via a console trace, not a preserved
+            // legacy no-op): this branch used to only update rangeClock when
+            // the (since-removed, see MEMORY.md) `_useIso` flag was truthy,
+            // which this app's caller never set -- rangeClock silently kept
+            // whatever value speed()'s camera branch (line ~5285, which runs
+            // first: playback.ts's onCustomTimeSeek sets playSpeed = '1'
+            // immediately before seekingTime) had just written from the OLD
+            // `currentTimestamp`, not the newly requested seek target. Every
+            // drag-seek therefore sent `Range: clock=<current position>-`,
+            // i.e. "resume where you already are", regardless of where the
+            // marker was dropped. Always recomputing rangeClock from
+            // `this.seekingTime` here fixes it unconditionally.
+            //
+            // Second fix, found immediately after the first landed: this used
+            // to keep the trailing `Z` (`new Date(...).toISOString()`-style),
+            // matching the NVR branch below and RFC 2326's `utc-time` grammar
+            // ("...HHMMSS[.frac]Z"). But every OTHER place this codebase
+            // builds a camera-bound clock/URL value for the *camera*'s own
+            // proprietary `samsung-replay-timezone` RTSP extension --
+            // generateRTSPURL()'s own `strStart`/`strEnd` a few hundred lines
+            // up, and speed()'s camera branch -- strips `Z` (bare
+            // `YYYYMMDDTHHMMSS`, no trailing zone marker), and only NVR's
+            // `onvif-replay` extension keeps it. Sending the RFC-style
+            // Z-suffixed form to a camera stopped playback outright on every
+            // seek (reported live, immediately after the Z-suffixed version
+            // shipped) -- camera devices apparently reject/ignore a Range
+            // header in a format their own extension doesn't expect, rather
+            // than degrading gracefully. Stripped to match the rest of the
+            // camera code paths.
+            //
+            // Third fix: `seekingTime` is now unconditionally normalized to
+            // true UTC at the setter (see MEMORY.md) -- unlike before, it no
+            // longer arrives pre-shifted to local wall clock, so this shifts
+            // it forward by `GMT` itself before stripping, matching
+            // `generateRTSPURL()`'s camera branches.
+            this.info.media.requestInfo.rangeClock = new Date(new Date(this.seekingTime).getTime() + this.GMT * 3600 * 1000).toISOString().replace(/-/g, '').replace(/:/gi, '').replace(/Z/gi, '').slice(0, 20);
+          } else if (this._deviceType === 'nvr') {
+            if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
+              this.info.media.requestInfo.rangeClock = new Date(this.seekingTime).toISOString().replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+            } else {
+              // `GMT` is unconditionally defaulted to `0` now (see
+              // MEMORY.md) -- reaching here means something upstream left
+              // it unset/cleared.
+              throw new RTSPOverWebSocketError({
+                channelId: this.channel,
+                elementId: this.getAttribute('id') ?? undefined,
+                errorCode: fromHex('0x0414'),
+                place: 'RTSPOverWebSocket.ts:seeking()',
+                message: 'GMT is required but not set'
+              });
+            }
           } else {
-            this.info.media.requestInfo.rangeClock = this.seekingTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
+            throw new RTSPOverWebSocketError({
+              channelId: this.channel,
+              elementId: this.getAttribute('id') ?? undefined,
+              errorCode: fromHex('0x0404'),
+              place: 'RTSPOverWebSocket.ts:seeking()',
+              message: 'device type is undefined'
+            });
           }
         } else {
           throw new RTSPOverWebSocketError({
             channelId: this.channel,
             elementId: this.getAttribute('id') ?? undefined,
-            errorCode: fromHex('0x0404'),
-            place: 'RTSPOverWebSocket.ts:983',
-            message: 'device type is undefined'
+            errorCode: fromHex('0x1001'),
+            place: 'RTSPOverWebSocket.ts:seeking()',
+            message: 'This function support only playback mode.'
           });
         }
-      } else {
-        throw new RTSPOverWebSocketError({
-          channelId: this.channel,
-          elementId: this.getAttribute('id') ?? undefined,
-          errorCode: fromHex('0x1001'),
-          place: 'RTSPOverWebSocket.ts:forward()',
-          message: 'This function support only placyback mode.'
-        });
+
+        this.info.media.type = 'playback';
+        this.info.media.needToImmediate = false;
+        this.info.media.requestInfo.cmd = 'seek';
+
+        if (this._source === null || this._source === undefined) {
+          this.info.media.requestInfo.url = this.generateRTSPURL();
+        }
+
+        this.player.control(this.info);
       }
-
-      this.info.media.type = 'playback';
-      this.info.media.needToImmediate = false;
-      this.info.media.requestInfo.cmd = 'seek';
-
-      if (this._source === null || this._source === undefined) {
-        this.info.media.requestInfo.url = this.generateRTSPURL();
-      }
-
+    } finally {
       this._seekingTime = null;
-      this.player.control(this.info);
     }
   }
 
@@ -5726,9 +5929,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       (this.info.device as unknown as { channel: number }).channel = this.channel;
       this.info.media.split = false;
       this.info.device.captureName = this._filename ?? undefined;
-      if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
-        (this.info.device as unknown as { gmt: number }).gmt = this.GMT;
-      }
+      // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md) --
+      // always set, no fallback needed (there never was one here).
+      (this.info.device as unknown as { gmt: number }).gmt = this.GMT;
 
       this.info.media.requestInfo.cmd = flag ? 'backupstart' : 'backupstop';
       (this.player as StreamPlayer).control(this.info);
@@ -5771,32 +5974,27 @@ export class RTSPOverWebSocket extends HTMLElement {
       // legacy: no-op (all logic commented out for camera devices)
     } else {
       if (typeof this.GMT !== 'undefined' && this.GMT !== null) {
-        const timezone = this.GMT * 3600 * 1000;
-        if (!this._coordinatedUniversalTime) {
-          this.info.media.requestInfo.rangeClock = (new Date(new Date(this.startTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-        } else {
-          this.info.media.requestInfo.rangeClock = (new Date(this.startTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-        }
+        // `startTime`/`endTime` are now unconditionally normalized to true
+        // UTC at the setter (see MEMORY.md) -- `coordinatedUniversalTime`
+        // removed, this is always the correct (former `true`) shape.
+        this.info.media.requestInfo.rangeClock = (new Date(this.startTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
         if (this.endTime !== undefined && this.endTime !== null) {
-          if (!this._coordinatedUniversalTime) {
-            this.info.media.requestInfo.rangeClock += '-' + (new Date(new Date(this.endTime).getTime() - timezone).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-          } else {
-            this.info.media.requestInfo.rangeClock += '-' + (new Date(this.endTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-          }
+          this.info.media.requestInfo.rangeClock += '-' + (new Date(this.endTime).toISOString().split('.')[0] + 'Z').replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
         } else {
           this.info.media.requestInfo.rangeClock += '-';
         }
       } else {
-        if (this._useIso && this._useIso !== null) {
-          this.info.media.requestInfo.rangeClock = this.startTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-        } else {
-          this.info.media.requestInfo.rangeClock = this.startTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-        }
-        if (this.endTime !== undefined && this.endTime !== null) {
-          this.info.media.requestInfo.rangeClock += '-' + this.endTime.replace(/-/g, '').replace(/:/gi, '').slice(0, 20);
-        } else {
-          this.info.media.requestInfo.rangeClock += '-';
-        }
+        // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md) --
+        // reaching here means something upstream left it unset/cleared,
+        // which is no longer a legitimate state for this method to
+        // silently degrade for.
+        throw new RTSPOverWebSocketError({
+          channelId: this.channel,
+          elementId: this.getAttribute('id') ?? undefined,
+          errorCode: fromHex('0x0414'),
+          place: 'RTSPOverWebSocket.ts:startBackup()',
+          message: 'GMT is required but not set'
+        });
       }
     }
 
@@ -5893,6 +6091,7 @@ interface RTSPOverWebSocketErrorEventLike {
   place?: string;
   decoderId?: unknown;
   performance?: unknown;
+  playerClosed?: boolean;
   // The scale a PLAY-type response actually applied -- see
   // RtspClientErrorEvent.scale (RtspClient.ts) and this class's own
   // onRTSPOverWebSocketError() '0x0000' case, which self-corrects

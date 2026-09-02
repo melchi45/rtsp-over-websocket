@@ -59,6 +59,10 @@ export class StepBufferList {
     // push()'s framerate*4 auto-tune above with a missing framerate): NaN
     // comparisons are always false, so `x >= NaN` is false (ternary picks
     // `true`) while `x < NaN` is also false — not the same result.
+    // Temporary diagnostic (2026-09-02): see MediaRouter.ts's matching log
+    // -- investigating a live report of forward()/backward() getting stuck
+    // forever (step never completes, buttons never re-enable).
+    console.log('[StepBufferList] push:', { length: this.stepList.length, bufferingLength: this.bufferingLength, framerate: videoInfo.framerate });
     return this.stepList.length >= this.bufferingLength ? false : true;
   }
 
@@ -118,7 +122,22 @@ export class StepBufferList {
   }
 
   setBufferingLength(length: number): void {
-    this.bufferingLength = length;
+    // Real bug fix (found live, 2026-09-02): a stream whose SPS/RTP
+    // metadata never signals a framerate leaves `videoInfo.framerate`
+    // `undefined` (a real, already-anticipated case elsewhere in this
+    // codebase -- see MediaRouter.ts's `setFrameRate(typeof
+    // videoInfo.framerate === 'undefined' ? 0 : videoInfo.framerate)`
+    // guard). `push()` calls this with `framerate * 4`, i.e. `NaN`, and
+    // neither clamp below ever applies to `NaN` (every comparison against
+    // `NaN` is `false`) -- `bufferingLength` stayed `NaN` forever, and
+    // `push()`'s own `stepList.length >= bufferingLength` check is then
+    // always `false` too, so it can never return `false` (step "buffer
+    // full") -- forward()/backward() got stuck buffering indefinitely,
+    // with no crash and no error, `#forward`/`#backward` never re-enabling.
+    // Falls back to `DEFAULT_BUFFERING_LENGTH` for any non-finite input
+    // before clamping, same as an unset framerate always effectively did
+    // before this framerate-derived auto-tune ever ran.
+    this.bufferingLength = Number.isFinite(length) ? length : DEFAULT_BUFFERING_LENGTH;
     if (this.bufferingLength > MAX_BUFFERING_LENGTH) {
       this.bufferingLength = MAX_BUFFERING_LENGTH;
     } else if (this.bufferingLength < MIN_BUFFERING_LENGTH) {
