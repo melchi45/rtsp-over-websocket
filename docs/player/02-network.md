@@ -16,6 +16,7 @@ client, with concrete method behavior, wire framing, and RFC citations.*
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-31 | `SunapiManager` now caches digest challenges across `init()` calls (`SunapiClient.seedAuthInfo()`) to cut the redundant OPTIONS-preflight/401-retry round trip most `init()` calls previously paid |
 | 2026-09-01 | `parseRtspResponse()` now parses a PLAY/SEEK/RESUME response's `Scale` header into `RtspResponseData.Scale`, threaded through as `RtspClientErrorEvent.scale` so `RTSPOverWebSocket` can self-correct `playSpeed` when a device clamps/rejects the requested value |
+| 2026-09-02 | Fix TEARDOWN belt-and-suspenders disconnect trigger racing the real response: it polled every 500ms and force-`clearTransport()`'d as soon as that first tick found `currentState` still `'Playing'`, regardless of whether the actual `200 OK` had arrived yet — on a slower TEARDOWN (observed live on recording/playback sessions) this tore the transport down before the real response could be processed, so no `200 OK` was ever seen for it. Now a single 5s `setTimeout` (`teardownWatchdogHandler`), cancelled from `clearTransport()` itself as soon as the response-driven path (or any other path) completes teardown first, so it never fires once the real response has already been handled |
 
 ---
 
@@ -109,10 +110,17 @@ recent history — see `retryWithCredentials()` below).
   `transport.SendRtspCommand(message, callback)`. The callback runs `RtspResponseHandler`, then
   shifts the completed item off `rtspQueue` and, if more remain, schedules the next `_send` via
   `setTimeout(...)` (yields a tick rather than recursing synchronously). For `TEARDOWN`, also
-  starts a 500ms poll loop that calls `clearTransport()` once `currentState === 'Playing' &&
-  nextState === 'Teardown'` — this exists because the TEARDOWN response itself drives that
-  transition via `RtspResponseHandler`/`handleResponse200`; the poll is a belt-and-suspenders
-  disconnect trigger.
+  arms a 5s fallback timer (`teardownWatchdogHandler`) that calls `clearTransport()` if
+  `currentState === 'Playing' && nextState === 'Teardown'` is *still* true once it fires — this
+  exists because the TEARDOWN response itself normally drives that transition via
+  `RtspResponseHandler`/`handleResponse200`; the timer is a belt-and-suspenders disconnect trigger
+  for a response that never arrives at all (dropped packet, server hang). `clearTransport()`
+  itself cancels this timer unconditionally on entry, from whichever path reaches it first (the
+  real response, or the fallback), so the two can't race each other into a double teardown or
+  (the bug this replaced — found live 2026-09-02: a 500ms *poll interval* fired on its very first
+  tick whenever a real `200 OK` simply hadn't arrived yet, tearing the transport down — and with
+  it, the in-flight response — before `RtspResponseHandler` ever got to process it) fire before a
+  merely-slow real response is processed.
 
 **Response parsing**
 

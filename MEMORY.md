@@ -1787,3 +1787,21 @@ Fix, split across two files:
 
 See `docs/player/01-elements-interface-exceptions.md`'s `onRTSPOverWebSocketError()` bullet and
 `docs/player/02-network.md`'s `parseRtspResponse()` bullet for the full line-referenced trace.
+
+## TEARDOWN's belt-and-suspenders disconnect trigger raced the real response (fixed)
+
+Found live (2026-09-02, wisenet-camera-discovery playback Stop button): the RTSP wire log sometimes showed a
+`TEARDOWN` request with no `200 OK` ever logged for it before the connection dropped — intermittent, not every
+time. Root cause in `RtspClient.ts`'s `_send()`: right after sending TEARDOWN, it armed a `setInterval` polling
+every **500ms** that force-called `clearTransport()` (which synchronously disconnects the transport) as soon as
+`currentState === 'Playing' && nextState === 'Teardown'` was true — with no check for whether the real response
+had actually arrived yet. Normally the response arrives well inside 500ms and `RtspResponseHandler`'s own
+Playing+Teardown branch (`handleResponse200`) wins the race, calling `clearTransport()` first. But when the
+camera's TEARDOWN response is merely slow (observed on recording/playback sessions specifically, not live) rather
+than absent, the poll's first tick fires anyway and tears the transport down before the in-flight `200 OK` can be
+processed — a real reply from the camera, silently discarded by the client's own timing.
+
+Fix: replaced the repeating 500ms poll with a single 5s `setTimeout` (`teardownWatchdogHandler`), and
+`clearTransport()` now unconditionally cancels it on entry — from whichever path reaches `clearTransport()` first
+(the response-driven path, or the fallback timer itself), so the loser of the race never fires. 5s was picked to
+comfortably clear a slow-but-real response while still being a meaningfully bounded fallback for a response that

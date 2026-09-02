@@ -301,6 +301,7 @@ export class RtspClient {
   private audioTalkServiceStatus = false;
   private getParameterIntervalHandler: ReturnType<typeof setInterval> | null = null;
   private checkAliveIntervalHandler: ReturnType<typeof setInterval> | null = null;
+  private teardownWatchdogHandler: ReturnType<typeof setTimeout> | null = null;
   private isRTPRunning = false;
   private isPausing = false;
   private checkRtspAlive = false;
@@ -521,14 +522,25 @@ export class RtspClient {
 
         if (message === null || method === 'TEARDOWN') {
           this.nextState = 'Teardown';
-          const checkIntervalHandler = setInterval(() => {
+          if (this.teardownWatchdogHandler !== null) {
+            clearTimeout(this.teardownWatchdogHandler);
+          }
+          // Belt-and-suspenders disconnect trigger: normally the TEARDOWN
+          // response itself drives Playing+Teardown -> clearTransport() via
+          // RtspResponseHandler (cleared below when that fires). This is
+          // only a fallback for a response that never arrives at all
+          // (dropped packet, server hang) -- long enough that a real,
+          // merely-slow 200 OK (a recording TEARDOWN has been observed
+          // taking longer than this timer's previous 500ms) isn't mistaken
+          // for one that never arrives and torn down before it's processed.
+          this.teardownWatchdogHandler = setTimeout(() => {
+            this.teardownWatchdogHandler = null;
             if (this.currentState === 'Playing' && this.nextState === 'Teardown') {
-              clearInterval(checkIntervalHandler);
               if (typeof this.transport !== 'undefined' && this.transport !== null) {
                 this.clearTransport();
               }
             }
-          }, 500);
+          }, 5000);
         }
       }
     } catch {
@@ -2033,6 +2045,10 @@ export class RtspClient {
 
   clearTransport(): void {
     console.log('[RtspClient] clearTransport() called -> currentState:', this.currentState, ' transport readyState:', this.transport?.readyState);
+    if (this.teardownWatchdogHandler !== null) {
+      clearTimeout(this.teardownWatchdogHandler);
+      this.teardownWatchdogHandler = null;
+    }
     if (typeof this.transport !== 'undefined' && this.transport !== null && this.transport.readyState === Transport.OPEN) {
       if (this.currentState === 'Playing') {
         this._request('TEARDOWN', null, null);
