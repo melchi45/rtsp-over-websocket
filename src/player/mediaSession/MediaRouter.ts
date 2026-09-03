@@ -3,7 +3,7 @@ import { H265SPSParser } from '../util/H265SPSParser';
 import { parseVP8FrameHeader } from '../util/VP8HeaderParser';
 import { parseVP9FrameHeader, type VP9FrameHeader } from '../util/VP9HeaderParser';
 import { parseAV1SequenceHeader, type AV1FrameHeader } from '../util/AV1HeaderParser';
-import { buildAV1CodecString, buildVP9CodecString, defaultRealMseCodecString } from '../util/codecString';
+import { buildAV1CodecString, buildVP9CodecString, defaultRealMseCodecString, mjpegEncoderCandidateCodecStrings } from '../util/codecString';
 import { getElementByAttributeValue } from '../util/getElementByAttributeValue';
 import { browserDetect } from '../util/BrowserDetect';
 import { RTSPOverWebSocketError } from '../exceptions/RTSPOverWebSocketError';
@@ -859,6 +859,15 @@ export class MediaRouter {
         } else if (streamData.codecType === 'H265') {
           videoInfo.codecInfo = self.spsParser!.getCodecInfo();
           videoInfo.profileTierLevel = (self.spsParser as H265SPSParser).getProfileTierLevel();
+        } else if (streamData.codecType === 'MJPEG') {
+          // Intentionally no-op: there is no self.spsParser-equivalent for
+          // MJPEG (it has no SPS/PPS of its own), and unlike VP9/AV1 there's
+          // no bitstream-derived profile/level to build a codec string from
+          // either -- the real avcC-derived codecInfo/sps/pps/profileIdc/
+          // levelIdc for this tier only exist once WebCodecsVideoEncoder.ts's
+          // async output arrives, so VideoTagPlayer.ts's
+          // onMjpegEncodedChunk() populates its own synthesized VideoInfo
+          // directly, entirely separate from this MediaRouter-parsed one.
         }
       }
       const isBufferManagerAvailable = self.checkBufferManagerAvailable(playMode, streamData.codecType);
@@ -1477,9 +1486,30 @@ export class MediaRouter {
     }
 
     switch (codecType) {
-      case 'MJPEG':
-        this.tagMode = 'canvas';
+      case 'MJPEG': {
+        // Real-MSE tier via re-encoding to H264 (WebCodecsVideoEncoder.ts,
+        // wired into VideoTagPlayer.ts) when the browser supports both
+        // WebCodecs' VideoEncoder and MediaSource playback of the candidate
+        // H264 codec string -- falls back to 'canvas' (the original,
+        // always-canvas behavior) otherwise. Unlike VP8/VP9/AV1's real-MSE-
+        // vs-bridge choice below, there is no bridge fallback tier for this
+        // case: MediaStreamTrackGenerator bridges *decoded* frames into a
+        // <video>, it has no way to produce the H264 bitstream this path
+        // needs, so unsupported here means canvas, full stop.
+        const hasEncoderSupport = typeof (globalThis as unknown as { VideoEncoder?: unknown }).VideoEncoder !== 'undefined';
+        const mediaSourceIsTypeSupported = (globalThis as unknown as { MediaSource?: { isTypeSupported(t: string): boolean } }).MediaSource
+          ?.isTypeSupported;
+        // `size` (decodeSize, a pixel count) drives the candidate list's
+        // level selection -- a fixed low-level candidate here previously
+        // failed `isTypeSupported` outright for any real camera resolution
+        // above ~1080p (confirmed live at 2048x1536), leaving this whole
+        // tier silently unreachable regardless of actual browser support.
+        const realMseSupported =
+          hasEncoderSupport &&
+          mjpegEncoderCandidateCodecStrings(size, framerate).some((candidate) => mediaSourceIsTypeSupported?.(`video/mp4;codecs="${candidate}"`) === true);
+        this.tagMode = realMseSupported ? 'video' : 'canvas';
         break;
+      }
       case 'H264':
       case 'H265': {
         const mimeType = `video/mp4;codecs="${this.spsParser!.getCodecInfo()}"`;

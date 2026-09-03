@@ -2519,3 +2519,940 @@ permanent — it may just not have come up for a decision yet.
 
 See `docs/player/01-elements-interface-exceptions.md`'s History table (two 2026-09-03 entries) for the
 line-referenced before/after.
+
+## MJPEG real-MSE tier via H264 re-encoding (WebCodecs `VideoEncoder`) — not yet verified live
+
+MJPEG video used to always render via `<canvas>` (`CanvasRenderer.draw()`'s `new Image()` + Blob
+URL, native browser JPEG decode — `MediaRouter.ts`'s `selectVideoPlayer()` hardcoded
+`tagMode = 'canvas'` for it unconditionally). Added an alternative real-MSE `<video>`-tag path,
+requested directly by the user across several review turns: they first asked how to feed MJPEG
+into an MSE `SourceBuffer` at all; confirmed live via `MediaSource.isTypeSupported()` in a headless
+Chromium that **no browser recognizes any MJPEG-flavored codec string in any container** (`video/
+mp4;codecs="mjpg"|"jpeg"|"mjpa"|"mjpb"`, `video/webm;codecs="mjpeg"`, `video/mjpeg` — all `false`,
+vs. `avc1.64001f`/`vp09.00.10.08` both `true`) — MSE's decoder pipeline and the browser's image
+(JPEG) decoder are genuinely separate subsystems, so the only way into MSE at all is re-encoding to
+a codec MSE actually knows. The user then asked specifically about re-encoding to H264 via
+WebCodecs `VideoEncoder`, and — after a sized implementation plan (`ExitPlanMode`-approved) — this
+is that path.
+
+**Why not the simpler "bridge" tier instead** (the `MediaStreamTrackGenerator` pattern VP8/VP9/AV1
+already use, decoded `VideoFrame`s piped straight into a `<video>`'s `srcObject`, no MSE/muxing/
+re-encoding at all — see the entry above): that path is real, cheaper (no re-encode CPU cost, no
+quality loss from double lossy compression), and would've needed far less new code (just a decode-
+direction wrapper matching `WebCodecsVideoDecoder`'s existing shape). It was recommended first. The
+re-encode path was chosen anyway because `MediaStreamTrackGenerator` is Chromium-only —
+Safari/Firefox support MSE+H264 but not that API — and browser reach beyond Chromium was the
+deciding factor once raised explicitly.
+
+**New code**: `worker/videoEncoder/WebCodecsVideoEncoder.ts` (mirrors `WebCodecsVideoDecoder.ts`'s
+shape — constructor throws if unsupported, `isConfigSupported()`-verified candidate-string loop,
+`close()` — but owns encode instead of decode, and has no synchronous-pull queue at all: `encode()`
+is genuinely fire-and-forget). `util/avcConfigParser.ts` (`parseAvcConfigurationRecord`/
+`buildAvc1CodecString`) parses the WebCodecs-surfaced avcC configuration record into the same
+`sps`/`pps`/`profileIdc`/`profileCompatibility`/`levelIdc` shape `H264SPSParser` extracts from a
+real network SPS — needed because MJPEG has no SPS/PPS of its own. `util/codecString.ts` gained
+`mjpegEncoderCandidateCodecStrings()` (`['avc1.42001f', 'avc1.640028']` — Baseline/Level 3.1 first;
+Level 3.0's 40,500 MaxMBPS cap doesn't actually cover a common 1280×720@30fps stream, 3,600
+macroblocks/frame × 30fps = 108,000, which needs Level 3.1's 108,000 cap exactly).
+
+**The core structural problem**: `MediaRouter.handleVideoData()` → `VideoTagPlayer.onVideoData()`
+→ `createVideoSample()` is fully synchronous end-to-end for every other codec, assuming
+`streamData.frameData` is the complete bitstream *right now*. `VideoEncoder.encode()` is
+fire-and-forget — the real `EncodedVideoChunk` only arrives later, async, via the encoder's own
+`output` callback. Bridged with a `mjpegPendingFrames` FIFO queue: `submitMjpegFrame()` (replacing
+the normal synchronous ingestion for MJPEG) records the *original* RTP-derived `streamData`/
+`videoInfo` keyed by a caller-assigned `timestampUs`, and `onMjpegEncodedChunk()` (the encoder's
+async callback) matches a chunk back to its entry by that same value, then feeds the result through
+`ingestVideoSample()` — a new shared helper extracted out of `onVideoData()`'s previously-inline
+init-segment-once + `createVideoSample()`-every-time logic, so this async path reuses the exact
+same `setVideoInfo()`/`initBaseNTPTimestamp()`/`createInitSegment()` sequence every synchronous
+codec already uses, rather than duplicating it (including `this.videoCodecInfo`'s own population,
+which `setSourceBuffer()`'s MIME-codecs string requires and would otherwise be an easy new-call-
+site omission — this was the single easiest thing to silently get wrong, per the approved plan's
+own risk list, and reusing the existing gate instead of writing a parallel one is what closes it
+structurally rather than by remembering to do it right).
+
+**FIFO safety**: matching is done by `chunk.timestamp === pendingEntry.timestampUs` equality (not
+blind `shift()`), specifically so a desync — e.g. a mid-flight `VideoEncoder` `error` callback
+silently dropping one `encode()` call's output entirely, which nothing else here would otherwise
+detect — surfaces as a loud dropped-chunk log instead of silently misattributing every subsequent
+frame's real timing/videoInfo to the wrong pending entry. WebCodecs guarantees a single encoder
+instance's output order matches its `encode()` call order as long as no B-frames are requested
+(never true here), so plain FIFO is spec-safe in the non-error case; this check only matters once
+something has already gone wrong.
+
+**AVCC vs. Annex-B landmine**: `createSampleFrameData()` rewrites H264/H265's Annex-B start-code
+NALs into length-prefixed AVCC for muxing — necessary for real network H264, but a `VideoEncoder`
+configured `avc: { format: 'avc' }` (the default) already emits AVCC directly. Encoder-sourced
+samples are tagged `codecType: 'H264'` (needed so `mp4Generator.js`'s box-type dispatch treats them
+as real H264 — this deliberately does **not** exercise the vendored muxer's separate, already-
+broken `codecType === "MJPEG"` branch, `mp4Generator.js:881-910`, which calls `box(types.mpv4,
+...)` against a `types` table that only defines `mp4v` — see `docs/player/09-mp4-container-
+generation.md`'s "Known issues" section, now updated to explain this branch is *still* unreachable,
+just for a different reason than before). Since `codecType` alone can't distinguish "real H264,
+needs the Annex-B rewrite" from "encoder-sourced H264, already AVCC," `createSampleFrameData()`
+gained a third `isEncoderSourced` boolean parameter threaded through from `createVideoSample()` —
+without it, encoder output would hit the rewrite and get corrupted, not merely left unoptimized.
+
+**Backpressure and keyframe cadence**: `submitMjpegFrame()` never drops a frame while
+`mjpegAvcConfig === null` (no init segment built yet — that's the one frame that can ever start
+playback; dropping it would stall the session forever, not just skip a frame), and otherwise drops
+new frames once `mjpegEncoder.encodeQueueSize` exceeds a small fixed threshold rather than letting
+the encoder's internal queue grow unbounded if it falls behind. A `MJPEG_ENCODER_KEYFRAME_INTERVAL`
+counter forces a periodic `VideoEncoder` keyframe, since MJPEG's own source frames (each already a
+complete, independent JPEG) carry no GOP signal of their own for the *encoded H264* stream to
+inherit.
+
+**Resolution changes need no special handling**: confirmed (before writing any code) that
+`MediaRouter.selectVideoPlayer()` already tears down and rebuilds the *entire* `VideoTagPlayer`
+instance whenever a frame's decodeSize/width/height differs from the currently active player's, for
+every codec including MJPEG, today — so a fresh `WebCodecsVideoEncoder` (with the new resolution)
+naturally gets constructed from scratch by `submitMjpegFrame()`'s existing lazy-init-on-first-frame
+logic, on the new `VideoTagPlayer` instance. No `VideoEncoder.configure()`-mid-stream code exists or
+is needed.
+
+**Live verification, and a real bug found only by it** — exactly this file's own recurring lesson
+(see the VP8/VP9/AV1 entry above: three real bugs there were found *only* by live testing, none by
+static analysis or synthetic unit tests). This feature's own first end-to-end attempt reproduced
+that pattern immediately:
+
+The `run-demo-server` (YouTube → ffmpeg `mjpeg` encoder → MediaMTX → RTSP-over-WebSocket) pipeline
+turned out to be its own dead end for verifying this specific feature: `ffmpeg`/MediaMTX published
+the MJPEG stream correctly (confirmed via MediaMTX's own logs, and 140+ WebSocket frames/~164KB did
+reach the browser), but zero video-data ever reached `MediaRouter.handleVideoData()` client-side —
+confirmed via `git stash` that this exact demo pipeline already fails identically with the
+completely original, pre-this-feature code, i.e. a pre-existing, unrelated gap in this demo's own
+MJPEG relay (not investigated further — out of scope for this feature, and the same kind of
+never-actually-exercised gap `MEMORY.md`'s VP8/VP9/AV1 entry already documents for AV1 output).
+
+Verified instead with a **direct synthetic harness**: a Playwright script that loads the built
+`dist/player/rtsp-over-websocket.esm.js` in a real headless Chromium, constructs a bare
+`VideoTagPlayer` directly (bypassing `MediaRouter`/RTSP entirely), sets `codec = 'MJPEG'`, and feeds
+it 40 real JPEG frames (rendered via `<canvas>.toBlob('image/jpeg')`, genuinely different pixel
+content per frame) through `onVideoData()` at ~60ms intervals. This isolates exactly the code this
+feature actually changed, independent of the demo pipeline's unrelated gap.
+
+**First run crashed — a real, previously-undiscovered pre-existing bug**, not something new this
+feature added, but one this feature made far more likely to actually manifest:
+`Cannot read properties of null (reading 'addEventListener')` at `VideoTagPlayer.ts`'s
+`addBufferEventListener()`, called from `setSourceBuffer()`. Root cause: `setSourceBuffer()`'s only
+call site is the `'sourceopen'` `MediaSource` event listener, and it builds its MIME/codecs string
+from `this.videoCodecInfo` — which is `null` until a *real video frame* has been ingested at least
+once. If `'sourceopen'` fires before that (a real, always-possible race — this class has always
+assumed frame data reliably beat the browser's own `sourceopen` timing, apparently true often
+enough for H264/H265/VP9/AV1's fully-synchronous ingestion that it was never caught before), the
+`isTypeSupported('video/mp4;codecs="null, ...')` check fails, `this.sourceBuffer` is never
+assigned, and `addBufferEventListener()` — called *unconditionally* right after regardless of that
+outcome — threw trying to attach listeners to `null`, aborting `sourceopen`'s handler entirely and
+leaving the session permanently stuck (no `SourceBuffer` ever created, nothing to append to, no
+further retry anywhere in the class). This is almost certainly the exact bug the user hit reporting
+"MJPEG video tag로 재생이 안됩니다" (MJPEG doesn't play via the video tag) against a real device,
+where canvas mode (their working baseline) never touches `MediaSource`/`SourceBuffer` at all. The
+MJPEG-encoder tier makes the race far likelier than it was for any prior codec: its first sample
+now depends on an async `createImageBitmap()` + `VideoEncoder.configure()` round trip before
+`ingestVideoSample()` can run even once — a real, unavoidable delay no synchronous codec ever had —
+giving the browser's own `sourceopen` event a realistic window to fire first essentially every time,
+not just occasionally.
+
+**Fixed with two changes to `VideoTagPlayer.ts`, both general (not MJPEG-specific), since the
+underlying assumption was never actually codec-specific**:
+1. `setSourceBuffer()` now only calls `addBufferEventListener()` when `this.sourceBuffer !== null`
+   — closes the crash outright, for every codec.
+2. `ingestVideoSample()` (the shared init-segment-building helper this feature already extracted —
+   see above) now also calls `this.setSourceBuffer()` itself, right after `createInitSegment()`,
+   whenever `this.sourceBuffer` is still `null` at that point — `setSourceBuffer()`'s own
+   `mediaSource.sourceBuffers.length === 0` guard makes this a safe no-op if a `SourceBuffer`
+   already exists, so this is a pure retry: once the real codec is finally known (guaranteed to
+   happen here, since this runs right after `videoCodecInfo` is set), the `SourceBuffer` that
+   `'sourceopen'` couldn't create in time gets created now instead of never.
+
+**Re-verified after the fix, same synthetic harness, both the unminified and the production
+(minified) `npm run build:player` output**: the real `<video>` element reached `readyState: 4`
+(`HAVE_ENOUGH_DATA`), `videoWidth`/`videoHeight` `320`/`240` (matching the fed synthetic frames
+exactly), and a real advancing `currentTime` — confirmed genuinely decoding, not just not-crashing,
+via a full-page screenshot showing the actual synthetic frame content ("frame 4" on its own
+distinct background color) rendered inside the `<video>` element. Also directly confirmed the
+user's explicit fallback requirement: with `window.VideoEncoder` deleted before construction,
+`decideUseMjpegEncoder()` returns `false` (and, per the already-live-verified `MediaRouter.ts`
+`case 'MJPEG'` logic, `tagMode` stays `'canvas'`).
+
+**Still not verified**: real camera MJPEG (only synthetic canvas-JPEG frames were exercised — real
+RTP/RTSP MJPEG framing, resolution changes mid-stream, and the FIFO-desync/AVCC-passthrough edge
+cases noted above remain unverified against an actual device or the still-broken demo pipeline)
+and the `docs/player/09-mp4-container-generation.md`-documented dead `mpv4`/`esds` mp4Generator
+branch staying unreached (not directly observed, only inferred from the encoder-sourced samples
+correctly decoding as H264 — if that branch *had* fired, decode would have failed outright, so this
+is reasonably strong indirect evidence, not a gap worth chasing further).
+
+**How to apply**: this is the second time in this file a `VideoTagPlayer.ts` real-MSE bug was found
+only by feeding it realistic *timing*, not just realistic data — synthetic unit tests of the pure
+avcC-parsing pieces passed the whole time and would never have caught this, since the bug lives in
+event-ordering between two independently-scheduled subsystems (the browser's own `MediaSource`
+lifecycle vs. this class's own async encode pipeline). Any future change that makes a real-MSE
+codec's *first sample* take meaningfully longer to produce (a new async step before
+`ingestVideoSample()`'s first call, same as this feature added) should be suspected of the same
+class of race until proven otherwise, even though the two general fixes above should already cover
+it structurally for codecs that don't exist yet either.
+
+## MJPEG-encoder tier, second real bug: fixed candidate codec list rejected any real camera resolution
+
+Direct follow-up to the entry above, found the same way: the user rebuilt and retested against a
+real Hanwha camera (after re-running `wisenet-camera-discovery`'s own `npm run build`, which copies
+this package's `dist/player/*` into its `external-lib/` — the first thing to check whenever "still
+behaving like the old code" is reported after a fix that only touched *this* repo, since a consuming
+app's own copy doesn't refresh itself). Console trace: `WebCodecsVideoEncoder: no supported
+VideoEncoder configuration found for 2048x1536`.
+
+Root cause: `mjpegEncoderCandidateCodecStrings()` (`util/codecString.ts`) returned a single fixed
+pair (`avc1.42001f`/`avc1.640028` — Baseline/High, Level 3.1/4.0) regardless of the actual stream
+resolution — reasonable for the ~1280x720 case it was written against, but MJPEG cameras have no
+codec-level resolution ceiling the way H264/H265 do, and a real 2048x1536 (3.1MP) stream needs
+128x96 = 12,288 macroblocks/frame, which exceeds even Level 4.0's 8,192 MaxFS cap (H.264 Annex A
+Table A-1) — `VideoEncoder.isConfigSupported()` correctly rejected every candidate, `configure()`
+never got a working encoder, and `submitMjpegFrame()`'s `!this.mjpegEncoder.isConfigured` guard
+silently dropped every frame forever (no crash, no `tagMode` fallback — `MediaRouter.ts`'s own
+`isTypeSupported` pre-flight check made the *same* fixed-candidate mistake, so it had already
+committed to `tagMode: 'video'` before discovering, too late, that the real resolution couldn't
+actually be encoded).
+
+Fixed by making the candidate list resolution- (and framerate-) aware instead of guessing a single
+"common" one: `codecString.ts` now has the full H.264 level table (`H264_LEVEL_LIMITS`, Level
+3.0-6.2's `maxFS`/`maxMBPS`) and `selectH264LevelIndexes()` picks the lowest level whose `maxFS`/
+`maxMBPS` actually cover the requested `pixelCount`/`framerate`, plus the next level up as a second
+candidate tier (some real encoders have level-support gaps even when the resolution itself would
+fit the computed minimum) — falling back to the table's own highest level if even that isn't
+enough, letting `isConfigSupported()` reject it for real rather than this function silently
+under-shooting forever. `mjpegEncoderCandidateCodecStrings(pixelCount, framerate)` now takes both
+as parameters: `MediaRouter.ts`'s pre-flight check passes `size`/`framerate` (already available at
+that call site) and iterates every candidate with `.some(...)` instead of checking only the first;
+`WebCodecsVideoEncoder.configure()` passes its own real `width * height` (its constructor already
+receives real dimensions, unlike `MediaRouter`'s pre-flight probe). Both call sites necessarily stay
+in sync on the *same* function rather than duplicating level math, same reasoning as the original
+shared-candidate-list design.
+
+**Verified**: unit tests for 1280x720 (Level 3.1+3.2), 1920x1080 (Level 4.0+4.1), and the exact
+2048x1536 failure case (now correctly Level 5.0+5.1, not 3.1/4.0) in `codecString.test.ts`. Also
+re-ran the synthetic-JPEG Playwright harness from the entry above at 2048x1536 specifically (not
+just the original 320x240) — confirmed `readyState: 4`, `videoWidth`/`videoHeight` `2048`/`1536`,
+no `isConfigSupported` rejection, both before and after a full production (`npm run build:player`,
+minified) rebuild.
+
+**How to apply**: any future "silently stuck in canvas / encoder never configures" report for this
+tier should check the actual resolution against `H264_LEVEL_LIMITS` first — this class of failure
+produces no error visible to `MediaRouter`/`VideoTagPlayer` callers (the encoder's own `console.error`
+is the only signal), so it looks identical to "browser doesn't support this at all" from the
+outside unless that specific log line is checked. Also: when a fix lives only in this package and
+the reporter tests through a consuming app (`wisenet-camera-discovery` here, via its `file:` npm
+dependency), always ask "did you rebuild the consuming app too" before re-diagnosing from scratch —
+the first "still doing the old thing" report in this saga was exactly that, not a second bug.
+
+## MJPEG-encoder tier, third real bug: Playback mode's dual-track segment flush deadlocks with no audio
+
+Third bug in this same saga, found the same way as the first two: the user confirmed Live playback
+now genuinely worked end-to-end, then reported Playback mode (a recorded/stored MJPEG clip) still
+didn't play, even though `tagMode` correctly resolved to `'video'`. Reproduced with a
+`playMode: 'Playback'` variant of the same synthetic-JPEG Playwright harness — `readyState` stayed
+`0` (`HAVE_NOTHING`) no matter how many frames were fed.
+
+Root cause lives in `createVideoSample()`'s `playbackFlag` branch and `createSegment()` (the
+dual-track `moof+mdat` builder Playback mode uses instead of Live's video-only
+`createVideoSegment()`) — both pre-existing, shared with every real-MSE codec's Playback path, not
+MJPEG-specific:
+
+- `createSegment()` has always required *both* `this.videoSamples.length > 0` *and*
+  `this.audioSamples.length > 0` before building anything (`if (... || this.audioSamples.length ===
+  0) return;`) — silently, no error, no log.
+- The *only* place dummy audio got seeded (`makeDummyAudio()`, when no real audio track exists) was
+  inside `createVideoSample()`'s own I-frame handling, and only once
+  `this.videoSamples.length > 1` — i.e. from the *second* I-frame boundary onward. The first flush
+  attempt for a session — whether triggered by an I-frame arriving before a second one ever does,
+  or by `createSegment()`'s own `MAX_PLAYBACK_DIFF` (1500ms) timeout fallback, which calls
+  `createSegment()` directly with no dummy-audio seeding step at all — could hit the guard above
+  with `audioSamples` still empty, and then never recover: nothing reschedules another attempt
+  except a future I-frame, and `createVideoSegmentTimeout` is a one-shot timer cleared unconditionally
+  at the top of `createSegment()` every time it runs, seeded or not.
+
+This is a real gap for *any* real-MSE Playback codec with no audio track and either (a) a short
+clip that never reaches a second I-frame, or (b) an infrequent keyframe cadence — but MJPEG's new
+tier makes it far more likely to actually manifest: its own re-encoded H264 stream only forces a
+keyframe every `MJPEG_ENCODER_KEYFRAME_INTERVAL` (60) frames, easily longer than a whole short
+Playback clip, where H264/H265 cameras' native 1-2s GOPs rarely go that long without a second
+keyframe arriving.
+
+**First fix attempt was itself incomplete** — worth recording since it's a real trap in
+`makeDummyAudio()` itself: seeding inside `createSegment()` too (gated on `dummyAudio &&
+audioSamples.length === 0`, using the same `(lastSample.rtpTimestamp - firstSample.rtpTimestamp) *
+10` formula the original call site already used) looked right but still produced zero audio
+samples in the synthetic harness. Root cause: `makeDummyAudio(updateDuration)` has an `updateDuration
+> 100000` branch that *discards* the passed-in value and instead re-derives a duration from
+consecutive video-sample `rtpTimestamp` deltas, requiring the recomputed total to land in
+`(0, 10000]` or it returns without creating anything — fine for its original target (bridging one
+dropped-frame gap) but not for the potentially large multi-sample span buffered here (a real
+RTP-timestamp delta across 17-36 buffered samples in the harness, `153000`-`342000` after ×10,
+both well past 100000). **Fixed by capping the seed value at exactly 100000** (`Math.min(Math.max(
+rawDelta, samplingDuration), 100_000)`), keeping the call on `makeDummyAudio`'s direct-add path
+(no recompute, no silent no-op) — trading exact placeholder-audio duration fidelity for a
+guaranteed non-empty `audioSamples`, which is a fine trade since this is silent/dummy audio, not
+real content whose timing matters.
+
+**Verified**: same synthetic harness, `playMode: 'Playback'`, with temporary diagnostic logging at
+`createVideoSample()`'s playback branch and `createSegment()`'s entry/guard first (to see exactly
+where the flow stalled, confirming `createSegment()` *was* being called with `audioSamplesLen: 0`
+both before and immediately after the first (broken) seed attempt) before landing on the real fix —
+`readyState` reached `4` (`HAVE_ENOUGH_DATA`) with real `videoWidth`/`videoHeight` after the fix,
+confirmed against both the unminified and production `npm run build:player` output. Diagnostic
+`console.log` calls removed once root-caused; not left in place (unlike some of this file's other
+entries) since this one didn't need a standing trace to interpret correctly once understood.
+
+**How to apply**: `makeDummyAudio()`'s `updateDuration` parameter is not a free-form "however long
+the real gap was" value despite what its call sites' own formulas suggest — anything past 100000
+silently routes through a much stricter, easy-to-violate recompute path. Any future caller passing
+a value derived from summing multiple samples' timestamps (not just one frame's duration) should
+cap it the same way, or confirm live that the recompute path's `(0, 10000]` range actually holds
+for the real data in play.
+
+## MJPEG-encoder tier, fourth real bug: `initBaseAudioTime()` corrupts `baseVideoTime`, not `baseAudioTime`, on every Playback A/V-drift resync
+
+Fourth bug in this saga, and the most serious one: the user confirmed the third fix (dual-track
+segment flush) made Playback video actually appear, but reported new symptoms — a burned-in OSD
+timestamp on the recorded footage visibly oscillating ("27 -> 28 -> 27 -> 28"), 20+ second latency,
+and a 2fps source appearing to play back at a visibly higher, mismatched frame rate. Root-caused
+with a purpose-built synthetic-JPEG Playwright trace (`readDisplayedFrameIndex()`: each fed frame
+gets a distinct HSL hue, read back from a sampling `<canvas>` drawing the live `<video>` frame, the
+same idea as reading a real camera's OSD) at a realistic 2fps/500ms pacing, logging
+`(elapsedRealSec, currentTime, displayedFrame)` every 500ms for 30 real seconds.
+
+**What the trace found, in two layers**:
+
+1. **A pre-existing periodic-flush gap, general to Playback mode (not MJPEG-specific), that this
+   tier's own encoder behavior exposed for the first time.** `createSegment()`'s `MAX_PLAYBACK_DIFF`
+   (1500ms) fallback timeout was previously only ever *scheduled* from `createVideoSample()`'s own
+   I-frame-boundary code — so once a timeout-triggered flush consumed the pending one,
+   *nothing rescheduled another* until the next real keyframe arrived. Confirmed live: a real
+   WebCodecs `VideoEncoder` inserts keyframes on its own internal cadence, independent of this
+   tier's own `forceKeyFrame` request hint (observed producing a real keyframe every ~17 frames in
+   one browser, ignoring the 60-frame request `submitMjpegFrame()` was actually asking for) —
+   meaning multi-second stalls between whatever cadence the encoder itself happened to choose, not
+   the requested one. Fixed generally: `createSegment()` now reschedules its own
+   `createVideoSegmentTimeout` unconditionally at the top of every call (guarded only on
+   `mediaSource` still being open), regardless of what triggered that particular call — a safe
+   no-op flush attempt when there's nothing new to send yet, but guarantees periodic ~1.5s checks
+   continue for the life of the session.
+
+2. **The actually catastrophic bug, found only after fixing (1) let playback run long enough to hit
+   it**: `initBaseAudioTime()` (called from `checkAudioTimestamp()` whenever `baseAudioTime` is
+   still the `-1` "needs (re)init" sentinel — which happens once at session start, and again every
+   time `resetBaseDecodingTime()` fires an A/V-drift resync) used to reassign **`this.baseVideoTime`**
+   (not `this.baseAudioTime`, despite the function's name) from an *absolute* wall-clock-anchored
+   formula (`receiveTimeStamp.utcTimeStamp` scaled against `baseNTPTimestamp`) whenever
+   `baseVideoTime` was falsy. `baseVideoTime` is a purely *relative*, monotonically
+   self-accumulating clock everywhere else in this class (`updateVideoTimestamp()`'s own
+   `baseVideoTime += frameDuration`, starting from 0) — harmless the very first time this function
+   ever runs, since `baseVideoTime` is 0 by its field default either way, regardless of which
+   formula "sets" it. But `resetBaseDecodingTime()` (the very thing that put `baseAudioTime` back
+   into its `-1` sentinel state) *also* zeroes `baseVideoTime` itself, specifically **only for
+   Playback mode** (`if (this.playbackFlag) { this.baseVideoTime = 0; }`) — so every drift-triggered
+   resync *mid-session*, in Playback mode specifically, re-triggered this same falsy-check and
+   clobbered the relative clock with an absolute millisecond-scale value instead. Confirmed live via
+   direct instrumentation: `baseVideoTime` jumped from a normal ~65,000 (TIME_SCALE units, i.e.
+   ~6.5s) to ~75,000,000 (~7,500s) between two consecutive `updateVideoTimestamp()` calls, with
+   every later call continuing to accumulate on top of that corrupted base — `currentTime` jumping
+   to a nonsensical multi-thousand-second value, and the buffered edge/live playback position
+   effectively never converging again (matching the reported 20+ second "latency": the video
+   element's `currentTime` was chasing a timeline that had been yanked thousands of seconds into
+   the future relative to what was actually buffered around it).
+
+   Live mode's own equivalent resync path never zeroes `baseVideoTime` first (see
+   `resetBaseDecodingTime()`'s own `if (this.playbackFlag)` guard) — so a real H264/H265 Live
+   session hitting this same drift-resync code never had a *freshly-zeroed-but-still-meaningfully-
+   relative* value there to corrupt, which is almost certainly why this specific bug went unnoticed
+   until MJPEG's Playback tier (with its dummy-audio-heavy timing, more prone to triggering A/V
+   drift than a real synced audio track) exercised it.
+
+   **Fixed by deleting the destructive reassignment entirely** — `baseVideoTime` is always already
+   valid by the time `initBaseAudioTime()` runs (either its 0 default, or whatever
+   `resetBaseDecodingTime()`/prior `updateVideoTimestamp()` accumulation already set), so nothing
+   needs deriving there at all; the function's own existing fallback a few lines below (using
+   `this.baseVideoTime` as `baseAudioTime`'s value for a dummy/zero-timestamp audio sample) already
+   reads the un-corrupted value correctly once the reassignment is gone.
+
+**Verified**: same synthetic-JPEG trace harness, 2fps/500ms pacing, 30 real seconds — the
+multi-thousand-second `currentTime` jump is gone entirely (stays in the low single digits/tens
+throughout), confirmed against both the unminified and production `npm run build:player` output,
+and against the existing Live-mode (320x240 and 2048x1536) scenarios to confirm no regression there.
+
+**Still open, found by the same trace, not yet root-caused**: even after both fixes, the trace shows
+`currentTime` occasionally oscillating within a narrow (~0.5-0.7s) range for several real seconds at
+a time (e.g. bouncing between displaying frame 23 and frame 24 repeatedly, `currentTime` cycling
+~4.0-4.7, rather than monotonically advancing) before eventually jumping forward to later buffered
+content. This is a real, reproducible pattern in the synthetic harness — smaller in magnitude than
+the two bugs above (no data corruption, no crash, playback does eventually progress), but still
+worth root-causing; not yet done, given the scope already covered in this session. Candidate
+starting points for a future pass: `videoUpdating()`'s Playback branch (`boxsize`-transition
+`currentTime` jump-to-end, the Safari-specific `currentTime < startTime` correction) and whether the
+`<video>` element is being told to stay in `play()` state continuously enough across the more
+frequent `createSegment()` calls fix (1) introduced.
+
+**How to apply**: don't treat "the OSD stopped showing a wildly wrong number" as proof playback
+timing is now fully correct — this session found two independent bugs in the same code path in
+sequence (fix (1) was necessary to even reach and reproduce bug (2) reliably), and the trace
+technique used here (color-keyed synthetic frames + a sampling canvas, logged against real elapsed
+wall-clock time) is worth reusing directly for the next investigation rather than reasoning about
+`baseVideoTime`/`baseAudioTime` arithmetic from source reading alone — that approach missed both of
+these bugs on the first pass and only found them once a live trace was actually run.
+
+## MJPEG-encoder tier, fifth real bug: `onWaiting()`'s per-event truncation and `videoPlay()`'s fixed 1s resume margin, both tuned for H264/H265's larger segments
+
+Fifth bug in this saga, found continuing the same synthetic-JPEG trace from the fourth bug's "still
+open" oscillation note (`currentTime` bouncing in a narrow ~0.5-0.7s range for several seconds before
+eventually progressing) — root-caused via native `<video>` element event tracing
+(`seeking`/`seeked`/`waiting`/`stalled`/`pause`/`play`/`playing`/`ratechange` listeners logged against
+real elapsed time), not just the color-sampling trace, since the oscillation itself needed to be
+correlated with the browser's own buffering state transitions to explain.
+
+Two independent over-aggressive corrections, both pre-existing and both written with H264/H265's
+typically-larger, multi-second-per-append Playback segments in mind — MJPEG's re-encoded tier appends
+much smaller, more frequent segments (real-time-paced, ~0.5-1.5s of new content per append), which
+hits both far more often than any prior codec did:
+
+1. **`onWaiting()` used to unconditionally truncate `currentTime` to the floor integer second**
+   (`videoElement.currentTime = parseInt(String(videoElement.currentTime), 10)`) on *every* 'waiting'
+   event that didn't hit the large-backlog branch above it — not just the rare recovery case that
+   truncation is actually meant for. Confirmed live: a real MJPEG Playback session hits ordinary
+   'waiting' pauses every ~0.5-0.9s (matching its own small/frequent segment cadence), and got
+   `currentTime` rewound by up to a full second on *every one* of them (e.g. 4.79 -> 4.0 -> plays
+   forward to ~4.79 -> 'waiting' -> rewound to 4.0 again, repeating indefinitely) — exactly what read
+   live as a burned-in OSD timestamp oscillating instead of advancing, and as "latency" building up
+   (real playback progress was being discarded every cycle, not actually stalled). Fixed: only
+   truncate when `currentTime` is genuinely out of the valid buffered range (non-finite, or at/past
+   `endTime`) — an ordinary wait for a few more frames at the buffered edge is now left alone
+   entirely, letting the browser's own buffered-position recovery resume it naturally.
+
+2. **`videoPlay()` used to require a full `PLAYBACK_BUFFERING_TIME` (1s) buffer-ahead margin before
+   *every* resume from pause**, not just the initial cold start — reasonable for H264/H265 cameras,
+   whose Playback segments typically carry several seconds of margin per append, but a permanent
+   deadlock for MJPEG's small real-time-paced increments: once mid-playback, `currentTime` naturally
+   catches up close to the buffered edge between appends, and if the browser paused for a normal
+   buffering wait right as the margin dipped under 1s, every subsequent `videoPlay()` attempt kept
+   refusing to resume until a full second of buffer-ahead accumulated — which a slow, real-time-
+   matched trickle of small segments may never do, stalling the session forever even though new data
+   kept arriving and appending successfully throughout. Fixed: the 1s margin still applies to the
+   genuine cold-start case (`currentTime === 0`), but a mid-session resume now only requires
+   `latency <= 0` (i.e. don't resume only when there's *literally* nothing new buffered yet).
+
+**Verified**: same synthetic-JPEG trace plus native `<video>` event listeners, 2fps/500ms pacing —
+neither fix alone nor together fully resolved the underlying stall (see the sixth bug below, found
+immediately after), but both are correct, narrowly-scoped fixes in their own right (confirmed via the
+native event trace that 'waiting' cadence and resume attempts behave as intended afterward) and were
+kept.
+
+**How to apply**: a correction tuned against one codec's typical timing (H264/H265's larger, sparser
+Playback segments) can be silently wrong for another's (MJPEG's smaller, real-time-paced ones) without
+ever being codec-specific in its own logic — the bug is in the *assumption* about append size/cadence,
+not the codec check. When a `<video>`-tag correction path fires "too often" for a new codec tier,
+suspect the threshold/margin's original tuning before suspecting the new tier's data itself.
+
+## MJPEG-encoder tier, sixth real bug: A/V-drift resync compares real `baseVideoTime` against *synthetic* dummy-audio `baseAudioTime`, repeatedly discarding real buffered progress
+
+Sixth bug, found immediately after the fifth — neither of the fifth bug's fixes actually resolved the
+underlying stall reported live (user: OSD cycling "27 -> 28 -> 27 -> 28"; separately, "the input is
+2fps, so first check why the output comes out at 7fps"). Root-caused by adding direct instrumentation
+(temporary logging in `sourceBufferEventListener`'s `'updateend'` case, printing the SourceBuffer's own
+`buffered.end()` after every append) to the same synthetic-JPEG trace harness, run at a realistic
+2fps/500ms pacing for 30+ real seconds — chosen after tracing `appendBuffer()`/`VideoEncoder` output
+counts first confirmed the encoder pipeline itself was healthy (chunks encoding and appending
+successfully and continuously, no backpressure drops) so the freeze had to be in the muxed timestamps,
+not the data flow.
+
+**What the trace found**: `sourceBuffer.buffered`'s end value grows steadily (0 -> 0.9 -> 2.4 -> ... ->
+5.9s) for the first ~10 real seconds, then **freezes** — dozens more chunks encode and append
+successfully afterward (confirmed: `appendBuffer()` calls keep succeeding, byte lengths keep growing),
+but `buffered.end()` never advances past that point again, and native `<video>` `currentTime` gets
+stuck oscillating within the already-buffered range. Adding one more log — at `onWaiting()`'s A/V-drift
+resync check (`Math.abs(this.baseVideoTime - this.baseAudioTime) > 20000`) — caught it firing at
+exactly the moment the freeze began: `{baseVideoTime: 85000, baseAudioTime: 58880, dummyAudio: true}`.
+
+**Root cause**: this drift check exists to catch a real audio track actually desyncing from video — but
+it runs unconditionally, even when `dummyAudio` is `true` (MJPEG's re-encoder tier has no real audio at
+all; `baseAudioTime` only advances via `makeDummyAudio()`'s synthetic seeding, an approximation to
+satisfy MSE's technical requirement for *an* audio track, not a real timing signal). Dummy audio's
+duration accounting routinely drifts several seconds from real video progress with no actual desync
+having occurred — in the trace above, a ~2.6s gap that's just normal dummy-audio slop, not a bug on its
+own. But once the >20000 (2s) threshold trips, `resetBaseDecodingTime()` zeroes `this.baseVideoTime`
+back to `0` (Playback-only, see the fourth bug's entry above for why) — discarding several real seconds
+of already-accumulated progress. Every subsequently-muxed segment then gets a PTS computed from that
+zeroed base, landing back *inside* the range already covered by the buffer instead of extending past
+it — MSE just merges the overlap in place, so `buffered.end()` stops advancing even though appends keep
+succeeding. And because MJPEG's small, frequent segments hit `onWaiting()` roughly every 0.5-0.9s (see
+the fifth bug above), this reset re-triggers on nearly every subsequent wait, permanently pinning
+playback just past where the first reset happened — which also explains the reported OSD
+cycling/apparent-fps-mismatch: the video element keeps re-rendering whatever narrow already-buffered
+range it can reach, never actually receiving new reachable content again.
+
+**Fixed**: skip this resync check entirely while `dummyAudio` is `true` —
+```ts
+if (this.localSpeedValue === 1 && !this.dummyAudio && Math.abs(this.baseVideoTime - this.baseAudioTime) > 20000) {
+  this.resetBaseDecodingTime();
+}
+```
+A real second audio track (`dummyAudio === false`) still gets exactly the same resync behavior as
+before; only the synthetic-audio case (currently only MJPEG's re-encoder tier) is exempted, since
+there's no genuine A/V relationship there to protect.
+
+**Verified**: same synthetic-JPEG trace, 2fps/500ms pacing, direct `[DEBUG-RESET]` instrumentation
+confirmed this was the only remaining reset trigger firing during the stall window; after the fix,
+`buffered.end()`/`displayedFrame`/`currentTime` all advance continuously and monotonically for the
+full ~20 real seconds of fed input (displayedFrame reaching 28/40 by the time input stopped, matching
+the async encode pipeline's expected catch-up lag — not a stall), with the harness's tail-end stall
+after input stops being the expected "no more data" `waiting`/`pause` behavior, not a repeat of this
+bug. All temporary `[DEBUG-*]` logging (`DEBUG-VU`/`DEBUG-BP`/`DEBUG-CHUNK`/`DEBUG-APPEND`/
+`DEBUG-UE2`/`DEBUG-RESET`) added across this and the two prior bugs' investigations was removed once
+this fix was confirmed. Re-ran the full `npx tsc -b` + `npx vitest run` (63 tests) suite clean.
+
+**How to apply**: any code that compares two independently-accumulated "clocks" to detect drift needs
+to ask whether *both* sides are real signals before treating a gap as evidence of desync — a synthetic/
+placeholder clock (dummy audio, a stub timestamp, a default value standing in for "no real data yet")
+will drift from a real one by construction, not because anything is actually wrong. This is the second
+bug in this saga traced to `resetBaseDecodingTime()`'s Playback-specific `baseVideoTime = 0` (see the
+fourth bug above for the first) — worth being suspicious of *any* remaining trigger for it if MJPEG
+Playback shows another stall-shaped symptom in the future, rather than assuming this was the last one.
+
+## `applySrcAttribute()` silently discarded a camera recording `src`'s mode/start/end/OverlappedID (fixed)
+
+Reported symptom: pasting `rtsp://<camera>/0/recording/20260903140724-20260903150724/OverlappedID=0/play.smp`
+as `src` — exactly the shape `generateRTSPURL()`'s own camera `playback` branch produces — resolved,
+per the RTSP URL demo page's "Resolved connection URL" field, to `rtsp://<camera>/0/recording/media.smp`
+instead: the entire start/end/`OverlappedID` range vanished and the URL took the *live* shape
+(`{channel}/{profile}/media.smp`) rather than the playback one. The resulting RTSP `OPTIONS` 404'd
+against that nonexistent resource. User's own read of the symptom (before the root cause was found):
+"recording이 보이면 rtsp-over-websocket이 playback 모드로 동작해야 하는것으로 보입니다" ("if 'recording'
+appears [in the path], this should switch to playback mode") — which turned out to be exactly right.
+
+Root cause: `applySrcAttribute()`'s camera-mode path parsing (`RTSPOverWebSocket.ts`, `deviceType ===
+'camera'` branch) only ever understood the *live* path shape — it read `segments[1]` unconditionally as
+a profile name (`profile1`, or a literal profile string), with no awareness that camera playback/backup
+URLs use a structurally different shape: `{channel}/recording/{start}[-{end}]/OverlappedID={id}/
+play.smp`. So `segments[1] === 'recording'` fell straight into the plain-profile case and got written
+out as `setAttribute('profile', 'recording')` — nonsense, and worse, silently absorbed what should have
+been parsed as the playback marker. `mode` was never inferred from the path at all for camera devices
+(only nvr mode had a path-embedded legacy-fallback parser, for its own different `key=value` shape), so
+it stayed at its `'live'` default, and the start/end/`OverlappedID` segments were simply never looked at
+— dropped on the floor. `generateRTSPURL()` then ran its `live` branch with the bogus `profile =
+'recording'`, producing exactly the broken URL reported.
+
+Fixed in `applySrcAttribute()`: when the trailing filename (now captured into `smpFilename` before
+being popped off `segments`, instead of just discarded) is `play.smp`, treat the rest of the path as
+the playback shape instead of a profile — set `mode = 'playback'` (unless an explicit `?mode=` query
+param already provided one), parse `segments[2]` as `{start}[-{end}]`
+(`/^(\d{14})(?:-(\d{14}))?$/`) and `segments[3]` as `OverlappedID={id}`, deferring to any real `?query`
+value the same way the existing nvr-mode path fallback already does (`queryProvidedKeys`).
+
+**Correction made same-day, before this shipped**: the first version of this fix keyed the branch off
+`segments[1] === 'recording'` instead of the trailing filename — the user caught this: `'recording'` is
+the literal `generateRTSPURL()` writes for *both* the `playback` and `backup` `info.media.type`
+branches (its `playType` variable is computed once, from `type !== 'live'`, before either branch runs),
+so it can't actually distinguish a playback URL from a backup one. `play.smp` vs `backup.smp` is what
+does. Re-keyed off `smpFilename === 'play.smp'` instead; `backup.smp` still falls through to the
+plain-profile case unchanged, since `play()` — the method `applySrcAttribute()` calls to reconnect —
+has no `'backup'` `info.media.type` path of its own (only the separate `backup()` method does, a
+different call shape entirely from "reconnect this `src`"), so there was nothing correct to wire a
+`backup.smp` branch up to yet.
+
+The tricky part was the start/end conversion: `generateRTSPURL()` builds those compact `YYYYMMDDHHMMSS`
+digit pairs by taking the true-UTC `startTime`/`endTime`, shifting forward by `GMT` hours, then
+stripping punctuation (`GMT`-zone local wall clock, not UTC, encoded with no timezone marker at all).
+Reconstructing the original true-UTC value therefore needs the *device's* `GMT` at parse time, not `0`
+— confirmed by the user testing against a real camera at `GMT = +09:00`. Rather than duplicating that
+GMT-subtraction math in the parser, the fix re-punctuates the digits into a naive ISO string
+(`YYYY-MM-DDTHH:mm:ss`, no `Z`/offset — via a new small module-level `formatCompactTimestampAsNaiveIso()`
+helper) and assigns it through the existing `startTime`/`endTime` setters, which already convert exactly
+that naive-ISO-from-`GMT`-zone shape to true UTC via `normalizeTimeInputToUtcIso()` — reusing tested
+logic instead of re-deriving it. Hand-verified the full round trip at `GMT = 9`:
+`20260903140724-20260903150724` → true-UTC `2026-09-03T05:07:24.000Z`/`06:07:24.000Z` → back through
+`generateRTSPURL()` to the byte-identical `20260903140724-20260903150724` path segment.
+
+See `docs/player/01-elements-interface-exceptions.md`'s `applySrcAttribute()` bullet and History table
+for the line-referenced detail.
+
+### Follow-up, same day: `play.smp` isn't guaranteed to be the *last* path segment
+
+The user pointed out a further real input shape: a camera recording `src` can carry trailing legacy
+`key=value` pseudo-params *after* `play.smp`, not just before it — e.g.
+`rtsp://<camera>/0/recording/{start}-{end}/OverlappedID=0/play.smp/device=camera/gmt=9/mode=playback`
+— or the same thing via a real `?query` string instead:
+`.../play.smp?device=camera&gmt=9&mode=playback`. Two gaps this exposed in the fix above:
+
+1. The `.smp` search only checked `segments[segments.length - 1]` — with trailing pseudo-param
+   segments after it, `play.smp` is no longer last, so `smpFilename` never got set at all and the
+   whole recording-shape branch silently didn't run (regressing back to the original bug for this
+   input shape specifically).
+2. Camera mode had no equivalent of nvr's own legacy path-embedded `key=value` fallback (see the
+   original 2026-08-26 nvr-mode entry, and `docs/player/01-elements-interface-exceptions.md`), so
+   even once `play.smp` was found, a trailing `gmt=9`/`mode=playback` pseudo-param had nowhere to go
+   — `gmt` in particular needed to be applied *before* the start/end conversion runs (that
+   conversion reads `this.GMT` synchronously), so simply detecting the pair wasn't enough; ordering
+   mattered too.
+
+The user also clarified the intended `mode` precedence directly: *"mode가 없으면 그냥 live이고, mode가
+존재하면 mode 값을 적용하도록 하는 것입니다"* ("if there's no mode, it's just live; if mode exists,
+apply that value") — i.e. an explicit `mode=` (from either a real `?query` or a legacy path pair)
+should always win over the `play.smp`-shape inference this fix added, not be redundantly
+overwritten by it.
+
+Fixed with three changes in `applySrcAttribute()`:
+- The `.smp` search now uses `segments.findIndex()` + `splice()` to find and remove it from anywhere
+  in the path, not just check-and-pop the last element.
+- The legacy `key=value` pseudo-param scan (previously nested inside the nvr-only `else if` branch)
+  was hoisted out to run unconditionally for both device types, positioned right after channel
+  resolution and *before* the camera recording-shape block — so a path-embedded `gmt=9` is already
+  applied to `this.GMT` by the time that block converts the compact start/end digits, and a
+  path-embedded `mode=playback` is already applied before that block's own inference would run.
+- The scan now also adds each key it applies to the same `queryProvidedKeys` set the real `?query`
+  loop populates (previously only read from it) — so the recording-shape block's existing
+  `!queryProvidedKeys.has('mode')` check (unchanged) already gives the right precedence once fed
+  from this wider set: no explicit `mode=` anywhere → the `play.smp`-shape inference applies (this
+  fix's whole point); an explicit `mode=`, from either source → that value wins, unchanged by the
+  inference.
+
+Verified by hand-tracing both new URL shapes end-to-end: both resolve to the identical
+`{GMT: 9, mode: 'playback', startTime: '2026-09-03T05:07:24.000Z', endTime:
+'2026-09-03T06:07:24.000Z', overlappedId: '0'}` state, and the original no-pseudo-params URL from
+the fix above still resolves the same way it did before (mode inferred as `'playback'` from the
+`play.smp` shape alone, `GMT` unaffected since nothing sets it).
+
+### Second follow-up, same day: gate on `mode`, and accept a bare compact digit `start=`/`end=` value
+
+Two more requests from the user, testing further real-world `src` shapes:
+
+1. *"smpFilename이 아니라 mode로 처리하도록 수정해줘"* ("make it process via `mode`, not
+   `smpFilename`") — the recording-shape block (start/end/`OverlappedID` parsing) was gated on
+   `smpFilename === 'play.smp'` directly. Re-gated on `this.mode === 'playback'` instead: the
+   `play.smp`-shape inference (`smpFilename === 'play.smp' && !queryProvidedKeys.has('mode')` →
+   `setAttribute('mode', 'playback')`) now runs *before* the gate check and feeds into it, rather
+   than being the gate itself. This makes the parser symmetric with `generateRTSPURL()`'s own camera
+   branch, which dispatches on `info.media.type` (`mode`'s underlying source) to decide what to
+   *write*, never on which filename it happens to produce.
+2. A further real shape: `rtsp://<camera>/0/recording/play.smp/device=camera/gmt=9/
+   start=20260903140724/end=20260903150724/overlappedid=0` (or the same as a real `?query` string)
+   — `start`/`end` given as *separate* `key=value` pairs, each holding the bare compact
+   `YYYYMMDDHHMMSS` digit string (not the combined `{start}-{end}` range segment this fix originally
+   handled, and not a full ISO string either). Both the real `?query` loop's and the legacy path
+   scan's `start`/`end` cases previously assigned the raw value straight to `startTime`/`endTime`
+   — those setters only accept a full ISO string, so a bare compact value there threw
+   `RTSPOverWebSocketError` 0x0414 ("Invalid input parameter type... ISO time format"). Fixed with a
+   new small module-level `normalizeStartEndInput()` helper (regex-detects a bare 14-digit string
+   and re-punctuates it via the existing `formatCompactTimestampAsNaiveIso()`; anything else passes
+   through unchanged for the setters' own validation to accept or reject as before), wired into both
+   call sites.
+
+Verified end-to-end (including a regression check against every URL shape traced so far, plus a
+plain live `.../profile1/media.smp` to confirm `profile` parsing is unaffected by the `mode`-gating
+change) — all resolve to the expected `{GMT, mode, startTime, endTime, overlappedId}`/`profile`
+state, with no change in outcome for any shape this fix already handled correctly.
+
+### Third follow-up, same day: `start_time`/`end_time` as alternate key names
+
+One more real shape the user tested: `start`/`end` given under the longer key names `start_time`/
+`end_time`, with a full naive-ISO value instead of the compact digit string —
+`rtsp://<camera>/0/recording/play.smp/device=camera/gmt=9/start_time=2026-09-03T14:07:24/
+end_time=2026-09-03T15:07:24/overlappedid=0` (and the same as a real `?query` string). Since
+`normalizeStartEndInput()` (added in the second follow-up) already passes any value through
+unchanged unless it's a bare 14-digit compact string, a full naive-ISO value like
+`2026-09-03T14:07:24` needed no new conversion logic — just recognizing the alternate key name.
+Added `case 'start_time':` falling through to the existing `case 'start':` (and `'end_time'` to
+`'end'`) in both the real `?query` loop's switch and the legacy path-scan's switch. Also widened
+the recording-shape block's own `!queryProvidedKeys.has('start')`/`'end'` deferral checks to also
+check `'start_time'`/`'end_time'` — otherwise a `start_time=`-only `src` (no plain `start=`) would
+have left that check blind to it, letting the block's own `segments[2]` positional range parsing
+run on top regardless (harmless for the user's actual URLs, since `segments[2]` isn't a real range
+there, but a real correctness gap in principle).
+
+Verified all four `start=`/`start_time=` × path-embedded/`?query` combinations resolve to the
+identical `{GMT: 9, mode: 'playback', startTime: '2026-09-03T05:07:24.000Z', endTime:
+'2026-09-03T06:07:24.000Z', overlappedId: '0'}` state.
+
+### Fourth follow-up, same day: removed the `play.smp`-filename `mode` inference entirely
+
+The user's final instruction on this thread: *"smpFilename 의 구분은 삭제해줘"* ("delete the
+`smpFilename` distinction"). Up to this point, `mode` had a filename-based fallback: if no explicit
+`mode=` was given anywhere, `smpFilename === 'play.smp'` inferred `mode = 'playback'` (this is what
+made the *original* reported URL — `.../recording/{start}-{end}/OverlappedID=0/play.smp`, no
+`mode=` at all — resolve correctly in the first place). The user asked to remove that inference
+outright, leaving `mode` resolved *purely* from an explicit source (real `?query` or legacy
+path-embedded `mode=`), defaulting to `live` with no filename fallback at all.
+
+Removed: the `if (smpFilename === 'play.smp' && !queryProvidedKeys.has('mode')) { this.setAttribute
+('mode', 'playback'); }` inference block, and the now-fully-unused `smpFilename` variable itself
+(the `.smp`-segment search/removal from `segments` is still needed and stays — a trailing
+`play.smp`/`media.smp`/`backup.smp` segment would otherwise still get misread as a profile or a
+legacy `key=value` pair — it's just no longer captured into a named variable, since nothing reads
+its value anymore). The recording-shape block's gate is now simply `if (this.mode === 'playback')`
+with nothing feeding it but explicit sources.
+
+**Real, deliberate consequence**: the *original* reported bug URL, with no `mode=` anywhere, no
+longer auto-resolves to `playback` — it now needs an explicit `mode=playback` (path-embedded or
+`?query`) to hit the recording-shape branch at all; without one, `segments[1]` (`'recording'`) is
+read as a literal profile name via the plain-profile case, exactly like before this whole fix
+existed. Confirmed via the same hand-trace harness used throughout this thread: that exact URL now
+resolves `{mode: 'live', profile: 'recording', overlappedId: '0', startTime/endTime: undefined}`
+(the shared legacy-`key=value` scan still finds `OverlappedID=0` regardless of the `mode` gate,
+since that scan doesn't consult `mode`) instead of the `playback` state it resolved to under the
+prior (filename-inferring) version of this fix. This is intentional, not a regression — flagged
+explicitly to the user as a real behavior change at the time it shipped, since it means any real
+caller relying on the old "`play.smp` alone implies playback" auto-detection needs to start
+supplying an explicit `mode=playback` instead.
+
+### Fifth follow-up, same day: the fourth follow-up's removal was a real regression, not just a
+tradeoff — restored, keyed on the `recording` segment instead of the filename
+
+The fourth follow-up above removed the `play.smp`-filename `mode` inference entirely, expecting the
+"original URL now needs an explicit `mode=`" outcome to be an accepted, deliberate simplification.
+It wasn't — the user came back and reported, using two further URL shapes (`start_time=`/`end_time=`
+variants, both path-embedded and `?query`), that the "RTSP URL" demo page's *Resolved connection
+URL* field showed `rtsp://192.168.214.40/0/recording/media.smp` instead of the expected
+`rtsp://192.168.214.40/0/recording/<start>-<end>/OverlappedID=<id>/play.smp`. This is exactly the
+consequence flagged in the fourth follow-up's own writeup — neither of the user's two new URLs
+carries an explicit `mode=` either, so with the filename-based inference gone entirely, `mode` fell
+back to `live`, `profileSegment` (`'recording'`) got written out as a literal `profile` value, and
+`generateRTSPURL()`'s `live` branch produced `{channel}/{profile}/media.smp` = `.../recording/
+media.smp` — the exact symptom this whole investigation started from, resurrected.
+
+Fixed by restoring a fallback inference for `mode`, but this time keyed on the literal `recording`
+**path segment** (`profileSegment === 'recording'`, `segments[1]`) instead of the trailing filename
+— satisfying the fourth follow-up's actual request ("delete the *filename* distinction") while still
+covering the case an explicit `mode=` doesn't. Step 2's original objection to using the `recording`
+segment — that it's shared by both the `playback` and `backup` shapes and so can't distinguish them
+— turns out not to matter for *this* particular inference: `play()` (the method
+`applySrcAttribute()` calls to reconnect a `src`) has no `'backup'` `info.media.type` path of its
+own at all, only the unrelated `backup()` method does, so inferring `'playback'` is the only
+sensible outcome here regardless of which the original `src` was conceptually "for". The gate stays
+exactly as the third follow-up left it — `if (this.mode === 'playback')`, fed in priority order by:
+an explicit `?query`/legacy-path `mode=` value, then this `recording`-segment inference, then this
+element's `'live'` baseline.
+
+Verified the full round trip is restored: `20260903140724-20260903150724` (no `mode=` anywhere) →
+inferred `mode: 'playback'` → true-UTC `startTime`/`endTime` → back through `generateRTSPURL()` to
+the exact expected `rtsp://192.168.214.40/0/recording/20260903140724-20260903150724/
+OverlappedID=0/play.smp` — plus re-verified every other URL shape traced across all five iterations
+of this fix still resolves correctly, with no regressions.
+
+**How to apply**: when a user says "remove X" in response to a design concern, confirm what specific
+mechanism they mean before assuming the *behavior* X enabled should also disappear — here "delete
+the `smpFilename` distinction" meant "stop checking the filename specifically", not "stop inferring
+`mode` at all when it's not given explicitly". Flagging the consequence up front (as the fourth
+follow-up did) is good practice, but isn't a substitute for confirming intent before shipping a
+behavior-changing removal, especially in a thread where the user has been iterating on real-world
+URL shapes one at a time rather than stating a complete spec up front.
+
+### Sixth follow-up, same day: mirror `mode` onto `info.media.type` immediately
+
+Requested directly: whenever the recording-shape block resolves `mode === 'playback'`, it should
+also set `this.info.media.type = 'playback'` right there, not leave it to `play()`'s own assignment
+(in its `playType !== LIVE/INSTANTPLAYBACK` branch) to catch up moments later at the very end of
+`applySrcAttribute()`. `generateRTSPURL()`'s camera branch reads `info.media.type` directly, not
+`mode`/`playType` — added `this.info.media.type = 'playback';` as the first statement inside the
+`if (this.mode === 'playback')` block, so anything that calls `generateRTSPURL()` or otherwise
+inspects `info.media.type` between this parse finishing and `play()` actually running no longer sees
+a stale value left over from this element's previous connection.
+
+### Seventh follow-up, same day: reset every session-identifying field on every `applySrcAttribute()` call
+
+The user's next request, stepping back from the `mode`/`start`/`end` specifics to the whole method:
+*"applySrcAttribute이 호출될때마다 this._username, this._password, this._hostname, this.port,
+this._sessionKey, this.startTime, this.endTime, this.overlappedId, this._device, this._multicast,
+this.mode, this.profile, this.profile_number 등의 값이 초기화 되어야 합니다"* — every one of these
+should reset to its default at the top of every call, not just conditionally (the existing logic
+only cleared `username`/`password`, and only when `hostname` changed).
+
+Implemented as a single block at the very top of `applySrcAttribute()`, before any parsing of the
+new `src` begins:
+- `username`/`password` → `setAttribute(..., '')` (not `removeAttribute()` — same reasoning as the
+  original 2026-08-26 hostname-change fix this supersedes: `removeAttribute()` would set
+  `info.device.username`/`password` to `undefined`, which `StreamPlayer.ts`'s `open()` throws on,
+  unlike `''`, this class's actual "no credentials" state).
+- `hostname`/`port`/`device` → `removeAttribute()` (safe — none of their `attributeChangedCallback`
+  cases validate/throw on a `null` `newValue`; this also keeps their `info.device.*` mirrors in
+  sync, which poking the private field directly would have missed).
+- `sessionKey`/`startTime`/`endTime`/`overlappedId` → their own property setters, `= null` (these
+  were never real attributes, just plain properties; `null` is the same reset value `stop()`
+  already uses for `startTime` elsewhere, for the same "clear a stale range" reason).
+- `multicast`/`mode`/`profile`/`profile_number` → assigned **directly** to the private field
+  (`_multicast`/`_playType`/`_profile`/`_profile_number`), bypassing `setAttribute`/
+  `removeAttribute`/the property setters entirely. Three different reasons this was necessary,
+  found while implementing:
+  - `mode`'s setter throws `RTSPOverWebSocketError` for anything that isn't a `string`
+    (`typeof v !== 'string'`) — and a `removeAttribute()`-triggered case fire passes `null`.
+  - `profile`/`profile_number`'s own `attributeChangedCallback` cases both throw for a
+    non-string/non-integer `newValue` — `null` again always qualifies.
+  - `multicast`'s case (`case 'multicast': { this._multicast = true; break; }`) has a pre-existing
+    quirk: it sets `true` **unconditionally** whenever the case fires at all, never actually
+    checking `newValue` — so `removeAttribute('multicast')` wouldn't reset it to `false`, it would
+    (per this quirk) set it to `true`, the exact opposite of a reset.
+
+Since the reset now unconditionally clears `hostname` (via `removeAttribute()`) *before* the old
+`previousHostname`/`hostnameChanged` comparison logic would have run, that comparison always reads
+`previousHostname === null` now — making the entire hostname-change-conditional credential-clearing
+block from 2026-08-26 permanently dead code (it can never fire; `hostnameChanged` is always
+`false`). Removed that block outright rather than leaving unreachable code with an elaborate
+comment describing behavior that no longer applies — the new unconditional reset already produces
+the same net effect (and more: it also handles the "first `src`" case identically to every other
+case, rather than special-casing it).
+
+**Real, deliberate consequence, checked but not fully resolved**: the old hostname-change fix's own
+comment explicitly protected a "set `username`/`password` as properties, then `src` separately"
+flow (attributed to "this page's Player tab"). Checked this repo's own `src/index.html` and
+`react/Player.tsx` for that exact pattern (property assignment followed by a *separate* `src`
+assignment on the *same* element) and found none currently — the "RTSP URL" tab's SUNAPI-checked
+flow sets `username`/`sunapiClient` then calls `.play()` directly, never also touching `.src`; the
+"Player" tab sets `username`/`password` as properties but never assigns `.src` at all, using
+individual `hostname`/`port`/etc. properties plus a separate `.play()` call instead. So nothing in
+this repo's own code broke. But an *external* consumer of this element following the pattern the
+old comment described (set credentials as properties, then assign `src` to connect) would now find
+those credentials wiped the moment `src` is assigned, unless the `src` URL's own authority component
+supplies them. Flagged explicitly to the user rather than silently shipped.
+
+## MJPEG-encoder tier, seventh real bug: `WebCodecsVideoEncoder`'s invisible decode-stage backpressure gap, plus a zero-margin `currentTime` snap — both found live against a real 2048x1536 camera as a negative "Statistics" `Latency`
+
+Seventh bug in this saga, reported after the sixth fix held up: the user's real device console
+showed a "Statistics" panel `Latency` value of **-6.4240 secs** after playing a real 2048x1536 MJPEG
+Playback session for a few minutes, with the `<video>` element visibly stuck (`2:55 / 4:02`,
+paused-looking). `Latency` is computed in `getCurrentVideoFrame()` as
+`sourceBuffer.buffered.end(...) - videoElement.currentTime` — negative means **`currentTime` is
+already past the actual buffered end**, which can only happen from an explicit `currentTime =`
+assignment (normal monotonic playback can never outrun what's buffered on its own), refreshed live
+every second by the class's own `statisticsTimer`, so this wasn't a stale reading.
+
+Root-caused two independent contributing issues, using a new synthetic Playwright trace built
+specifically to stress-test at the real camera's own resolution and content entropy (2048x1536,
+per-pixel random noise JPEGs — a flat/solid-color synthetic frame, used by every earlier trace in
+this saga, decodes/encodes almost for free and never exposed either of these):
+
+1. **`WebCodecsVideoEncoder.encode()`'s `createImageBitmap()` decode step was invisible to the
+   caller's backpressure check.** `encode()` is `async` and `await`s `createImageBitmap()` (real,
+   resolution-scaled CPU cost) *before* ever calling `this.encoder.encode()`; `VideoTagPlayer.ts`'s
+   `submitMjpegFrame()` calls it fire-and-forget (never awaited) and throttles new frames purely on
+   `encodeQueueSize`, which used to return only `encoder.encodeQueueSize` — the underlying
+   `VideoEncoder`'s own queue, a count that stays 0 for every frame still stuck mid-decode. A new
+   frame arriving every ~500ms while the previous one's `createImageBitmap()` hadn't resolved yet
+   just launched another concurrent decode on top of it, with the backpressure check never seeing
+   any of it. Confirmed live: in the 2048x1536 noise-JPEG trace, the gap between real received
+   content (frames fed × 0.5s) and actually-muxed/buffered content grew from ~1s to ~28s within the
+   first real minute, while `encodeQueueSize` read 0 the entire time. Fixed by adding a
+   `pendingDecodeCount` field to `WebCodecsVideoEncoder`, incremented at the very start of `encode()`
+   and decremented in a `finally` wrapping the *whole* method (every exit path — closed/unconfigured
+   guards, a JPEG decode failure, the success path — not just one branch), and folding it into the
+   `encodeQueueSize` getter (`encoder.encodeQueueSize + pendingDecodeCount`). The caller's existing
+   `MJPEG_ENCODER_MAX_QUEUE_SIZE` check now actually throttles once enough frames are mid-decode, not
+   just once enough are mid-encode — no change needed in `VideoTagPlayer.ts` itself.
+
+   **Caveat, not yet resolved**: re-running the same trace after this fix still showed the gap
+   growing at roughly the same rate (though `encodeQueueSize`/`pendingDecodeCount` correctly started
+   reading 1 partway through, confirming the fix's visibility is now working). This means the
+   dominant cost here isn't unbounded *concurrent* decode/encode fan-out (which the fix above
+   directly addresses) so much as each individual decode+encode cycle simply taking longer than the
+   500ms/frame budget on this test machine — a genuine software-encoding throughput ceiling at full
+   2048x1536 resolution, not a pure logic bug. This trace ran in headless Playwright/Chromium, which
+   may lack the hardware-accelerated encode path a real desktop browser gets — so this specific
+   magnitude (~28s of accumulating lag per real minute) is **not confirmed to reproduce on the user's
+   actual hardware**, and the real device's own reported gap (~6s, not tens of seconds and not
+   visibly still growing) is smaller and different in character. Left as-is rather than redesigning
+   the drop policy (e.g. dropping more aggressively than `MJPEG_ENCODER_MAX_QUEUE_SIZE = 2`) without
+   better evidence of what the user's real hardware actually needs — if CPU usage during MJPEG
+   Playback turns out to be very high on their machine, that would confirm a genuine throughput
+   ceiling and point at lowering `WebCodecsVideoEncoder.ts`'s `BITRATE_BITS_PER_PIXEL`/target quality
+   as the next real lever, not a logic fix.
+
+2. **`videoUpdating()`'s Playback `boxsize`-transition branch snapped `currentTime` to the raw
+   `buffered.end()` with zero safety margin.** Every *other* currentTime correction in this class
+   backs off by `defaultDelay`/`this.delay` first before landing near the buffered edge (this same
+   function's own `tempCurrentTime = endTime - this.delay` a few lines below it, and `onWaiting()`'s
+   own catch-up jump) — this one alone didn't, landing exactly on `buffered.end()`'s raw value. A
+   `SourceBuffer`'s reported `buffered.end()` can sit right at the edge of what's not yet fully
+   decodable, especially for this tier's unusually small, frequent, mostly-single-sample segments —
+   landing exactly there risks the same currentTime-ahead-of-decodable-data stall as an outright
+   overshoot, just a smaller one. Fixed by backing this snap off by `defaultDelay` too (clamped to
+   not go behind `startTime`), matching the pattern already used everywhere else in this class.
+
+**Verified**: full `npx tsc -b` + `npx vitest run` (63 tests) clean; re-ran all four established
+synthetic scenarios (Live 320x240, Live 2048x1536, Playback 40-frame/20s, Playback 120s continuous)
+with no regression from either fix. The specific real-device negative-latency reproduction itself
+was **not** independently re-verified live by the user as of this writing (ffprobe against the real
+camera's own RTSP URL confirmed reachability and the real SDP — MJPEG 2fps/H264/HEVC alternates,
+multiple audio codec choices — but this session's own demo server only relays YouTube sources, so the
+real device's exact session couldn't be replayed end-to-end here).
+
+**How to apply**: a synthetic test frame that's cheap to decode/encode (flat color, small resolution)
+can hide a genuine CPU-cost-driven backlog bug entirely — six prior bugs in this same saga were all
+found and verified with such frames, but this one needed matching the real camera's actual
+resolution *and* content entropy (dense noise, not a solid fill) before it reproduced at all. When a
+real-device report doesn't reproduce in a lightweight synthetic trace, suspect the trace's own
+fidelity to real content cost before ruling the report out. Also: `resolution × entropy`-scaled CPU
+cost is a fundamentally different category of bug from every other one in this saga (a genuine
+timing/arithmetic mistake, always reproducible identically once found) — it can be hardware-
+dependent, and a sandboxed/headless test environment's absolute numbers should not be assumed to
+transfer 1:1 to a user's real browser without independent confirmation.
+
+## MJPEG-encoder tier, eighth real bug: `changeCurrentTime()`'s tab-visibility catch-up jump overshoots the buffered end after the tab was backgrounded
+
+Eighth bug in this saga: the seventh bug's two fixes (encoder decode-stage backpressure visibility,
+`videoUpdating()`'s boxsize-snap margin) didn't resolve the real device's negative-"Latency" stall —
+the user reported it persisted, then added the key clarifying detail: playback stays stopped for as
+long as `Latency` reads negative, and *resumes on its own once it turns positive again* (not a
+permanent stall). That specific "transient, self-recovering" shape ruled out both prior fixes (they
+address the *size* of a margin/backlog, not a jump-then-wait-to-catch-up pattern) and pointed at a
+third, still-unexamined `currentTime =` assignment site.
+
+**Root cause**: `changeCurrentTime()` (only caller: `onVisibilityChange()`, wired to the page's
+`visibilitychange` event) jumps `currentTime` forward to `lastBoxTime` — an entry a few
+`createSegment()`/`createVideoSegment()` calls back in the `boxStartTime` array (which records each
+muxed segment's own start time, one push per call) — whenever `currentTime < lastBoxTime`, with
+**no validation that `lastBoxTime` is still within what's actually buffered right now**. This is
+fine as long as `boxStartTime` always trails close behind `currentTime`, which holds during normal
+foreground playback. It breaks the moment a real browser tab is backgrounded for a while: browsers
+commonly throttle a hidden tab's `<video>` element (its `currentTime` effectively freezes), but
+RTP/WebSocket delivery and this tier's own segment creation aren't necessarily throttled the same
+way and can keep running the whole time — so `boxStartTime` keeps growing while `currentTime` stays
+put. On refocus, `onVisibilityChange()` fires and `lastBoxTime` now points at a segment appended
+*during* the background period, potentially well past what's actually finished
+decoding/appending by the time this runs — jumping `currentTime` there can overshoot past the real
+buffered frontier, exactly like `onWaiting()`'s catch-up jump or `videoUpdating()`'s boxsize-snap
+could (the sixth and seventh bugs' fix sites) — except this jump had no safety margin *and* no
+buffered-end validation at all, the most exposed of the three.
+
+Confirmed live with a new synthetic harness: feed frames normally for 6s, freeze `currentTime` via
+`videoElement.playbackRate = 0` for 10 more real seconds while feeding (and thus segment creation)
+continues uninterrupted — simulating a backgrounded tab's frozen playback clock against still-running
+delivery — then restore `playbackRate = 1` and dispatch a real `visibilitychange` event
+(`document.visibilityState` stubbed to `'visible'`) matching what a real tab-refocus fires. Without a
+fix, the jump landed *past* `sourceBuffer.buffered.end()` (confirmed via an A/B test: reverting the
+fix and rebuilding reproduced the overshoot in the exact same harness, `10.500` vs a buffered end of
+`10.496`) — a small overshoot in this specific timing, but the mechanism scales with how long the tab
+was actually backgrounded, matching a real multi-minute session's much larger reported gap far better
+than either of the seventh bug's fixes did.
+
+**Fixed**: clamp `lastBoxTime` to never exceed `sourceBuffer.buffered.end() - this.defaultDelay`
+(the same margin-back-off pattern every other currentTime correction in this class already uses)
+before comparing/assigning:
+```ts
+if (this.sourceBuffer !== null && this.sourceBuffer.buffered.length > 0) {
+  const bufferedEnd = this.sourceBuffer.buffered.end(this.sourceBuffer.buffered.length - 1) * 1;
+  lastBoxTime = Math.min(lastBoxTime, bufferedEnd - this.defaultDelay);
+}
+```
+
+**Verified**: same harness post-fix — the jump landed at `9.796` (safely under the `10.496` buffered
+end at that moment), and playback advanced continuously and smoothly for the full 15s watch window
+afterward, no stall. Full `npx tsc -b` + `npx vitest run` (63 tests) clean; re-ran Live 320x240,
+Live 2048x1536, and the 120s continuous Playback trace with no regression.
+
+**How to apply**: this is the *third* independent `currentTime =` assignment in this class found
+overshooting the buffered frontier in this saga (`onWaiting()`'s catch-up jump already had a margin;
+`videoUpdating()`'s boxsize-snap and this one didn't) — before trusting any remaining direct
+`videoElement.currentTime = X` assignment in this file, check whether `X` is validated against
+`sourceBuffer.buffered.end()` with a safety margin, not just derived from some other internal
+bookkeeping value (`boxStartTime`, `endTime` read at a single point in time) that can silently drift
+out of sync with what's *actually* still buffered. A symptom's *shape* matters for narrowing which
+assignment site is responsible: a permanent stall pointed at a chronic backlog (bug seven); a stall
+that's transient and self-recovers once `Latency` crosses back to positive pointed specifically at a
+one-shot jump-then-wait pattern (this bug) — the user's own description of the *recovery* behavior,
+not just the negative value itself, was the detail that actually narrowed it down.

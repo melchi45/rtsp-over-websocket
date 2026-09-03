@@ -48,3 +48,82 @@ export function defaultRealMseCodecString(codecType: string): string | null {
       return null;
   }
 }
+
+/**
+ * ITU-T H.264 Annex A Table A-1 level limits: `maxFS` (max frame size,
+ * macroblocks/frame) and `maxMBPS` (max macroblock processing rate,
+ * macroblocks/sec), for every level from 3.0 up (sub-VGA levels 1.x/2.x are
+ * skipped -- no real camera resolution this player targets needs them).
+ * `levelHex` is the level_idc byte (level x 10) as the zero-padded hex pair
+ * an `avc1.PPCCLL` codec string's `LL` component needs directly.
+ *
+ * A *fixed* level (this function's previous shape: always `avc1.42001f`/
+ * `avc1.640028`, Level 3.1/4.0) silently failed `VideoEncoder.
+ * isConfigSupported()` for any resolution its MaxFS doesn't cover --
+ * confirmed live against a real Hanwha camera at 2048x1536 (128x96 = 12,288
+ * macroblocks/frame), which exceeds even Level 4.0's 8,192 MaxFS and needs
+ * Level 5.0 (22,080) at minimum. MJPEG cameras have no codec-level
+ * resolution ceiling the way H264/H265 do, so this needed to become
+ * resolution-aware rather than guessing a "common" one.
+ */
+const H264_LEVEL_LIMITS: { levelHex: string; maxFS: number; maxMBPS: number }[] = [
+  { levelHex: '1e', maxFS: 1_620, maxMBPS: 40_500 }, // 3.0
+  { levelHex: '1f', maxFS: 3_600, maxMBPS: 108_000 }, // 3.1
+  { levelHex: '20', maxFS: 5_120, maxMBPS: 216_000 }, // 3.2
+  { levelHex: '28', maxFS: 8_192, maxMBPS: 245_760 }, // 4.0
+  { levelHex: '29', maxFS: 8_192, maxMBPS: 245_760 }, // 4.1
+  { levelHex: '2a', maxFS: 8_704, maxMBPS: 522_240 }, // 4.2
+  { levelHex: '32', maxFS: 22_080, maxMBPS: 589_824 }, // 5.0
+  { levelHex: '33', maxFS: 36_864, maxMBPS: 983_040 }, // 5.1
+  { levelHex: '34', maxFS: 36_864, maxMBPS: 2_073_600 }, // 5.2
+  { levelHex: '3c', maxFS: 139_264, maxMBPS: 4_177_920 }, // 6.0
+  { levelHex: '3d', maxFS: 139_264, maxMBPS: 8_355_840 }, // 6.1
+  { levelHex: '3e', maxFS: 139_264, maxMBPS: 16_711_680 } // 6.2
+];
+
+const MACROBLOCK_PIXELS = 256; // 16x16
+const DEFAULT_FRAMERATE_FOR_LEVEL_CHECK = 30;
+
+/** Indexes of the levels `mjpegEncoderCandidateCodecStrings()` returns
+ *  candidates for: the lowest level that actually covers `pixelCount`/
+ *  `framerate`, plus the next level up as a fallback (some real encoders
+ *  have gaps in level support even when the resolution itself would fit
+ *  the lower one) -- falls back to the table's own highest two levels if
+ *  even the largest doesn't cover the requested frame size, letting
+ *  `VideoEncoder.isConfigSupported()` reject it for real rather than this
+ *  function silently under-shooting. */
+function selectH264LevelIndexes(pixelCount: number, framerate: number): number[] {
+  const macroblocks = Math.ceil(pixelCount / MACROBLOCK_PIXELS);
+  const mbps = macroblocks * framerate;
+  const fitIndex = H264_LEVEL_LIMITS.findIndex((level) => macroblocks <= level.maxFS && mbps <= level.maxMBPS);
+  const primaryIndex = fitIndex === -1 ? H264_LEVEL_LIMITS.length - 1 : fitIndex;
+  const nextIndex = Math.min(primaryIndex + 1, H264_LEVEL_LIMITS.length - 1);
+  return primaryIndex === nextIndex ? [primaryIndex] : [primaryIndex, nextIndex];
+}
+
+/**
+ * Ordered candidate H264 codec strings for MJPEG's WebCodecs-`VideoEncoder`
+ * real-MSE tier (`WebCodecsVideoEncoder.ts`) -- shared by two callers that
+ * must never drift apart: `MediaRouter.ts`'s `selectVideoPlayer()` pre-flight
+ * `MediaSource.isTypeSupported` probe (using `sizeInfo.decodeSize`, already
+ * a pixel count, as `pixelCount` here) and `WebCodecsVideoEncoder.
+ * configure()`'s own `VideoEncoder.isConfigSupported()` loop (using its real
+ * `width * height`, which actually commits to one candidate). `framerate`
+ * defaults to a generic 30fps assumption when the caller doesn't know the
+ * real one yet (matches `WebCodecsVideoEncoder.ts`'s own
+ * `DEFAULT_FRAMERATE_HINT`).
+ *
+ * Baseline (`42`) first at each level: widest hardware/software encoder
+ * availability. High profile (`64`) second, for encoders that support it.
+ * Every candidate is still verified with `isConfigSupported()` before being
+ * committed to, never assumed blindly.
+ */
+export function mjpegEncoderCandidateCodecStrings(pixelCount: number, framerate: number = DEFAULT_FRAMERATE_FOR_LEVEL_CHECK): string[] {
+  const levelIndexes = selectH264LevelIndexes(pixelCount, framerate || DEFAULT_FRAMERATE_FOR_LEVEL_CHECK);
+  const candidates: string[] = [];
+  for (const index of levelIndexes) {
+    const levelHex = H264_LEVEL_LIMITS[index].levelHex;
+    candidates.push(`avc1.4200${levelHex}`, `avc1.6400${levelHex}`);
+  }
+  return candidates;
+}

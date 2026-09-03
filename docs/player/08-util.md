@@ -11,6 +11,7 @@ subsystem's documentation — data structures, timing, and math utilities.*
 | --- | --- |
 | 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-09-03 | Added `avcConfigParser.ts` (`parseAvcConfigurationRecord`/`buildAvc1CodecString`) — feeds MJPEG's new `WebCodecsVideoEncoder`-based real-MSE tier. See `05-video-player-rendering.md`, `07-talk-backup-worker.md` §3b, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
 
 ---
 
@@ -38,6 +39,7 @@ Everything here is exported from the `util/` barrel, [`src/player/util/index.ts`
   [`formatBytes.ts`](#formatbytests-utilformatbytests),
   [`getElementByAttributeValue`](#getelementbyattributevalue-utilgetelementbyattributevaluets),
   [`hex.ts`](#hexts-utilhexts), [`indexOfMulti`](#indexofmulti-utilindexofmultits)
+- MSE codec strings: [`avcConfigParser.ts`](#avcconfigparserts-utilavcconfigparserts) (new, 2026-09-03)
 
 All of these are ported from the legacy player's `Util/util` grab-bag module (or, for the fisheye files, from
 `Util/fishEye3D` / `Util/fishEye3D_multi`), per each file's own header comment. None of them import from elsewhere
@@ -965,3 +967,54 @@ local `buildCylindricalMesh()` function instead.
 
 - **Relations & Data Flow** — Consumed only by `Transport` (`network/`, documented elsewhere) for RTSP message
   framing.
+
+---
+
+### `avcConfigParser.ts` (`util/avcConfigParser.ts`)
+
+Added 2026-09-03, alongside MJPEG's new `WebCodecsVideoEncoder`-based real-MSE tier
+(`05-video-player-rendering.md`, `07-talk-backup-worker.md` §3b).
+
+- **Structure** — two standalone functions, no class/state:
+  `parseAvcConfigurationRecord(description: Uint8Array): AvcConfigurationRecord | null` and
+  `buildAvc1CodecString(record: AvcConfigurationRecord): string`, plus the
+  `AvcConfigurationRecord` interface (`{ profileIdc, profileCompatibility, levelIdc, sps:
+  Uint8Array[], pps: Uint8Array[] }`) they share.
+
+- **Method Analysis.**
+  - `parseAvcConfigurationRecord(description)` — parses an ISO/IEC 14496-15
+    `AVCDecoderConfigurationRecord` ("avcC" box payload), byte-for-byte:
+    `configurationVersion`(1) skipped, `profileIdc`(1), `profileCompatibility`(1), `levelIdc`(1),
+    a `lengthSizeMinusOne` byte skipped (this player always assumes 4-byte NAL lengths, matching
+    `mp4Generator.js`'s own hardcoded avcC and `VideoTagPlayer.ts`'s `prefixSize`/`PREFIX_SIZE`),
+    then a `numSPS`(low 5 bits) + repeated `(length(2) + bytes)` SPS list, then the same shape for
+    PPS. This is exactly what WebCodecs' `VideoEncoder` surfaces as
+    `EncodedVideoChunkMetadata.decoderConfig.description` for an `avc1.*` codec (present on the
+    first output chunk after `configure()`, and again after any config change) — the encoder-
+    sourced equivalent of what `H264SPSParser` extracts from a real network SPS NAL, needed
+    because MJPEG has no SPS/PPS of its own to parse. Wrapped in a try/catch; returns `null`
+    (logging, not throwing — matching `WebCodecsVideoDecoder.ts`'s error-swallow convention, since
+    a `DataView` read past the buffer's end throws `RangeError` on genuinely truncated/malformed
+    input) rather than letting one bad encoder output take down the whole session.
+  - `buildAvc1CodecString(record)` — builds the `avc1.PPCCLL` MSE codec string from a parsed
+    record, using the exact same zero-padded-hex format `H264SPSParser.getCodecInfo()` builds from
+    a real SPS (`03-mediaSession-core-video.md`) — kept in sync here rather than re-deriving the
+    format independently, since there's no SPS parser instance to call `getCodecInfo()` on for
+    this tier.
+
+- **Call Stack** — Both functions are called exclusively from `VideoTagPlayer.ts`'s
+  `onMjpegEncodedChunk()` (`05-video-player-rendering.md`'s "MJPEG real-MSE tier" section), which
+  feeds the parsed `AvcConfigurationRecord` into a synthesized `VideoInfo` (`spsPayload`/
+  `ppsPayload`/`profileIdc`/`levelIdc`/`codecInfo`) for the shared `setVideoInfo()`/
+  `createInitSegment()` path every other real-MSE codec also uses. The sibling static candidate
+  list this feeds from on the *encode-config* side (not parsed from output, but what
+  `WebCodecsVideoEncoder.configure()`/`MediaRouter.ts`'s pre-flight probe both try) is
+  `codecString.ts`'s `mjpegEncoderCandidateCodecStrings()` — not part of this file, but the two
+  are always used together for this one tier.
+
+- **RFC / Standard References** — ISO/IEC 14496-15 (Carriage of NAL unit structured video in the
+  ISO Base Media File Format), the `AVCDecoderConfigurationRecord` ("avcC") structure specifically.
+
+- **Relations & Data Flow** — Consumed only by `VideoTagPlayer.ts` (`video/player/video/`,
+  documented in `05-video-player-rendering.md`); produces data for `vendor/mp4Generator`'s
+  `Mp4VideoTrackInfo` shape (`09-mp4-container-generation.md`) but never calls into it directly.

@@ -13,6 +13,7 @@ what box tree each exported function actually constructs, byte by byte, for ever
 | --- | --- |
 | 2026-08-26 | Initial version |
 | 2026-08-26 | Fix `dualTrackMediaSegment`'s `var` declaration (`:1344`) — a stray `;` instead of `,` after `mdatlen = 0` left `mdatLens`/`i` as bare assignments to undeclared bindings, throwing `ReferenceError: mdatLens is not defined` in strict-mode (ESM) builds on every dual-track (video+audio, `<video>`-tag mode) segment |
+| 2026-09-03 | Updated the "MJPEG `stsd` entry references an undefined type" known-issue note: `MediaRouter.ts` no longer always forces MJPEG to `tagMode = 'canvas'` (see `03-mediaSession-core-video.md`), but this file's dead `mpv4`/`esds` MJPEG branch is still never reached — the new tier tags its muxed samples `codecType: 'H264'`, reusing the real `avc1`/`avcC` branch instead. No code in this file changed. |
 
 ---
 
@@ -210,11 +211,17 @@ composition-time-offset-present); `trunHeader`/`trunHeader1` are `version 0`.
 - **MJPEG `stsd` entry references an undefined type.** `videoSample`'s MJPEG branch (`:881-910`) calls
   `box(types.mpv4, ...)`, but the `types` lookup table (`:22-76`) only defines `mp4v` (correctly commented `//
   MJPEG`) — there is no `mpv4` key, so `types.mpv4` is `undefined` and `box()` would crash writing an undefined
-  FourCC into the box header. **Confirmed unreachable in the real wired-up system**: `MediaRouter.
-  selectVideoPlayer()` (`src/player/mediaSession/MediaRouter.ts:1437-1439`) unconditionally forces
-  `tagMode = 'canvas'` for `codecType === 'MJPEG'`, so `VideoTagPlayer` — and therefore this `stsd` branch — can
-  never actually run for MJPEG today. Left as-is rather than "fixed" since it's genuinely dead code, not a live
-  bug; flagged here so it isn't mistaken for a straightforward typo fix if `video`-tag MJPEG is ever wired up.
+  FourCC into the box header. **Updated 2026-09-03, still confirmed unreachable, but for a different reason
+  than before:** `MediaRouter.selectVideoPlayer()` no longer unconditionally forces `tagMode = 'canvas'` for
+  `codecType === 'MJPEG'` — it can now reach `VideoTagPlayer` via the new `WebCodecsVideoEncoder`-based
+  real-MSE tier (`05-video-player-rendering.md`). That tier deliberately does **not** exercise this branch,
+  though: encoder-sourced samples are tagged `codecType: 'H264'` throughout (`VideoTagPlayer.ts`'s
+  `onMjpegEncodedChunk()`), not `'MJPEG'`, both because `mp4Generator.js` needs the real `avc1`/`avcC` H264
+  `stsd` entry (this file's H264 branch, not the `mpv4`/`esds` one) to describe the actual re-encoded
+  bitstream, and — incidentally — because doing so keeps this particular dead branch dead. Left as-is rather
+  than "fixed", same reasoning as before: still genuinely unreachable, just worth re-confirming *why* each
+  time something changes upstream of it, so this note doesn't quietly go stale. See this repo's `MEMORY.md`
+  for the full narrative.
 - **VP8 has no `stsd` branch at all.** `videoSample`'s `if`/`else if` chain (`:797-915`) covers H264/H265/
   MJPEG/VP9/AV1 only; a VP8 track falls through and the function implicitly returns `undefined`, which would
   crash the same way. Matches file 05's existing note that VP8 has no real-MSE tier at all (`vp08`/`vp09`

@@ -11,7 +11,9 @@ import type { VideoStreamData, VideoInfo, AudioStreamData, AudioInfo, WaitingEve
 import { saveAs } from 'file-saver';
 import { initSegment, mediaSegment, dualTrackMediaSegment, type Mp4VideoTrackInfo, type Mp4AudioTrackInfo, type Mp4BoxInfo, type Mp4Sample, type Mp4TimeStamp } from '../../../vendor/mp4Generator';
 import { WebCodecsVideoDecoder } from '../../../worker/videoDecoder/WebCodecsVideoDecoder';
+import { WebCodecsVideoEncoder, type WebCodecsEncodedResult } from '../../../worker/videoEncoder/WebCodecsVideoEncoder';
 import { defaultRealMseCodecString } from '../../../util/codecString';
+import { parseAvcConfigurationRecord, buildAvc1CodecString, type AvcConfigurationRecord } from '../../../util/avcConfigParser';
 import type { MediaStreamVideoTrackGenerator } from '../../../types/mediaStreamTrackGenerator';
 
 export type AudiotranscoderWorkerFactory = () => Worker;
@@ -66,6 +68,28 @@ const OPUS_FRAME_SAMPLES = 960;
 const MAX_PLAYBACK_DIFF = 1500;
 const MAX_CUE_COUNT = 100;
 const PREFIX_SIZE = 4;
+// Roughly a 2s GOP at a common ~30fps MJPEG source -- MJPEG itself has no
+// GOP concept (every source frame is already a complete JPEG "I-frame"), so
+// this is purely for the *encoded H264* stream's own seekability/error-
+// resilience, same reasoning any live H264 encoder GOP setting would use.
+const MJPEG_ENCODER_KEYFRAME_INTERVAL = 60;
+// encodeQueueSize threshold past which onVideoData() starts dropping new
+// MJPEG frames rather than submitting them to the encoder -- small and
+// real-time-oriented, matching this tier's live-playback intent rather than
+// buffering for eventual catch-up.
+const MJPEG_ENCODER_MAX_QUEUE_SIZE = 2;
+
+/** One JPEG frame already handed to `mjpegEncoder.encode()`, awaiting that
+ *  frame's own async `EncodedVideoChunk` output -- see
+ *  `onMjpegEncodedChunk()`. Keeps the *original* RTP-derived `streamData`/
+ *  `videoInfo` (real presentation timing), not the encoder's own
+ *  `timestampUs` (a purely internal WebCodecs bookkeeping value used only
+ *  to match a chunk back to this entry). */
+interface MjpegPendingFrame {
+  timestampUs: number;
+  streamData: VideoStreamData;
+  videoInfo: VideoInfo;
+}
 
 interface TimestampData extends Mp4TimeStamp {
   type?: string;
@@ -221,6 +245,26 @@ export class VideoTagPlayer extends VideoPlayer {
   private bridgeDecoder: WebCodecsVideoDecoder | null = null;
   private bridgeTrackGenerator: MediaStreamVideoTrackGenerator | null = null;
   private bridgeWriter: WritableStreamDefaultWriter<VideoFrame> | null = null;
+
+  // MJPEG real-MSE tier via H264 re-encoding (see decideUseMjpegEncoder()/
+  // setupMjpegEncoder()/onMjpegEncodedChunk()). Unlike the bridge tier above,
+  // this one DOES use the same MP4-muxing machinery every other real-MSE
+  // codec does (sourceBuffer/mediaSource/createVideoSample()/
+  // createInitSegment()) -- the only difference is an extra async encode
+  // step between a raw JPEG frame arriving and a muxable H264 sample
+  // existing. mjpegPendingFrames bridges that gap: WebCodecsVideoEncoder's
+  // encode() is fire-and-forget, so onVideoData() can't just call
+  // createVideoSample() synchronously the way it does for every other
+  // codec -- it has to wait for that same frame's own EncodedVideoChunk to
+  // arrive via onMjpegEncodedChunk(), in order (single VideoEncoder
+  // instances preserve encode() call order in their output as long as no
+  // B-frames are requested, which this class never does).
+  private useMjpegEncoder = false;
+  private mjpegEncoder: WebCodecsVideoEncoder | null = null;
+  private mjpegAvcConfig: AvcConfigurationRecord | null = null;
+  private readonly mjpegPendingFrames: MjpegPendingFrame[] = [];
+  private mjpegNextTimestampUs = 0;
+  private mjpegFramesSinceKeyFrame = 0;
 
   private segmentArray: Uint8Array[] = [];
   private sequenseNum = 1;
@@ -389,6 +433,29 @@ export class VideoTagPlayer extends VideoPlayer {
           this.clearBufferFlag = false;
         }
         this.appendSegmentToSourceBuffer();
+        // Real bug, found live (Playback mode specifically -- confirmed via
+        // a direct trace that `durationchange` (this class's only other
+        // trigger for videoUpdating(), via onDurationChange()) stops firing
+        // entirely after the first handful of appended segments, even
+        // though appendBuffer() keeps succeeding here on every subsequent
+        // 'updateend' -- an MSE implementation detail for a continuously-
+        // growing fragmented-MP4 stream, not something this class controls.
+        // videoUpdating()'s Playback branch is the only place that
+        // auto-resumes playback if the <video> element ever pauses itself
+        // (a native buffering/waiting stall) -- once durationchange goes
+        // quiet, nothing does that anymore, which read live as playback
+        // getting stuck/oscillating near a stale position instead of
+        // continuing to advance through newly-buffered content. 'updateend'
+        // fires reliably on every successful append (confirmed by the same
+        // trace), so it's a much sturdier trigger for this than
+        // durationchange ever was. Scoped to Playback only (videoUpdating()
+        // already branches on playbackFlag internally, but this call site's
+        // narrower guard keeps Live mode's own existing durationchange-only
+        // cadence completely unchanged, since that side wasn't reported
+        // broken).
+        if (this.playbackFlag) {
+          this.videoUpdating();
+        }
         break;
       }
       default:
@@ -492,6 +559,91 @@ export class VideoTagPlayer extends VideoPlayer {
       this.bridgeWriter = null;
     }
     this.bridgeTrackGenerator = null;
+  }
+
+  /** MJPEG-only counterpart to decideUseBridge() above. Simpler than that
+   *  one: there's no bridge-style fallback tier for an *encode* direction
+   *  (MediaStreamTrackGenerator bridges decoded frames into a <video>, it
+   *  can't produce the H264 bitstream this tier needs), so this either can
+   *  run or this class shouldn't have been selected as the player at all --
+   *  MediaRouter.ts's selectVideoPlayer() already made that same
+   *  VideoEncoder-support check once to decide tagMode itself, before this
+   *  player was constructed; this re-derives it independently rather than
+   *  trusting that decision blindly, matching decideUseBridge()'s own style. */
+  private decideUseMjpegEncoder(codecType: string | undefined): boolean {
+    return codecType === 'MJPEG' && typeof VideoEncoder !== 'undefined';
+  }
+
+  private setupMjpegEncoder(width: number, height: number): void {
+    this.mjpegEncoder = new WebCodecsVideoEncoder(width, height, {
+      onEncodedChunk: (result) => this.onMjpegEncodedChunk(result),
+      onError: (error) => {
+        // eslint-disable-next-line no-console
+        console.error('[VideoTagPlayer] MJPEG WebCodecsVideoEncoder error:', error);
+      }
+    });
+  }
+
+  /** The async-replay half of the MJPEG-encoder tier -- matches an
+   *  `EncodedVideoChunk` result back to the `mjpegPendingFrames` entry it
+   *  belongs to (by the `timestampUs` this class itself assigned when
+   *  calling `encode()`), then feeds it through the SAME real-MSE ingestion
+   *  every other codec's `onVideoData()` branch uses (`setVideoInfo()` +
+   *  `initBaseNTPTimestamp()` + `createInitSegment()` once, on the first
+   *  keyframe; `createVideoSample()` every time) -- see `ingestVideoSample()`. */
+  private onMjpegEncodedChunk(result: WebCodecsEncodedResult): void {
+    const pendingIndex = this.mjpegPendingFrames.findIndex((entry) => entry.timestampUs === result.timestampUs);
+    if (pendingIndex === -1) {
+      // No matching pending entry -- the encoder's output order desynced
+      // from what was submitted (e.g. a mid-flight `error` callback silently
+      // dropped one or more `encode()` calls' output entirely). Dropping
+      // this one chunk is safer than guessing which frame it actually
+      // belongs to and muxing it with the wrong timing/videoInfo.
+      // eslint-disable-next-line no-console
+      console.error('[VideoTagPlayer] MJPEG encoder output has no matching pending frame (timestampUs mismatch) -- dropping chunk');
+      return;
+    }
+    const [pending] = this.mjpegPendingFrames.splice(pendingIndex, 1);
+
+    if (result.description !== null) {
+      const avcConfig = parseAvcConfigurationRecord(result.description);
+      if (avcConfig !== null) {
+        this.mjpegAvcConfig = avcConfig;
+      }
+    }
+
+    if (this.mjpegAvcConfig === null) {
+      // The very first chunk should always carry a description (WebCodecs
+      // attaches decoderConfig whenever a VideoEncoder first starts
+      // producing output) -- if it somehow didn't, there's nothing safe to
+      // mux yet (setVideoInfo()'s H264 branch needs real sps/pps/profileIdc/
+      // levelIdc), so this frame is dropped rather than muxed with garbage.
+      // eslint-disable-next-line no-console
+      console.error('[VideoTagPlayer] MJPEG encoder produced a chunk before any avcC config was seen -- dropping');
+      return;
+    }
+
+    const streamData: VideoStreamData = { ...pending.streamData, codecType: 'H264', frameData: result.frameData };
+    const videoInfo: VideoInfo = {
+      ...pending.videoInfo,
+      frameType: result.type === 'key' ? 'I' : 'P',
+      spsPayload: this.mjpegAvcConfig.sps[0],
+      ppsPayload: this.mjpegAvcConfig.pps[0],
+      profileIdc: this.mjpegAvcConfig.profileIdc,
+      levelIdc: this.mjpegAvcConfig.levelIdc,
+      codecInfo: buildAvc1CodecString(this.mjpegAvcConfig)
+    };
+
+    this.ingestVideoSample(streamData, videoInfo, /* isEncoderSourced */ true);
+  }
+
+  private closeMjpegEncoder(): void {
+    this.mjpegEncoder?.close();
+    this.mjpegEncoder = null;
+    this.mjpegAvcConfig = null;
+    this.mjpegPendingFrames.length = 0;
+    this.mjpegNextTimestampUs = 0;
+    this.mjpegFramesSinceKeyFrame = 0;
   }
 
   private createMediaSource(): void {
@@ -750,7 +902,31 @@ export class VideoTagPlayer extends VideoPlayer {
     }
     const boxTimeIndex = this.lastBoxSize <= 4 ? 2 : 1;
     if (boxTimeIndex < this.boxStartTime.length) {
-      const lastBoxTime = this.boxStartTime[this.boxStartTime.length - 1 - boxTimeIndex];
+      let lastBoxTime = this.boxStartTime[this.boxStartTime.length - 1 - boxTimeIndex];
+      // Real bug, found live: `onVisibilityChange()` (this method's only
+      // caller) fires whenever the tab regains visibility, and this jump
+      // target -- a *few* `createSegment()`/`createVideoSegment()` calls
+      // back from `boxStartTime`'s current length, not validated against
+      // what's actually still buffered -- assumed `boxStartTime` always
+      // trails close behind `currentTime`. That's false after a real tab was
+      // backgrounded for a while: browsers commonly throttle/freeze a
+      // background tab's `<video>` playback (`currentTime` stops advancing),
+      // but RTP/WebSocket delivery and this tier's own segment creation can
+      // keep running regardless, so `boxStartTime` keeps growing the whole
+      // time. On refocus, `lastBoxTime` then points at a segment appended
+      // *during* the background period -- which may be well past whatever
+      // has actually finished decoding/rendering by the time this runs -- so
+      // the jump can overshoot past the real playable frontier exactly like
+      // `onWaiting()`'s catch-up jump or `videoUpdating()`'s boxsize-snap
+      // could (see those fixes above), stalling playback (a negative
+      // "Statistics" `Latency`) until real buffered content actually catches
+      // up to where this jumped to. Clamped here to never target past what's
+      // actually buffered right now, backing off by `defaultDelay` same as
+      // every other currentTime correction in this class.
+      if (this.sourceBuffer !== null && this.sourceBuffer.buffered.length > 0) {
+        const bufferedEnd = this.sourceBuffer.buffered.end(this.sourceBuffer.buffered.length - 1) * 1;
+        lastBoxTime = Math.min(lastBoxTime, bufferedEnd - this.defaultDelay);
+      }
       if (videoElement.currentTime < lastBoxTime) {
         videoElement.currentTime = lastBoxTime;
       }
@@ -874,7 +1050,32 @@ export class VideoTagPlayer extends VideoPlayer {
         ) {
           videoElement.currentTime = endTime - this.defaultDelay;
         } else {
-          videoElement.currentTime = parseInt(String(videoElement.currentTime), 10);
+          // Real bug, found live: this used to unconditionally truncate
+          // `currentTime` down to the floor integer second
+          // (`parseInt(String(currentTime), 10)`) on *every* 'waiting'
+          // event reaching this branch -- which is the normal, expected
+          // case (a brief buffering pause nowhere near the
+          // getMaxInstantPlayback()-sized backlog the branch above handles),
+          // not just some rare recovery scenario. Confirmed live via native
+          // <video> event tracing: a real MJPEG Playback session hitting
+          // ordinary 'waiting' pauses every ~0.5-0.9s (its own segments
+          // arrive in small, frequent bursts) got `currentTime` rewound by
+          // up to a full second on *every one* of them -- e.g. 4.79 -> 4.0
+          // -> plays forward to ~4.79 again -> 'waiting' -> rewound to 4.0
+          // again, repeating indefinitely. That's exactly what read live as
+          // a burned-in OSD timestamp oscillating back and forth instead of
+          // advancing, and as "latency" building up (real playback progress
+          // was being discarded every cycle, not actually stalled). Now
+          // only rewinds when `currentTime` is genuinely out of the valid
+          // buffered range (at/past `endTime`, or non-finite) -- the
+          // scenario a defensive correction here should actually be
+          // guarding against; a `currentTime` that's simply waiting for a
+          // few more frames at the buffered edge is left alone entirely,
+          // letting the browser's own buffered-position recovery resume it
+          // naturally once more data arrives.
+          if (!Number.isFinite(videoElement.currentTime) || videoElement.currentTime >= endTime) {
+            videoElement.currentTime = parseInt(String(videoElement.currentTime), 10);
+          }
           if (this.userPaused === false && videoElement.readyState >= 2) {
             if (!this.instantplayback) {
               this.videoPlay();
@@ -882,7 +1083,30 @@ export class VideoTagPlayer extends VideoPlayer {
           }
         }
 
-        if (this.localSpeedValue === 1 && Math.abs(this.baseVideoTime - this.baseAudioTime) > 20000) {
+        // Real bug, found live via direct instrumentation (temporary
+        // `[DEBUG-RESET]`/`[DEBUG-UE2]` logging): this A/V-drift resync used
+        // to run unconditionally, comparing the real, monotonically-advancing
+        // `baseVideoTime` against `baseAudioTime` even when the audio track
+        // is entirely synthetic (`dummyAudio` -- MJPEG's re-encoder tier has
+        // no real audio at all, see `makeDummyAudio()`). Dummy audio's
+        // duration accounting is only an approximation to satisfy MSE's
+        // technical requirement for an audio track, not a real timing
+        // signal, so it routinely drifts >2s from real video progress with
+        // no actual desync having occurred. Confirmed live: this fired on
+        // nearly every 'waiting' event during MJPEG Playback (e.g.
+        // baseVideoTime=85000 vs baseAudioTime=58880, a ~2.6s gap that's
+        // just normal dummy-audio slop), each time zeroing `baseVideoTime`
+        // back to 0 via resetBaseDecodingTime() -- discarding several real
+        // seconds of already-buffered progress and causing every
+        // subsequently-muxed segment's PTS to land back inside the
+        // already-buffered range instead of extending past it. That's
+        // exactly the buffered-range freeze/sawtooth traced via
+        // `[DEBUG-UE2]` (bufferedEnd growing then abruptly dropping back)
+        // and the mismatched-fps/oscillating-OSD symptom reported live. Now
+        // skipped entirely while `dummyAudio` is true -- this resync only
+        // makes sense for a real second audio track, which real-audio
+        // sessions (dummyAudio false) still get exactly as before.
+        if (this.localSpeedValue === 1 && !this.dummyAudio && Math.abs(this.baseVideoTime - this.baseAudioTime) > 20000) {
           this.resetBaseDecodingTime();
         }
       } else {
@@ -1026,7 +1250,7 @@ export class VideoTagPlayer extends VideoPlayer {
     array[index + 3] = size & 0xff;
   }
 
-  private createSampleFrameData(frameData: Uint8Array, codecType: string): Uint8Array {
+  private createSampleFrameData(frameData: Uint8Array, codecType: string, isEncoderSourced: boolean): Uint8Array {
     // VP8/VP9/AV1 have no Annex-B start-code/NAL-length layer at all — their
     // ISOBMFF sample data is the raw coded bitstream as-is (per the WebM VP
     // Codec and AV1 Codec ISOBMFF bindings). The NAL-length rewrite below is
@@ -1034,7 +1258,15 @@ export class VideoTagPlayer extends VideoPlayer {
     // codecs' first 4 bytes (it always calls setNalLength at least once,
     // even when no 0x00000001 start code was ever found, since
     // `nalUnitIndex` starts at 0 rather than being left unset).
-    if (codecType !== 'H264' && codecType !== 'H265') {
+    //
+    // `isEncoderSourced` (WebCodecsVideoEncoder.ts's MJPEG-encode tier) is
+    // the same kind of exception even though its `codecType` reads 'H264'
+    // (needed so mp4Generator.js's box-type dispatch treats it as real
+    // H264) -- a `VideoEncoder` configured with `avc: { format: 'avc' }`
+    // (the default) already emits length-prefixed AVCC bytes, not Annex-B
+    // start codes, so running this rewrite on it would corrupt already-
+    // correct data rather than fix anything.
+    if (isEncoderSourced || (codecType !== 'H264' && codecType !== 'H265')) {
       return new Uint8Array(frameData);
     }
 
@@ -1108,16 +1340,37 @@ export class VideoTagPlayer extends VideoPlayer {
   }
 
   private initBaseAudioTime(audioTimestamp: TimestampData): boolean {
-    if (!this.baseVideoTime) {
-      this.baseVideoTime = this.receiveTimeStamp.utcTimeStamp
-        ? (this.receiveTimeStamp.utcTimeStamp - this.baseNTPTimestamp) * 10
-        : ((this.receiveTimeStamp.timestamp as number) * 1000 +
-            (this.receiveTimeStamp.timestamp_usec as number) -
-            ((this.receiveTimeStamp.timestamp as number) * 1000 + (this.receiveTimeStamp.timestamp_usec as number) - this.baseNTPTimestamp < 0
-              ? (this.baseNTPTimestamp = (this.receiveTimeStamp.timestamp as number) * 1000 + (this.receiveTimeStamp.timestamp_usec as number))
-              : this.baseNTPTimestamp)) *
-            10;
-    }
+    // Real bug, found live (MJPEG Playback with dummy audio, but not
+    // MJPEG-specific -- this whole function is shared by every codec's
+    // Playback path): this used to reassign `this.baseVideoTime` here (not
+    // `baseAudioTime`, despite the function's name) from an *absolute*
+    // wall-clock-anchored formula (`receiveTimeStamp.utcTimeStamp` scaled by
+    // `baseNTPTimestamp`) whenever `baseVideoTime` was falsy. `baseVideoTime`
+    // is *always* a purely relative, monotonically self-accumulating clock
+    // everywhere else in this class (`updateVideoTimestamp()`'s own
+    // `baseVideoTime += frameDuration`, starting from 0) -- fine the very
+    // first time this function ever runs (baseVideoTime is 0 by its field
+    // default either way), but `resetBaseDecodingTime()` (the A/V-drift
+    // resync this function is called from, via `checkAudioTimestamp()`)
+    // *also* zeroes `baseVideoTime` itself before this runs, for Playback
+    // mode specifically -- so every drift-triggered resync mid-session hit
+    // this branch again and clobbered the relative clock with an absolute
+    // millisecond-scale value (confirmed live: baseVideoTime jumped from a
+    // normal ~65000 to ~75,000,000 mid-session), which every subsequent
+    // `updateVideoTimestamp()` call then kept accumulating on top of --
+    // surfacing as `currentTime` jumping to a nonsensical multi-thousand-
+    // second value and the buffered edge effectively never being reached
+    // again (reported directly by the user as a burned-in OSD timestamp
+    // stuck oscillating, and separately as "video latency 20+ seconds").
+    // Live mode's own equivalent resync never zeroes `baseVideoTime` first
+    // (see `resetBaseDecodingTime()`'s own `if (this.playbackFlag)` guard),
+    // so it never hit this branch with a stale-but-still-relative value to
+    // corrupt -- which is why this went unnoticed until Playback exercised
+    // it. `baseVideoTime` is always already valid by the time this runs
+    // (either its 0 default, or whatever `resetBaseDecodingTime()`/prior
+    // accumulation already set) -- nothing needs deriving here at all; the
+    // fallback at `this.baseVideoTime` a few lines below (for a dummy/zero-
+    // timestamp audio sample) already reads it correctly as-is.
     this.baseAudioTime = audioTimestamp.utcTimeStamp
       ? (audioTimestamp.utcTimeStamp - this.baseNTPTimestamp) * 10
       : audioTimestamp.timestamp === 0 && audioTimestamp.timestamp_usec === 0
@@ -1222,10 +1475,78 @@ export class VideoTagPlayer extends VideoPlayer {
   // inline via `preAudioTimeStamp` instead). Confirmed 100% dead code,
   // dropped rather than ported as unreachable weight.
 
-  private createVideoSample(streamData: VideoStreamData, videoInfo: VideoInfo): void {
+  /** Shared real-MSE video-sample ingestion: builds the init segment once,
+   *  on the first keyframe (`videoCodecInfo === null` gate), then always
+   *  queues the sample. Extracted out of `onVideoData()` so the MJPEG-
+   *  encoder tier's async `onMjpegEncodedChunk()` can reuse the exact same
+   *  init-segment-building path (`setVideoInfo()`/`initBaseNTPTimestamp()`/
+   *  `createInitSegment()`) as every synchronous real-MSE codec, rather
+   *  than duplicating it — including `this.videoCodecInfo`'s own
+   *  population, which `setSourceBuffer()` requires and is otherwise easy
+   *  to forget to set from a new call site. */
+  private ingestVideoSample(streamData: VideoStreamData, videoInfo: VideoInfo, isEncoderSourced: boolean): void {
+    if (this.mediaSource === null || this.mediaSource.readyState === 'ended') {
+      return;
+    }
+    if (this.videoCodecInfo === null && videoInfo.frameType === 'I') {
+      this.videoCodecInfo = videoInfo.codecInfo as string;
+      this.setVideoInfo(videoInfo, streamData.codecType);
+      this.initBaseNTPTimestamp(streamData.timeStamp as TimestampData);
+      this.createInitSegment();
+      // Retry: `setSourceBuffer()`'s only other call site is the
+      // `'sourceopen'` listener, which can fire before `videoCodecInfo` was
+      // known yet (see that method's own comment) -- if that already
+      // happened, `this.sourceBuffer` is still `null` here even though
+      // `mediaSource` itself is open, and nothing would ever create it
+      // otherwise. Calling it again now that the real codec is known is a
+      // safe no-op if a SourceBuffer already exists (`setSourceBuffer()`'s
+      // own `mediaSource.sourceBuffers.length === 0` guard).
+      if (this.sourceBuffer === null) {
+        this.setSourceBuffer();
+      }
+    }
+    this.createVideoSample(streamData, videoInfo, isEncoderSourced);
+  }
+
+  /** MJPEG-encoder tier's `onVideoData()` entry point: hands the raw JPEG
+   *  frame to `mjpegEncoder` (lazily created here, on the first call, since
+   *  `VideoEncoder.configure()` needs real width/height that aren't known
+   *  before this) and records a `mjpegPendingFrames` entry so
+   *  `onMjpegEncodedChunk()` can match that frame's own async output back
+   *  to its original (real, RTP-derived) `streamData`/`videoInfo` later. */
+  private submitMjpegFrame(streamData: VideoStreamData, videoInfo: VideoInfo): void {
+    if (this.mjpegEncoder === null) {
+      this.setupMjpegEncoder(videoInfo.width as number, videoInfo.height as number);
+    }
+    if (this.mjpegEncoder === null || !this.mjpegEncoder.isConfigured) {
+      // Encoder not ready yet (still async-configuring after just being
+      // constructed above, or genuinely unsupported despite MediaRouter's
+      // earlier pre-flight check) — this frame is simply skipped, not
+      // queued; MJPEG delivers a fresh frame on essentially every RTP
+      // marker bit, so playback picks back up on its own once configure()
+      // resolves, never a total stall.
+      return;
+    }
+
+    // Never drop a frame while there's no init segment yet
+    // (mjpegAvcConfig === null) — that's the only frame that can ever start
+    // playback; dropping it would stall forever, not just skip one frame.
+    const forceKeyFrame = this.mjpegAvcConfig === null || this.mjpegFramesSinceKeyFrame >= MJPEG_ENCODER_KEYFRAME_INTERVAL;
+    if (this.mjpegAvcConfig !== null && !forceKeyFrame && this.mjpegEncoder.encodeQueueSize >= MJPEG_ENCODER_MAX_QUEUE_SIZE) {
+      return;
+    }
+    this.mjpegFramesSinceKeyFrame = forceKeyFrame ? 0 : this.mjpegFramesSinceKeyFrame + 1;
+
+    const timestampUs = this.mjpegNextTimestampUs;
+    this.mjpegNextTimestampUs += 1;
+    this.mjpegPendingFrames.push({ timestampUs, streamData, videoInfo });
+    void this.mjpegEncoder.encode({ frameData: streamData.frameData, timestampUs, forceKeyFrame });
+  }
+
+  private createVideoSample(streamData: VideoStreamData, videoInfo: VideoInfo, isEncoderSourced: boolean = false): void {
     const sample: VideoSample = {
       size: streamData.frameData.byteLength,
-      frameData: this.createSampleFrameData(streamData.frameData, streamData.codecType),
+      frameData: this.createSampleFrameData(streamData.frameData, streamData.codecType, isEncoderSourced),
       frameInfo: videoInfo,
       timeStamp: streamData.timeStamp as TimestampData,
       frameDuration: 0
@@ -1463,6 +1784,68 @@ export class VideoTagPlayer extends VideoPlayer {
       this.createVideoSegmentTimeout = null;
     }
 
+    // Real bug, found live: keep the periodic ~1.5s (MAX_PLAYBACK_DIFF)
+    // flush check alive regardless of what triggered *this* call --
+    // previously only createVideoSample()'s own I-frame-boundary code ever
+    // scheduled this timeout, so once a timeout-triggered flush consumed
+    // the pending one, nothing rescheduled another until the *next real
+    // keyframe* arrived. Confirmed live: a real WebCodecs `VideoEncoder`
+    // inserts its own keyframes on its own internal cadence, independent of
+    // this class's own `forceKeyFrame` request hint (observed ~17 frames
+    // apart in one browser, ignoring a 60-frame request from
+    // submitMjpegFrame()) -- so relying on the next I-frame to resume
+    // flushing produced multi-second playback stalls between whatever
+    // cadence the encoder happened to choose, visible as `currentTime`
+    // sitting near the stale buffered edge (reported directly by the user
+    // as a burned-in OSD timestamp visibly bouncing back and forth, e.g.
+    // "27 -> 28 -> 27 -> 28", rather than advancing smoothly) instead of a
+    // crash or an empty buffer. Rescheduling here, unconditionally, on
+    // every call regardless of outcome, closes the gap for good -- a safe
+    // no-op flush attempt when there's nothing new to send yet.
+    if (this.mediaSource !== null && this.mediaSource.readyState !== 'ended') {
+      this.createVideoSegmentTimeout = setTimeout(() => this.createSegment(), MAX_PLAYBACK_DIFF);
+    }
+
+    // Real bug, found live (MJPEG playback via the WebCodecs-encoder tier,
+    // but not specific to it -- this method is shared with every real-MSE
+    // codec's Playback path). The *only* other place dummy audio gets
+    // seeded is createVideoSample()'s playbackFlag branch, and only once
+    // `this.videoSamples.length > 1` (i.e. from the *second* I-frame
+    // boundary onward) -- so the very first flush this method is asked to
+    // do (via its own MAX_PLAYBACK_DIFF timeout fallback, or an I-frame
+    // that arrives before a second one ever does) can hit the guard below
+    // with `audioSamples` still empty, and then silently no-op forever if
+    // no real audio track exists and no second I-frame arrives in time --
+    // a real possibility for a short clip, or any codec/config with an
+    // infrequent keyframe cadence (confirmed live: MJPEG's re-encoded H264
+    // stream only forces a keyframe every 60 frames, easily longer than a
+    // whole short Playback clip). Seeding here too, gated on the same
+    // `dummyAudio` flag and only when nothing's queued yet, closes that gap
+    // for every caller of this method, not just the one that already seeds
+    // it. Falls back to exactly one `audioInfo.samplingDuration` worth when
+    // there's no real rtpTimestamp delta to compute from yet (a single
+    // buffered video sample) -- makeDummyAudio(0) would otherwise push
+    // nothing at all, since its own `audioTime += 0` never crosses the
+    // while-loop's `>= samplingDuration` threshold.
+    if (this.dummyAudio && this.audioSamples.length === 0 && this.videoSamples.length > 0) {
+      // makeDummyAudio()'s own `updateDuration > 100000` branch re-derives a
+      // duration from consecutive video-sample rtpTimestamp deltas and
+      // requires the recomputed total to land in `(0, 10000]` or it returns
+      // without creating anything at all -- fine for its original target (a
+      // single dropped-frame gap) but not for the potentially large span
+      // that can accumulate here (many samples since the last flush, e.g.
+      // MJPEG's own multi-frame re-encode keyframe interval). Capping at
+      // exactly 100000 keeps this call on the function's direct-add path
+      // (no recompute, no silent no-op) -- trades exact duration fidelity
+      // for a guaranteed non-empty `audioSamples`, acceptable since this is
+      // silent placeholder audio, not real content.
+      const firstSample = this.videoSamples[0];
+      const lastSample = this.videoSamples[this.videoSamples.length - 1];
+      const rawDelta = ((lastSample.rtpTimestamp ?? 0) - (firstSample.rtpTimestamp ?? 0)) * 10;
+      const safeDelta = Math.min(Math.max(rawDelta, this.audioInfo.samplingDuration), 100_000);
+      this.makeDummyAudio(safeDelta);
+    }
+
     if (this.videoSamples.length === 0 || this.audioSamples.length === 0) return;
 
     const videoSamples = boxSize ? this.videoSamples.splice(0, boxSize) : this.videoSamples.splice(0);
@@ -1572,7 +1955,29 @@ export class VideoTagPlayer extends VideoPlayer {
         });
       }
 
-      this.addBufferEventListener();
+      // Real bug, found live: `videoCodecInfo` can still be `null` the first
+      // time `sourceopen` fires (this method's only call site) if it hasn't
+      // been captured from a real video frame yet -- `MediaSource.
+      // isTypeSupported('video/mp4;codecs="null, ...')` then returns `false`
+      // and `this.sourceBuffer` is never assigned. `addBufferEventListener()`
+      // used to run unconditionally regardless, throwing `Cannot read
+      // properties of null (reading 'addEventListener')` and aborting this
+      // whole handler. Confirmed live: MJPEG's new WebCodecsVideoEncoder tier
+      // (ingestVideoSample()/onMjpegEncodedChunk()) makes this race far more
+      // likely to actually manifest than it was for H264/H265/VP9/AV1 --
+      // building the first sample now requires an async JPEG-decode +
+      // VideoEncoder.configure() round trip first, giving the browser's own
+      // 'sourceopen' event a real chance to fire before any frame has been
+      // muxed at all, instead of arriving after by sheer synchronous-path
+      // timing luck like every other codec's frame usually did. Guarded here
+      // (skip attaching listeners to a SourceBuffer that doesn't exist) and
+      // retried once the real codec is known (see ingestVideoSample()'s own
+      // setSourceBuffer() retry) -- fixes the race for every codec, not just
+      // MJPEG, since the underlying ordering assumption was never codec-
+      // specific to begin with.
+      if (this.sourceBuffer !== null) {
+        this.addBufferEventListener();
+      }
     }
   }
 
@@ -1623,9 +2028,31 @@ export class VideoTagPlayer extends VideoPlayer {
           const sourceBuffer = this.sourceBuffer as SourceBuffer;
           const startTime = sourceBuffer.buffered.start(sourceBuffer.buffered.length - 1) * 1;
           const endTime = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1) * 1;
-          const latency = videoElement.currentTime === 0 ? endTime - startTime : endTime - videoElement.currentTime;
+          const isColdStart = videoElement.currentTime === 0;
+          const latency = isColdStart ? endTime - startTime : endTime - videoElement.currentTime;
 
-          if (this.localSpeedValue === 1 && latency < PLAYBACK_BUFFERING_TIME) {
+          // Real bug, found live: this used to require a full
+          // `PLAYBACK_BUFFERING_TIME` (1s) margin before *every* resume,
+          // not just the initial cold start -- reasonable for H264/H265
+          // cameras, whose Playback segments typically carry several
+          // seconds of buffer-ahead margin per append, but a permanent
+          // deadlock for a source whose segments arrive in small,
+          // real-time-paced increments (confirmed live: MJPEG's re-encoded
+          // H264 stream, ~0.5-1.5s of new content per append). Once already
+          // mid-playback, `currentTime` naturally catches up close to the
+          // buffered edge between appends -- if the browser then pauses
+          // for a normal buffering wait right as `latency` dips under 1s,
+          // every `videoPlay()` attempt afterward kept refusing to resume
+          // until buffer-ahead cleared a full second, which a slow,
+          // real-time-matched trickle of small segments may never do,
+          // stalling the session forever even though new data kept
+          // arriving and appending successfully the whole time. The 1s
+          // margin is still enforced for the genuine cold-start case
+          // (`currentTime === 0`, where waiting for a decent initial
+          // buffer before ever starting is still the right call and only
+          // applies once) -- only the *resume* case now just requires any
+          // positive amount of new buffer ahead of the current position.
+          if (this.localSpeedValue === 1 && (isColdStart ? latency < PLAYBACK_BUFFERING_TIME : latency <= 0)) {
             return;
           }
         }
@@ -1660,10 +2087,12 @@ export class VideoTagPlayer extends VideoPlayer {
       if (Math.abs(endTime - startTime) > this.getMaxInstantPlayback()) {
         if (!sourceBuffer.updating) {
           if (this.boxsize !== 1) {
-            sourceBuffer.remove(0, Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlayback()));
+            const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlayback());
+            sourceBuffer.remove(0, removeEnd);
           } else {
-            if (Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlayback()) - 60 > 0) {
-              sourceBuffer.remove(0, Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlayback()) - 60);
+            const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlayback()) - 60;
+            if (removeEnd > 0) {
+              sourceBuffer.remove(0, removeEnd);
             }
           }
         }
@@ -1689,7 +2118,24 @@ export class VideoTagPlayer extends VideoPlayer {
         if (this.playbackFlag) {
           if (this.prevBoxsize !== this.boxsize && this.boxsize === 1 && this.deviceType === 'camera') {
             if (sourceBuffer.buffered.length > 0) {
-              videoElement.currentTime = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1) * 1;
+              // Real risk, found investigating a real MJPEG Playback session
+              // stalling with a negative "Latency" stat (`currentTime` past
+              // the actual buffered end): this used to snap `currentTime`
+              // to the raw buffered `endTime` with *zero* safety margin --
+              // every other currentTime-correction in this class (this
+              // function's own `tempCurrentTime = endTime - this.delay`
+              // below, `onWaiting()`'s catch-up jump) backs off by at least
+              // `defaultDelay`/`this.delay` first, precisely because a
+              // `SourceBuffer`'s reported `buffered.end()` can be right at
+              // the edge of what's actually already fully decodable,
+              // especially for this tier's unusually small, frequent,
+              // mostly-single-sample segments. Landing exactly on that edge
+              // risks the same currentTime-ahead-of-decodable-data stall as
+              // an outright overshoot. Now backs off by `defaultDelay`, same
+              // margin `onWaiting()` already uses, clamped to not go behind
+              // `startTime`.
+              const targetTime = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1) * 1;
+              videoElement.currentTime = Math.max(startTime, targetTime - this.defaultDelay);
             }
           }
           if (info.browser === 'Safari' && videoElement.currentTime < startTime) {
@@ -1896,9 +2342,15 @@ export class VideoTagPlayer extends VideoPlayer {
 
     this.elementSetting();
     this.useBridge = this.decideUseBridge(this.codec);
+    this.useMjpegEncoder = this.decideUseMjpegEncoder(this.codec);
     if (this.useBridge) {
       this.setupBridge(this.codec as string);
     } else {
+      // MJPEG-encoder tier still needs a real MediaSource/SourceBuffer, same
+      // as every other real-MSE codec — mjpegEncoder itself is created
+      // lazily in submitMjpegFrame() (needs real width/height from the
+      // first frame, unlike setupBridge() above which only needs a codec
+      // string).
       this.createMediaSource();
     }
     this.instantplayback = false;
@@ -1921,14 +2373,13 @@ export class VideoTagPlayer extends VideoPlayer {
       // straight into the WebCodecs decoder, which writes decoded
       // `VideoFrame`s into `bridgeTrackGenerator` (see setupBridge()).
       this.bridgeDecoder?.decode({ frameType: videoInfo.frameType ?? 'P', frameData: streamData.frameData });
-    } else if (this.mediaSource !== null && this.mediaSource.readyState !== 'ended') {
-      if (this.videoCodecInfo === null && videoInfo.frameType === 'I') {
-        this.videoCodecInfo = videoInfo.codecInfo as string;
-        this.setVideoInfo(videoInfo, streamData.codecType);
-        this.initBaseNTPTimestamp(streamData.timeStamp as TimestampData);
-        this.createInitSegment();
-      }
-      this.createVideoSample(streamData, videoInfo);
+    } else if (this.useMjpegEncoder) {
+      // No synchronous createVideoSample() here — the encoder's own
+      // EncodedVideoChunk output (async) is what actually reaches
+      // ingestVideoSample(), via onMjpegEncodedChunk().
+      this.submitMjpegFrame(streamData, videoInfo);
+    } else {
+      this.ingestVideoSample(streamData, videoInfo, false);
     }
 
     if (this.minimapInfo.isUpdate && this.minimapInfo.element) {
@@ -2081,6 +2532,8 @@ export class VideoTagPlayer extends VideoPlayer {
       }
       this.closeBridge();
       this.useBridge = false;
+      this.closeMjpegEncoder();
+      this.useMjpegEncoder = false;
       // Previously left dangling after the removeSourceBuffer() above — a
       // stale reference to a SourceBuffer no longer attached to any
       // MediaSource, which throws "This SourceBuffer has been removed from

@@ -16,6 +16,15 @@ frame into visible pixels: the canvas/WebGL pipeline and the `<video>`-tag/MSE p
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-26 | Cross-link the new box-level MP4 container generation doc (file 09) |
 | 2026-09-02 | Fix `StepBufferList.setBufferingLength()` never guarding against a `NaN` input — reported live as `#forward`/`#backward` staying disabled forever with no crash/error. A stream whose SDP has no optional `a=framerate:` line (`RtspClient.ts`) leaves `videoInfo.framerate` `undefined`, so `push()`'s `videoInfo.framerate * 4` auto-tune passed `NaN` straight through both clamp checks (neither `> MAX` nor `< MIN` ever matches `NaN`), leaving `bufferingLength` permanently `NaN` and `push()` permanently unable to return `false` ("buffer full") — the exact edge case this file's own code comment had already flagged as theoretically possible but never actually guarded. Fixed by falling back to `DEFAULT_BUFFERING_LENGTH` for any non-finite `length` before clamping. See MEMORY.md. |
+| 2026-09-03 | Added MJPEG's new real-MSE tier: `WebCodecsVideoEncoder` (`worker/videoEncoder/`, new) re-encodes each JPEG frame to H264, muxed into fMP4 via the same `mp4Generator` path H264/H265/VP9/AV1 already use. Quick-reference table gained an MJPEG column; `VideoTagPlayer`'s Method Analysis gained a new "MJPEG real-MSE tier" section (`decideUseMjpegEncoder`/`setupMjpegEncoder`/`submitMjpegFrame`/`onMjpegEncodedChunk`/`closeMjpegEncoder`, plus the shared `ingestVideoSample()` extracted from `onVideoData()` and `createSampleFrameData()`'s new `isEncoderSourced` parameter). Requested directly by the user, sized and reviewed as an approved plan before implementation. See `03-mediaSession-core-video.md`, `08-util.md`, `09-mp4-container-generation.md`, and this repo's `MEMORY.md` for the full cross-file picture. |
+| 2026-09-03 | Fixed a real, previously-undiscovered `setSourceBuffer()`/`ingestVideoSample()` `SourceBuffer`-creation race, found live via a synthetic-JPEG Playwright harness testing the MJPEG tier above (reported by the user as MJPEG not playing via the video tag against a real device — root cause confirmed to explain it exactly). `setSourceBuffer()` no longer calls `addBufferEventListener()` on a `null` `this.sourceBuffer`; `ingestVideoSample()` now retries `setSourceBuffer()` itself once the real codec is known if `'sourceopen'` beat it there first. General fix, not MJPEG-gated — see the new bullet in `VideoTagPlayer`'s Method Analysis and `MEMORY.md`'s full live-debugging narrative. |
+| 2026-09-03 | Fixed a second real bug in the same tier, reported immediately after the fix above against the same real camera: `WebCodecsVideoEncoder: no supported VideoEncoder configuration found for 2048x1536`. `codecString.ts`'s `mjpegEncoderCandidateCodecStrings()` used to return one fixed Level 3.1/4.0 candidate pair regardless of actual resolution — MJPEG has no codec-level resolution ceiling, and 2048x1536 (12,288 macroblocks/frame) exceeds Level 4.0's 8,192 MaxFS. Now resolution- and framerate-aware (`H264_LEVEL_LIMITS`, the full H.264 Annex A level table, `selectH264LevelIndexes()`) — both `MediaRouter.ts`'s pre-flight probe and `WebCodecsVideoEncoder.configure()`'s real check now compute the actually-required level instead of guessing. See `08-util.md` and `MEMORY.md`. |
+| 2026-09-03 | Fixed a third real bug: Playback mode (recorded MJPEG, not Live) still didn't play even with `tagMode: 'video'` correctly selected. `createSegment()` (the dual-track `moof+mdat` builder Playback mode uses, shared with every real-MSE codec — not MJPEG-specific) requires both video *and* audio samples queued before building anything; the only place dummy audio was seeded only ran from the *second* I-frame boundary onward, so a Playback session with no real audio track and either a short clip or (MJPEG's case) an infrequent keyframe cadence could deadlock forever with zero segments ever appended. `createSegment()` now also seeds dummy audio itself, on any caller, whenever none is queued yet — capped through `makeDummyAudio()`'s safe direct-add input range (its own `>100000` branch silently no-ops for large multi-sample spans, a real trap the first fix attempt hit). See `MEMORY.md` for the full narrative. |
+| 2026-09-03 | Fixed a fourth real bug, the most serious in this saga: Playback video now appeared but played back corrupted (OSD oscillating, 20+s latency, wrong apparent frame rate). Two layers: (a) `createSegment()`'s `MAX_PLAYBACK_DIFF` fallback timeout was only ever rescheduled from an I-frame boundary, so periodic flushing silently stopped between whatever keyframe cadence a real `VideoEncoder` happened to choose on its own (observed ignoring this tier's own `forceKeyFrame` request) — now reschedules unconditionally on every `createSegment()` call. (b) `initBaseAudioTime()` (an A/V-drift resync helper, shared by every codec's Playback path) reassigned `this.baseVideoTime` — not `baseAudioTime`, despite the function's name — from an absolute wall-clock formula, corrupting the purely-relative video clock every time a resync fired mid-session in Playback mode specifically (Live mode's own resync never zeroed `baseVideoTime` first, so never hit this). Confirmed live: `baseVideoTime` jumping from ~65,000 to ~75,000,000 mid-session. Fixed by deleting the reassignment. A smaller, not-yet-root-caused oscillation pattern remains — see `MEMORY.md`. |
+| 2026-09-03 | Fixed a fifth real bug, continuing the fourth's leftover oscillation: two corrections tuned for H264/H265's larger, sparser Playback segments fired far too often against MJPEG's smaller, real-time-paced ones. `onWaiting()` used to unconditionally truncate `currentTime` to the floor integer second on every ordinary 'waiting' event (not just genuine out-of-range recovery), discarding real playback progress every ~0.5-0.9s cycle — now only truncates when `currentTime` is actually non-finite or at/past the buffered end. `videoPlay()` used to require a full 1s buffer-ahead margin before *every* resume, not just cold start — a permanent deadlock for MJPEG's slow, small-increment trickle — now only cold start (`currentTime === 0`) requires that margin; mid-session resume just requires `latency <= 0`. See `MEMORY.md`. |
+| 2026-09-03 | Fixed a sixth real bug, the root cause the fifth bug's fixes didn't reach: `onWaiting()`'s A/V-drift resync compared the real, monotonically-accumulating `baseVideoTime` against `baseAudioTime` even when `dummyAudio` is `true` (MJPEG's re-encoder tier has no real audio at all — `baseAudioTime` only advances via `makeDummyAudio()`'s synthetic seeding, not a real timing signal). Dummy audio routinely drifts past the 2-second threshold with no real desync, triggering `resetBaseDecodingTime()` to zero `baseVideoTime` and discard several already-buffered real seconds — every subsequent muxed segment's PTS then landed back inside the already-covered buffered range instead of extending it, so `SourceBuffer.buffered.end()` froze despite appends continuing to succeed (confirmed via direct instrumentation: `{baseVideoTime: 85000, baseAudioTime: 58880, dummyAudio: true}` logged at the exact moment the freeze began). This is what the user reported as OSD cycling and a 2fps source appearing to output ~7fps. Fixed by skipping this resync check entirely while `dummyAudio` is `true`; a real second audio track's resync behavior is unchanged. See `MEMORY.md` for the full trace narrative. |
+| 2026-09-03 | Fixed a seventh real bug, reported live against a real 2048x1536 camera after the sixth fix: a real "Statistics" panel `Latency` value going negative (`currentTime` past the actual buffered end) after playing for a while. Root-caused two contributing issues via direct instrumentation: (a) `WebCodecsVideoEncoder`'s backpressure signal (`encodeQueueSize`) didn't count frames still awaiting its own `createImageBitmap()` decode step, only the underlying `VideoEncoder`'s queue — an invisible backlog that grew from ~1s to ~28s of real lag within one real minute in a synthetic 2048x1536 noise-JPEG trace (see `07-talk-backup-worker.md`). (b) `videoUpdating()`'s Playback branch snapped `currentTime` to the *raw* buffered `endTime` with zero safety margin on a `boxsize` transition, unlike every other currentTime correction in this class (which all back off by `defaultDelay`/`this.delay` first) — risking landing exactly on the edge of what's not yet fully decodable. Fixed (a) in `WebCodecsVideoEncoder` (see that doc) and (b) by backing this snap off by `defaultDelay`, clamped to not go behind `startTime`, matching `onWaiting()`'s own pattern. See `MEMORY.md` for the full narrative, including the caveat that (a)'s measured magnitude may be specific to a software-only (no hardware acceleration) test environment — not yet confirmed as the full explanation for the real device's smaller-magnitude (~6s) negative latency. |
+| 2026-09-03 | Fixed an eighth real bug, the actual root cause of the negative-`Latency` stall the seventh bug's fixes didn't resolve: `changeCurrentTime()` (only called from `onVisibilityChange()`, on the page's `visibilitychange` event) jumped `currentTime` to a `boxStartTime`-derived value with no validation against what's actually buffered — safe while the tab stays foregrounded, but not after a real background period, where a browser-throttled `<video>` clock stays frozen while RTP delivery/segment creation keeps running, so the jump target can point past whatever's actually finished appending by the time the tab refocuses. The user's own report of the exact symptom shape (stall is transient, self-recovers once `Latency` turns positive again) is what narrowed it to this jump-then-wait-to-catch-up site specifically, distinct from the seventh bug's chronic-backlog/zero-margin issues. Confirmed via an A/B synthetic harness (freeze `currentTime` via `playbackRate = 0` while feeding continues, then fire a real `visibilitychange`): reverting the fix reproduced a real overshoot in the same harness. Fixed by clamping the jump target to `sourceBuffer.buffered.end() - defaultDelay`, the same margin pattern used everywhere else in this class. See `MEMORY.md` for the full narrative. |
 
 ---
 
@@ -30,10 +39,10 @@ for the one-page class-diagram summary this document expands on.
 codec-support question into the wrong file — confirmed the hard way once already, see
 MEMORY.md's "canvas tag vs video tag decode paths" entry):
 
-| Renderer Type (`tagMode`) | H.264 / H.265                                              | VP8 / VP9 / AV1                                                              |
-| -------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `canvas`                   | `decoderWorker` → `AssemblyDecoder` (vendored ffmpeg.wasm, **software** decode) | `decoderWorker` → `WebCodecsVideoDecoder` (browser-native `VideoDecoder`, hardware-capable) |
-| `video`                    | **No JS decoder at all.** `VideoTagPlayer` remuxes RTP → fragmented MP4 (`mp4Generator`) and hands it to a real `<video>` element via MSE — the *browser's own* internal decoder does the work, same as playing a local MP4 file. | `MediaSource.isTypeSupported()`-gated: real MSE (same as H264/H265 above) if the browser declares support for that codec's fMP4 box type, else falls back to `WebCodecsVideoDecoder` in **`'bridge'`** output mode (decoded `VideoFrame`s piped into a `MediaStreamTrackGenerator` feeding the `<video>` element) — see `VideoTagPlayer`'s own Method Analysis below for the `realMseSupported` check. |
+| Renderer Type (`tagMode`) | H.264 / H.265                                              | VP8 / VP9 / AV1                                                              | MJPEG |
+| -------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------- | ----- |
+| `canvas`                   | `decoderWorker` → `AssemblyDecoder` (vendored ffmpeg.wasm, **software** decode) | `decoderWorker` → `WebCodecsVideoDecoder` (browser-native `VideoDecoder`, hardware-capable) | `CanvasRenderer.draw()` — `new Image()` + a Blob URL, i.e. the browser's native (non-WebCodecs) JPEG image decoder; no worker, no JS decode of any kind. |
+| `video`                    | **No JS decoder at all.** `VideoTagPlayer` remuxes RTP → fragmented MP4 (`mp4Generator`) and hands it to a real `<video>` element via MSE — the *browser's own* internal decoder does the work, same as playing a local MP4 file. | `MediaSource.isTypeSupported()`-gated: real MSE (same as H264/H265 above) if the browser declares support for that codec's fMP4 box type, else falls back to `WebCodecsVideoDecoder` in **`'bridge'`** output mode (decoded `VideoFrame`s piped into a `MediaStreamTrackGenerator` feeding the `<video>` element) — see `VideoTagPlayer`'s own Method Analysis below for the `realMseSupported` check. | (2026-09-03) **Re-encodes, doesn't decode.** `WebCodecsVideoEncoder` re-compresses each JPEG frame to H264 (`createImageBitmap` → `VideoFrame` → `VideoEncoder`), muxed into fMP4 via the same `mp4Generator` path as native H264 above — `MediaRouter.ts`'s `typeof VideoEncoder !== 'undefined'` + `MediaSource.isTypeSupported()` pre-flight gates this; **no bridge fallback exists** (a decode-direction bridge can't produce an encoded bitstream), so unsupported means `tagMode` stays `'canvas'`, never a broken `'video'`. See the new "MJPEG real-MSE tier" section below. |
 
 The one thing both tag modes share for H.264/H.265: neither one ever runs `WebCodecsVideoDecoder`
 for those two codecs specifically — `canvas` always uses the WASM path, `video` always uses real
@@ -953,6 +962,184 @@ sequenceDiagram
   a checkbox, enabled only for H264/H265), useful for deliberately comparing against
   `bFrames: false`'s IPPP-only/camera-like behavior rather than as a required workaround.
 
+- **MJPEG real-MSE tier (WebCodecs `VideoEncoder`), added 2026-09-03.** `decideUseMjpegEncoder()`
+  (`:550-552`, `useMjpegEncoder` field) mirrors `decideUseBridge()`'s style (re-derives its own
+  support check — `typeof VideoEncoder !== 'undefined'` — rather than trusting `MediaRouter.ts`'s
+  earlier `tagMode` decision blindly) but is structurally simpler: there is no bridge-style
+  fallback tier for an *encode* direction, so this either can run, or `MediaRouter.ts` should never
+  have picked `'video'`/this class at all for MJPEG in the first place. `init()` (`:2054`) sets
+  `useMjpegEncoder` alongside `useBridge`, but — unlike the bridge tier — still calls
+  `createMediaSource()` for it (this tier genuinely needs a real `SourceBuffer`, same as H264/H265/
+  VP9/AV1's real-MSE path); the `WebCodecsVideoEncoder` itself is constructed lazily in
+  `setupMjpegEncoder()` (`:554-561`), called from the first frame each session actually reaches
+  (`VideoEncoder.configure()` needs real width/height, unlike the bridge decoder which only needs a
+  codec string).
+
+  The core wrinkle this tier has that every other real-MSE codec doesn't: `VideoEncoder.encode()`
+  is fire-and-forget (its `EncodedVideoChunk` output arrives later, async, via
+  `mjpegEncoder.onEncodedChunk`), but `onVideoData()`'s normal path assumes `streamData.frameData`
+  is the complete bitstream synchronously, right now. `submitMjpegFrame()` (`:1390-1418`, called
+  from `onVideoData()` in place of the normal synchronous `ingestVideoSample()` call whenever
+  `useMjpegEncoder`) hands the raw JPEG to the encoder and records a `mjpegPendingFrames` entry
+  (original RTP-derived `streamData`/`videoInfo`, keyed by a caller-assigned `timestampUs` —
+  purely internal `VideoFrame` bookkeeping, unrelated to real presentation timing);
+  `onMjpegEncodedChunk()` (`:571-614`) is the async replay half — matches a chunk back to its
+  pending entry by that same `timestampUs` (a mismatch, e.g. from a mid-flight encoder `error`
+  silently dropping an `encode()` call's output, is detected and the chunk dropped rather than
+  risk misattributing it to the wrong frame), parses the chunk's `description` (present on the
+  first chunk) via `avcConfigParser.ts`'s `parseAvcConfigurationRecord()`/`buildAvc1CodecString()`
+  into `mjpegAvcConfig`, builds a synthesized `streamData`/`videoInfo` pair (`codecType: 'H264'`,
+  `frameType` from `chunk.type`, `spsPayload`/`ppsPayload`/`profileIdc`/`levelIdc`/`codecInfo` from
+  the parsed avcC), and feeds it through `ingestVideoSample()` (`:1371-1381`) — the SAME
+  init-segment-once + `createVideoSample()`-every-time logic every synchronous codec's
+  `onVideoData()` branch uses, extracted out specifically so this async path doesn't duplicate it
+  (including `videoCodecInfo`'s own population, which `setSourceBuffer()`'s MIME-codecs string
+  needs and is otherwise an easy new-call-site omission).
+
+  `createSampleFrameData()` (`:1158`) gained a third `isEncoderSourced` parameter for this tier
+  specifically: a `VideoEncoder` configured with `avc: { format: 'avc' }` (the default) already
+  emits length-prefixed AVCC bytes, so `isEncoderSourced` frames skip the Annex-B-start-code
+  rewrite entirely (same early-return VP8/VP9/AV1 already take, just for a different reason) —
+  without it, encoder output tagged `codecType: 'H264'` (needed for `mp4Generator.js`'s box-type
+  dispatch) would otherwise hit that rewrite and corrupt already-correct bytes. Backpressure
+  (`MJPEG_ENCODER_MAX_QUEUE_SIZE`, checked in `submitMjpegFrame()`) never drops a frame while
+  `mjpegAvcConfig === null` (no init segment yet, so playback could never start at all without
+  it); keyframe cadence (`MJPEG_ENCODER_KEYFRAME_INTERVAL`, `mjpegFramesSinceKeyFrame`) forces a
+  periodic `VideoEncoder` keyframe, since MJPEG's own source frames carry no GOP signal of their
+  own to derive one from. `close()` calls the new `closeMjpegEncoder()` alongside the existing
+  `closeBridge()`. See `MEMORY.md` for the full narrative and the `mp4Generator.js` dead-MJPEG-
+  branch (`mpv4`/`esds` stsd, unrelated to this — nothing reaches it) this tier deliberately avoids.
+
+- **`setSourceBuffer()`/`ingestVideoSample()` `SourceBuffer`-creation race, found live via a
+  synthetic-JPEG Playwright harness (not by the demo pipeline above, which turned out to have its
+  own separate, pre-existing gap — see `MEMORY.md`).** `setSourceBuffer()`'s only call site is the
+  `'sourceopen'` listener, and it needs `this.videoCodecInfo` (only set once a real video frame has
+  been ingested) to build its MIME/codecs string — if `'sourceopen'` fires first, `isTypeSupported`
+  fails on a `"null"` codec string, `this.sourceBuffer` stays `null`, and `addBufferEventListener()`
+  — called unconditionally right after regardless — threw `Cannot read properties of null (reading
+  'addEventListener')`, permanently aborting `SourceBuffer` creation for the whole session. Not
+  MJPEG-specific (the same race exists for H264/H265/VP9/AV1 too — they'd never before had a real
+  async gap before their first sample makes it likely to actually trigger), but this tier's
+  unavoidable `createImageBitmap()`/`VideoEncoder.configure()` round trip before the first sample
+  can exist makes it the first one to hit it reliably. Fixed with two general (not MJPEG-gated)
+  changes: `setSourceBuffer()` only calls `addBufferEventListener()` when `this.sourceBuffer !==
+  null`; `ingestVideoSample()` retries `setSourceBuffer()` itself right after `createInitSegment()`
+  if `this.sourceBuffer` is still `null` at that point (a safe no-op once one already exists, per
+  `setSourceBuffer()`'s own `sourceBuffers.length === 0` guard). See `MEMORY.md` for the full
+  live-debugging narrative, including the screenshot that confirmed real decoded pixels post-fix.
+
+- **`mjpegEncoderCandidateCodecStrings()` resolution-awareness, found live against a real camera at
+  2048x1536.** The candidate list used to be one fixed Level 3.1/4.0 pair, which
+  `VideoEncoder.isConfigSupported()` correctly rejected for any resolution whose macroblock count
+  exceeds those levels' `maxFS` (H.264 Annex A Table A-1) — MJPEG has no codec-level resolution
+  ceiling the way H264/H265 do, so this silently broke the whole tier for real (non-~720p) camera
+  resolutions, with only a `console.error` in `WebCodecsVideoEncoder`'s own `configure()` as any
+  visible signal. `util/codecString.ts` now computes the actually-required level from the real
+  `pixelCount`/`framerate` (`H264_LEVEL_LIMITS`, `selectH264LevelIndexes()`) instead of guessing one
+  — see `08-util.md` and `MEMORY.md`.
+
+- **Playback-mode dual-track segment flush deadlock with no audio track, found live immediately
+  after Live mode was confirmed working end to end.** `createSegment()` (Playback's `moof+mdat`
+  builder, shared with every real-MSE codec, not MJPEG-specific) requires both video *and* audio
+  samples queued before building anything; dummy-audio seeding only ran from the *second* I-frame
+  boundary onward, so a session with no real audio and either a short clip or an infrequent keyframe
+  cadence (MJPEG's own re-encoded stream keyframes only every 60 frames) could permanently deadlock
+  with zero segments ever appended — no crash, no error, just nothing plays. `createSegment()` now
+  seeds dummy audio itself whenever none is queued yet, capped to stay on `makeDummyAudio()`'s safe
+  direct-add path (its own `>100000` branch silently no-ops for a multi-sample span, a trap the
+  first fix attempt hit before landing on the cap). See `MEMORY.md` for the full narrative.
+
+- **`initBaseAudioTime()` corrupting `baseVideoTime` (not `baseAudioTime`) on every Playback
+  A/V-drift resync, the most serious bug in this saga.** Playback video now appeared (previous
+  bug's fix) but played back corrupted — a burned-in OSD timestamp visibly oscillating, 20+s
+  latency, a 2fps source appearing to play at a mismatched frame rate. Two layers, found with a
+  synthetic-JPEG Playwright trace reading back a distinct per-frame hue from a sampling canvas at
+  realistic 2fps/500ms pacing: (a) `createSegment()`'s `MAX_PLAYBACK_DIFF` fallback timeout was only
+  ever *scheduled* from `createVideoSample()`'s I-frame-boundary code, so once consumed, nothing
+  rescheduled another until the next real keyframe — a real `VideoEncoder` inserts keyframes on its
+  own internal cadence, independent of this tier's `forceKeyFrame` request hint, causing multi-second
+  stalls; fixed by rescheduling `createVideoSegmentTimeout` unconditionally at the top of every
+  `createSegment()` call. (b) `initBaseAudioTime()` (called whenever `baseAudioTime` is the `-1`
+  "needs (re)init" sentinel — at session start, and again every `resetBaseDecodingTime()` resync)
+  reassigned `this.baseVideoTime` from an *absolute* wall-clock-anchored formula whenever it was
+  falsy — harmless the first time (already 0 by default), but `resetBaseDecodingTime()` also zeroes
+  `baseVideoTime` itself, Playback-only, so every mid-session resync re-triggered this falsy check
+  and clobbered the purely-relative running clock with an absolute millisecond-scale value (confirmed
+  live: `baseVideoTime` jumping from ~65,000 to ~75,000,000 between consecutive calls). Live mode's
+  own resync never zeroes `baseVideoTime` first, so never hit this. Fixed by deleting the destructive
+  reassignment — nothing needs deriving there at all. See `MEMORY.md` for the full narrative.
+
+- **`onWaiting()`'s per-event `currentTime` truncation and `videoPlay()`'s fixed 1s resume margin,
+  both tuned for H264/H265's larger Playback segments.** Continuing the previous bug's leftover
+  oscillation (native `<video>` event tracing this time, not just the color-sampling trace):
+  `onWaiting()` used to truncate `currentTime` to the floor integer second on *every* 'waiting' event,
+  not just genuine out-of-range recovery — MJPEG's small, real-time-paced segments hit ordinary
+  'waiting' pauses every ~0.5-0.9s, so real playback progress was discarded on nearly every cycle
+  (4.79 -> 4.0 -> ~4.79 -> 4.0 again, repeating), reading live as the reported OSD oscillation. Fixed
+  to only truncate when `currentTime` is non-finite or at/past the buffered end. Separately,
+  `videoPlay()` required a full `PLAYBACK_BUFFERING_TIME` (1s) buffer-ahead margin before *every*
+  resume from pause, not just cold start — a permanent deadlock for MJPEG's slow, small-increment
+  trickle, which may never accumulate a full second of margin; fixed so only cold start
+  (`currentTime === 0`) requires that margin, and a mid-session resume only requires `latency <= 0`.
+  Neither fix alone fully resolved the underlying stall (see the next bug) but both are correct,
+  narrowly-scoped fixes kept as-is. See `MEMORY.md`.
+
+- **A/V-drift resync comparing real `baseVideoTime` against *synthetic* dummy-audio `baseAudioTime`,
+  the root cause the previous bug's fixes didn't reach.** `onWaiting()`'s drift check
+  (`Math.abs(baseVideoTime - baseAudioTime) > 20000`) ran unconditionally, even when `dummyAudio` is
+  `true` — MJPEG's re-encoder tier has no real audio at all, so `baseAudioTime` only advances via
+  `makeDummyAudio()`'s synthetic seeding, an approximation for MSE's technical audio-track
+  requirement, not a real timing signal. Dummy audio routinely drifts past the 2s threshold with no
+  actual desync, triggering `resetBaseDecodingTime()` to zero `baseVideoTime` and discard several
+  already-buffered real seconds; every subsequently-muxed segment's PTS then landed back inside the
+  already-covered buffered range instead of extending it, freezing `SourceBuffer.buffered.end()`
+  despite appends continuing to succeed (confirmed via direct instrumentation logging
+  `{baseVideoTime, baseAudioTime, dummyAudio}` at the exact freeze moment: `{85000, 58880, true}`) —
+  and because this re-triggered on nearly every subsequent 'waiting' event, playback stayed
+  permanently pinned just past the first reset, matching the reported OSD cycling and the "2fps in,
+  ~7fps out" mismatch. Fixed by skipping the resync check entirely while `dummyAudio` is `true`; a
+  real second audio track's resync behavior is unchanged. Verified with the same synthetic-JPEG
+  trace: `buffered.end()`/`currentTime` now advance continuously and monotonically for the full fed
+  duration. See `MEMORY.md` for the full trace narrative.
+
+- **`videoUpdating()`'s zero-margin `currentTime` snap on a `boxsize` transition, found live against
+  a real 2048x1536 camera as a negative "Statistics" `Latency` value (`currentTime` past the actual
+  buffered end) after playing for a while.** Playback's `boxsize`-transition branch snapped
+  `currentTime` directly to the raw `sourceBuffer.buffered.end()` with no safety margin at all —
+  every *other* currentTime correction in this class (this same function's own
+  `tempCurrentTime = endTime - this.delay` a few lines below, `onWaiting()`'s catch-up jump) backs
+  off by `defaultDelay`/`this.delay` first, precisely because a `SourceBuffer`'s reported
+  `buffered.end()` can sit right at the edge of what's not yet fully decodable — a real risk for
+  this tier's unusually small, frequent, mostly-single-sample segments. Landing exactly on that edge
+  risks the same currentTime-ahead-of-decodable-data stall as an outright overshoot. Fixed by backing
+  this snap off by `defaultDelay` too, clamped to not go behind `startTime`. Investigated alongside
+  `WebCodecsVideoEncoder`'s decode-stage backpressure blind spot (see `07-talk-backup-worker.md`) as
+  two independent contributors to the same reported symptom; neither turned out to be the actual
+  root cause of the real device's stall — see the `changeCurrentTime()` bullet below, found next.
+
+- **`changeCurrentTime()`'s tab-visibility catch-up jump overshoots the buffered end after the tab
+  was backgrounded — the actual root cause of the negative-`Latency` stall the two fixes above
+  didn't resolve.** `onVisibilityChange()` (this method's only caller, wired to the page's
+  `visibilitychange` event) calls it on every tab refocus; it jumps `currentTime` to a
+  `boxStartTime`-derived value (a few `createSegment()`/`createVideoSegment()` calls back) with *no*
+  validation against what's actually buffered right now — fine while the tab stays foregrounded
+  (`boxStartTime` always trails close behind `currentTime` then), but not after a real background
+  period: browsers commonly throttle a hidden tab's `<video>` element (`currentTime` freezes) while
+  RTP delivery and this tier's own segment creation keep running regardless, so `boxStartTime` keeps
+  growing the whole time. On refocus, the jump target can point past whatever's actually finished
+  appending by then — the least defended of the three currentTime-overshoot sites found in this
+  saga, with no margin *and* no buffered-end check at all. The user's own description of the
+  symptom's *shape* — stall is transient, self-recovers once `Latency` turns positive again, not
+  permanent — is what pointed here specifically, since neither of the two bullets above produces
+  that jump-then-wait-to-catch-up pattern. Confirmed via an A/B synthetic harness: freeze
+  `currentTime` with `videoElement.playbackRate = 0` for 10s while feeding continues (simulating a
+  frozen background-tab clock against still-running delivery), restore `playbackRate = 1`, then fire
+  a real `visibilitychange` event — reverting the fix and rebuilding reproduced a real overshoot
+  (`10.500` past a buffered end of `10.496`) in the exact same harness. Fixed by clamping the jump
+  target to `sourceBuffer.buffered.end() - defaultDelay`, same margin pattern as everywhere else in
+  this class. Verified post-fix: the jump lands safely under the buffered end, and playback advances
+  continuously afterward with no stall. See `MEMORY.md` for the full narrative.
+
 ```mermaid
 flowchart LR
     StreamPlayer -->|"createVideoPlayer()"| VideoTagPlayer
@@ -961,6 +1148,8 @@ flowchart LR
     VideoTagPlayer -->|"appendBuffer"| SourceBuffer["SourceBuffer (MSE, browser-native)"]
     SourceBuffer -->|"decode (browser-internal)"| VideoElement["&lt;video&gt; element"]
     VideoTagPlayer -->|"G711/G726 transcode"| AudiotranscoderWorker["audiotranscoderWorker"]
+    VideoTagPlayer -->|"encode() (MJPEG only)"| WebCodecsVideoEncoder["worker/videoEncoder/WebCodecsVideoEncoder"]
+    WebCodecsVideoEncoder -->|"onEncodedChunk (async)"| VideoTagPlayer
 ```
 
 ---

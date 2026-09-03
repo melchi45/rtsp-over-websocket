@@ -13,6 +13,8 @@ and AVI/ZIP muxing off the main thread.*
 | 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
 | 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-09-03 | Added new §3b, `WebCodecsVideoEncoder` (`worker/videoEncoder/`) — MJPEG's new H264 re-encode tier, feeding `VideoTagPlayer.ts`'s real-MSE pipeline. Grouped by source directory next to `worker/videoDecoder/` despite running on the main thread, not in a Worker — see that section's own note. See `05-video-player-rendering.md`, `08-util.md`, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
+| 2026-09-03 | Fixed a real bug in `WebCodecsVideoEncoder`, found live against a real 2048x1536 camera: `encodeQueueSize` didn't count frames still awaiting `encode()`'s own `createImageBitmap()` decode step, only the underlying `VideoEncoder`'s own queue — invisible backpressure that let a real backlog grow unbounded (confirmed live: ~1s to ~28s within one real minute) while the caller's drop-based throttle kept reading 0. Fixed with a new `pendingDecodeCount` field folded into `encodeQueueSize`. See this section and `MEMORY.md`. |
 
 ---
 
@@ -619,6 +621,89 @@ sequenceDiagram
 - **Relations & Data Flow** — reachable only via `postMessage` from `RtpClient`/`VideoTagPlayer`
   (documented elsewhere), per README §7. Owns exactly one `AssemblyDecoder` instance for the
   Worker's lifetime.
+
+---
+
+## 3b. `worker/videoEncoder` — MJPEG-to-H264 encode (WebCodecs, main thread — no actual Worker), added 2026-09-03
+
+Grouped here by source directory (`worker/videoEncoder/` sits alongside `worker/videoDecoder/`
+above), **not** by actual thread placement — unlike every class in section 3, this one is
+imported directly into `VideoTagPlayer.ts` and instantiated on the **main thread**, the same way
+that file already does for `WebCodecsVideoDecoder` in its `'bridge'` output mode (see
+`05-video-player-rendering.md`'s bridge-tier note): `VideoEncoder`/`VideoFrame`/
+`createImageBitmap` are all ordinary main-thread-available APIs, and there was no existing
+`new Worker(...)` spawn point in `VideoTagPlayer.ts` to reuse for this direction. `decoderWorker.ts`
+(above) is a genuine dedicated Worker because `AssemblyDecoder`'s WASM decode is CPU-heavy and
+`RtpClient` needed it off the main thread from the start — this class doesn't inherit that
+Worker, it's simply a new file that happens to sit next to `videoDecoder/` in the source tree.
+
+### `WebCodecsVideoEncoder` (`worker/videoEncoder/WebCodecsVideoEncoder.ts`)
+
+- **Structure** — the mirror image of `WebCodecsVideoDecoder` above: same constructor-throws-if-
+  unsupported guard (`typeof VideoEncoder === 'undefined'`, `RTSPOverWebSocketError` `0x0314`),
+  same `isConfigSupported()`-verified candidate-string loop in `configure()` (this time from
+  `mjpegEncoderCandidateCodecStrings()`, `util/codecString.ts` — `['avc1.42001f', 'avc1.640028']`,
+  Baseline/Level 3.1 first since Level 3.0's 40,500 MaxMBPS cap doesn't actually cover a common
+  1280×720@30fps stream, see that function's own comment), same close()-guards-already-closed
+  pattern — but owns the encode direction instead of decode, and (unlike that class's `'buffer'`
+  mode) has no synchronous-pull queue at all: `encode()` is genuinely fire-and-forget, real output
+  only ever arrives async via the `onEncodedChunk` callback passed into the constructor. Private
+  fields: `encoder: VideoEncoder | null`, `closed`, `pendingDecodeCount` (added 2026-09-03, see
+  below). Public surface: `encodeQueueSize`/`isConfigured` getters (the former lets callers
+  implement their own backpressure — this class never drops a frame on its own, since it has no
+  visibility into caller-side state like whether an init segment has been built yet), `encode(data)`,
+  `close()`.
+- **Real bug, found live against a real 2048x1536 camera, fixed 2026-09-03**: `encodeQueueSize`
+  used to return only `encoder.encodeQueueSize` — the underlying `VideoEncoder`'s own queue, which
+  only grows once `this.encoder.encode()` is actually reached. But `encode(data)` awaits
+  `createImageBitmap()` *first* (real, resolution-scaled CPU cost — negligible for a flat/synthetic
+  test frame, but easily hundreds of ms for a real, high-entropy 2048x1536 JPEG), and is called
+  fire-and-forget by `VideoTagPlayer.ts`'s `submitMjpegFrame()` — so a new frame arriving every
+  ~500ms while the previous one's `createImageBitmap()` was still resolving launched another
+  concurrent decode on top of it, invisible to the caller's `encodeQueueSize >=
+  MJPEG_ENCODER_MAX_QUEUE_SIZE` backpressure check the whole time (it read 0 throughout). Confirmed
+  live via direct instrumentation (a synthetic 2048x1536 noise-JPEG Playback trace, matching real
+  camera resolution and entropy far more than a flat-color test frame): the gap between real
+  received content and actually-muxed/buffered content grew from ~1s to ~28s within the first real
+  minute. Fixed by adding a `pendingDecodeCount` field, incremented at the start of `encode()` and
+  decremented in a `finally` covering the whole method (every exit path, not just the success path),
+  and folding it into the `encodeQueueSize` getter (`encoder.encodeQueueSize + pendingDecodeCount`)
+  — the caller's existing backpressure check now actually throttles once enough frames are
+  mid-decode, not just once enough are mid-encode. See `05-video-player-rendering.md` and
+  `MEMORY.md` for the full narrative, including the caveat that this measurement's absolute
+  magnitude may be specific to a software-only (no hardware acceleration) test environment.
+- `configure()` (private, async) — builds one `VideoEncoderConfig` per candidate (`codec`, real
+  `width`/`height` from the constructor, a resolution-scaled `bitrate` heuristic and a fixed
+  `framerate` hint — a starting point, not independently tuned against real camera footage —
+  `avc: { format: 'avc' }` explicitly requested both here and in the later `configure()` call, so
+  chunk output is always length-prefixed AVCC, never Annex-B), verifies via
+  `VideoEncoder.isConfigSupported()`, commits to the first supported one via
+  `new VideoEncoder({ output, error })` + `.configure(config)`.
+- `encode(data)` — `createImageBitmap(new Blob([data.frameData], { type: 'image/jpeg' }))` (a
+  rejected/corrupt JPEG from RTP packet loss is caught and logged, dropping just that one frame) →
+  `new VideoFrame(bitmap, { timestamp: data.timestampUs })` → `encoder.encode(frame, { keyFrame:
+  data.forceKeyFrame })` in a try/catch (the underlying `VideoEncoder` can move to `'closed'`
+  asynchronously between the state check and this call, same race `WebCodecsVideoDecoder.decode()`
+  already guards) → closes both `frame`/`bitmap` in a `finally`. `data.timestampUs` is caller-
+  assigned (not internally generated, unlike `WebCodecsVideoDecoder`'s `nextTimestampUs`) — see
+  `VideoTagPlayer.ts`'s `submitMjpegFrame()`/`onMjpegEncodedChunk()` for why: the caller needs to
+  recognize its own value coming back on `onEncodedOutput`'s `chunk.timestamp` (spec-guaranteed
+  unchanged) to detect a FIFO desync against its own pending-frame queue.
+- `onEncodedOutput(chunk, metadata)` (private, the WebCodecs `output` callback) — `chunk.copyTo()`
+  into a flat `Uint8Array`, extracts `metadata?.decoderConfig?.description` (the avcC
+  configuration record — present only on the chunk(s) that carry a config, typically just the
+  first one for a `VideoEncoder` that's never reconfigured) as a `Uint8Array` if present, and calls
+  `onEncodedChunk({ type, timestampUs: chunk.timestamp, frameData, description })`.
+
+- **RFC / Standard References** — no RFC of its own; produces an H264 (ITU-T H.264/ISO 14496-10)
+  bitstream via the W3C WebCodecs API (`VideoEncoder`/`VideoFrame`/`EncodedVideoChunk`) from MJPEG
+  (RFC 2435) source frames `MjpegDepacketizer`/`mjpegDepacketizeWorker` (below) already reassemble.
+
+- **Relations & Data Flow** — owned exclusively by `VideoTagPlayer.ts` (`mjpegEncoder` field);
+  no Worker boundary, no `postMessage`. See `05-video-player-rendering.md`'s "MJPEG real-MSE tier"
+  section for the full `submitMjpegFrame()`/`onMjpegEncodedChunk()` call chain this feeds into,
+  and `util/avcConfigParser.ts` (`08-util.md`) for the avcC parsing this class's output requires
+  downstream.
 
 ---
 
@@ -1506,5 +1591,6 @@ sequenceDiagram
 | ZIP archive | PKWARE .ZIP spec | Vendor (PKWARE) | No IETF/ITU standard exists; `zipWorker.ts` |
 | Video codecs in backup/decode | H.264, H.265 | ITU-T / ISO-IEC | `AssemblyDecoder`, `VideoHeader`'s `aviHandler` field |
 | VP8/VP9/AV1 decode | W3C WebCodecs (`VideoDecoder`/`EncodedVideoChunk`/`VideoFrame`) | W3C | `WebCodecsVideoDecoder` — no vendored WASM decoder for these, decoded natively by the browser; backup/export (AVI) still unimplemented for these three, unlike decode |
+| MJPEG-to-H264 encode | W3C WebCodecs (`VideoEncoder`/`VideoFrame`/`EncodedVideoChunk`) | W3C | `WebCodecsVideoEncoder` (§3b, new 2026-09-03) — re-encodes MJPEG to H264 for `VideoTagPlayer.ts`'s real-MSE tier; runs on the main thread, not a Worker |
 | Audio codec in backup transcode | AAC | ISO/IEC | `AssemblyTranscoder`, `AudioHeader.settingAAC` |
 | Worker message passing (all workers) | — | — | Internal plain-data protocol, no external standard |
