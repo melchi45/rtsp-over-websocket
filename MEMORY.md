@@ -3561,3 +3561,43 @@ the exact same algorithm, so it inherited the exact same gap. Confirmed via a li
 assumed from the spec text alone — worth remembering as a second, cheaper instance of this session's
 running theme (verify empirically, don't reason from source/spec alone) before trusting the "obvious"
 fix for a scheduling-cadence problem.
+
+## `onRTSPOverWebSocketMeta` silently dropped every metadata frame — required an optional field that's never populated without a CDN script most consumers don't load
+
+Reported directly by the user: added a `console.log` in `wisenet-camera-discovery`'s `onmeta()`
+handler to inspect real metadata, but it never fired at all — not even once — despite the camera
+genuinely sending metadata (confirmed at the RTP layer separately).
+
+**Root cause**: `RTSPOverWebSocket.ts`'s `onRTSPOverWebSocketMeta(meta)` gated `dispatch('meta', ...)`
+on *both* `meta.json` and `meta.xml` being defined:
+```ts
+if (typeof meta.json !== 'undefined' && typeof meta.xml !== 'undefined') {
+  this.dispatch('meta', { json: meta.json, xml: meta.xml });
+}
+```
+But `MetaDataParser.ts` (the actual RTP metadata frame parser, upstream of this) only ever populates
+`.json` when the consuming page happens to have loaded the *optional* `external-lib/fast-xml-parser`
+CDN script and set a global `window.parser` — that class's own doc comment states explicitly:
+"legacy itself treats it as fully optional ... `.xml`/the callback still fire without it", and its
+`parse()` method does call its callback unconditionally once `.xml` is decoded, regardless of whether
+the optional JSON-enrichment step ran. `wisenet-camera-discovery`'s `window.html` never loads that
+script (confirmed: no `external-lib/fast-xml-parser` reference anywhere in it), so `meta.json` was
+*always* `undefined` for that consumer — meaning this guard silently discarded every single metadata
+frame, all the way back to whenever the MJPEG-tier work (or earlier) first shipped this code path.
+No error, no console output, nothing — just quiet data loss, and only surfaced now because the user
+was specifically instrumenting this exact path for the first time.
+
+**Fixed**: the guard now only requires `xml` (the field `MetaDataParser.ts` always populates before
+ever calling back) — `json` still rides along in the dispatched detail when it happens to be present,
+matching the graceful-degradation contract `MetaDataParser.ts`'s own comment already documented but
+this downstream consumer never actually honored.
+
+**Verified**: `npx tsc -b` + `npx vitest run` (63 tests) clean.
+
+**How to apply**: when one class's doc comment explicitly describes a graceful-degradation contract
+("field X is optional, the callback still fires without it"), don't assume every *downstream*
+consumer of that callback's output actually honors it — check each one. This bug sat one hop
+downstream of the class whose comment got the contract right, in code that silently required the
+"optional" field anyway. A guard that AND-requires two fields where the producer's own contract says
+one is optional is worth a second look any time a consumer reports "nothing ever happens", especially
+when nothing throws or logs an error either.

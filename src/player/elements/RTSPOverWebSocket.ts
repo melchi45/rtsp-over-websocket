@@ -3909,7 +3909,21 @@ export class RTSPOverWebSocket extends HTMLElement {
   }
 
   onRTSPOverWebSocketMeta(meta: RTSPOverWebSocketMetaEvent): void {
-    if (typeof meta.json !== 'undefined' && typeof meta.xml !== 'undefined') {
+    // Real bug, found live: this used to require *both* `json` and `xml` to
+    // be defined before ever dispatching the 'meta' DOM event -- but
+    // MetaDataParser.ts's own `.json` enrichment is explicitly optional
+    // (only populated when the consuming page happens to load the
+    // `external-lib/fast-xml-parser` CDN script and set `window.parser`;
+    // that class's own comment states the callback should still fire with
+    // just `.xml` without it). A consumer that never loads that optional
+    // script -- confirmed live: wisenet-camera-discovery's window.html
+    // doesn't -- got `json` always `undefined`, so this guard silently
+    // dropped every single metadata frame, dispatching nothing at all, no
+    // error either. Now only requires `xml` (the field MetaDataParser.ts
+    // itself always populates before calling back), matching that
+    // documented graceful-degradation contract; `json` still rides along
+    // when it happens to be present.
+    if (typeof meta.xml !== 'undefined') {
       this.dispatch('meta', { json: meta.json, xml: meta.xml });
     }
   }

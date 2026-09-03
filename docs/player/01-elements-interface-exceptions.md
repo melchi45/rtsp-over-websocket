@@ -43,6 +43,7 @@
 | 2026-09-02 | Fix selecting a new event on a host page's timeline (`player.startTime = ...`) while a stream is already playing silently having no effect on the next `play()` — reported directly by the user. Root cause: `generateRTSPURL()`'s camera `playback` branch intentionally prioritizes `_localTimestamp` (an already-flowing stream's *current* position) over `startTime`, but `_localTimestamp` used to only get cleared by `stop()` or the `GMT` setter, not by `startTime` itself — so a fresh `startTime` assignment left the *previous* stream's stale `_localTimestamp` in place and got silently outranked by it, unlike `seekingTime`, which unconditionally overrides `strStart` regardless of priority. The `startTime` setter (`:~1482`) now also clears `_localTimestamp`, so an explicit new `startTime` always wins on the next `play()`; the pause/resume/speed path is unaffected since it reads `_localTimestamp` directly and never goes through this setter. |
 | 2026-09-03 | `GMT` setter (`:1891-1917`) now treats `v === undefined` the same as `v === null` — both normalize to the default `0` — instead of throwing `RTSPOverWebSocketError` 0x0414 on `undefined`. Requested directly by the user, who pointed at the setter's previous `if (typeof v !== 'number' && v === undefined) throw ... else if (v === null) { ...default...}` shape (the `typeof v !== 'number'` half of that first condition was always redundant, since `v === undefined` already implies it) and asked for `undefined` to fold into the `null` branch instead of the throw branch. The two branches were merged into one `if (v === null || v === undefined)` check; the legacy loose validation for any other non-number garbage (e.g. a string) — falling through to the range check unvalidated — is unchanged. |
 | 2026-09-03 | Direct follow-up, same setter: the "legacy loose validation" the entry above left unchanged (a non-number like a string silently fell through the range check, since `< -12`/`> 13` both evaluate `false` for it) is now removed at the user's explicit request — the range check became `if (typeof v !== 'number' || v < -12 || v > 13) throw ...`, so a non-number (that isn't already caught as `null`/`undefined` above) is rejected with the same `RTSPOverWebSocketError` 0x0414 an out-of-range number gets, instead of silently passing through to `setAttribute('gmt', String(v))`. The `(v as number)` casts on the old range check are gone too — TypeScript narrows `v` to `number` after the merged `typeof`/range guard on its own. |
+| 2026-09-03 | Fixed `onRTSPOverWebSocketMeta` silently dropping every metadata frame: it required both `meta.json` and `meta.xml` before dispatching the `'meta'` DOM event, but `.json` is explicitly optional (only populated if the consuming page loads the optional `external-lib/fast-xml-parser` CDN script, per `MetaDataParser.ts`'s own documented graceful-degradation contract). Reported directly by the user (`wisenet-camera-discovery` never loads that script, so `meta.json` was always `undefined` and the event never fired — no error, nothing in console). Now only requires `xml`. See `MEMORY.md`. |
 
 ---
 
@@ -826,6 +827,17 @@ their exact location rather than fixed silently (file header comment,
   `dropsHistory`, `networkVarianceHistory`, each capped at `STATS_HISTORY_LENGTH = 30` samples)
   feeding the panel's line/intensity charts (`renderLineChart()`/`renderIntensityGraph()`,
   `:2824-2871`).
+  **`onRTSPOverWebSocketMeta` real bug, found live (2026-09-03)**: used to require *both*
+  `meta.json` and `meta.xml` defined before ever calling `dispatch('meta', ...)`. But
+  `MetaDataParser.ts`'s `.json` field is explicitly optional — only populated when the consuming
+  page happens to load the `external-lib/fast-xml-parser` CDN script and set `window.parser`
+  (that class's own comment states the `.xml`/callback should still fire without it, matching
+  legacy's graceful-degradation contract) — and `MetaDataParser.parse()` itself does call its
+  callback unconditionally once `.xml` is set, regardless of `.json`. A consumer that never loads
+  that optional script (confirmed live: `wisenet-camera-discovery`'s `window.html` doesn't) got
+  `json` always `undefined`, so this guard silently dropped every metadata frame — no dispatch,
+  no error, nothing in the console. Now only requires `xml`; `json` still rides along when
+  present. See this repo's `MEMORY.md`.
 
 **Event plumbing (non-standard `EventTarget` override)**
 
