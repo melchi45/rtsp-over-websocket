@@ -1496,6 +1496,18 @@ export class MediaRouter {
         // case: MediaStreamTrackGenerator bridges *decoded* frames into a
         // <video>, it has no way to produce the H264 bitstream this path
         // needs, so unsupported here means canvas, full stop.
+        //
+        // `defaultVideoTagMode`, when set, still takes priority over that
+        // feature-detected fallback -- same short-circuit H264/H265 already
+        // apply below (see their own comment). This was missing here until
+        // 2026-09-03: a host forcing `#renderer_type` "canvas" (or the
+        // matching runtime control message) against an MJPEG stream was
+        // silently ignored whenever the browser happened to support the
+        // real-MSE tier, always landing on 'video' regardless.
+        if (this.defaultVideoTagMode !== null) {
+          this.tagMode = this.defaultVideoTagMode as 'canvas' | 'video';
+          break;
+        }
         const hasEncoderSupport = typeof (globalThis as unknown as { VideoEncoder?: unknown }).VideoEncoder !== 'undefined';
         const mediaSourceIsTypeSupported = (globalThis as unknown as { MediaSource?: { isTypeSupported(t: string): boolean } }).MediaSource
           ?.isTypeSupported;

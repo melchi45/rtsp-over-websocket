@@ -282,6 +282,26 @@ export class VideoTagPlayer extends VideoPlayer {
   private fileName = '';
   private captureFlag = false;
   private timestampTextTrackId = -1;
+  // Real gap, reported live: in Playback mode at a high requested device
+  // Scale, timestamp cues can go missing far more often than at 1x. Playback
+  // samples never actually go through getVideoFrameDuration() (that's only
+  // called from createVideoSample()'s *Live* branch -- Playback's own path,
+  // createSegment(), derives frameDuration purely from consecutive
+  // videoSamples[].rtpTimestamp deltas, with no localSpeedValue involvement
+  // at all) -- so a faster Playback speed only actually plays back faster if
+  // the *device* itself reports compressed rtpTimestamp deltas, which this
+  // class faithfully reproduces into an equally compressed muxed PTS. Each
+  // resulting cue's real wall-clock span then shrinks the same way, and can
+  // become narrower than the browser's own "time marches on" cue-dispatch
+  // granularity -- a well-known WebVTT/TextTrack limitation (see
+  // `startTimestampCuePolling()`'s own comment for why the obvious fix,
+  // reading `TextTrack.activeCues` more often, doesn't actually help).
+  // `lastReportedCue` dedupes `checkTimestampCueAtCurrentTime()`'s own
+  // polling loop against onCueEnter() already having reported the same cue
+  // normally -- both paths funnel through reportCueTimestamp(), which sets
+  // this field.
+  private lastReportedCue: VTTCue | null = null;
+  private timestampCuePollHandle: number | null = null;
   private clearBufferFlag = false;
   private audioInfo: Mp4AudioTrackInfo = {
     id: 2,
@@ -683,27 +703,117 @@ export class VideoTagPlayer extends VideoPlayer {
     };
   }
 
+  /** Shared by onCueEnter() (normal path -- the browser actually witnessed
+   *  this cue's start) and checkTimestampCueAtCurrentTime() (pull-based
+   *  fallback for a cue whose enter/exit got skipped, see
+   *  `lastReportedCue`'s own comment). `place` is threaded through purely so
+   *  a thrown RTSPOverWebSocketError still points at whichever call site
+   *  actually invoked this, matching every other error in this class. */
+  private reportCueTimestamp(cue: VTTCue, place: string): void {
+    if (typeof cue.text === 'undefined' || cue.text === null) {
+      return;
+    }
+    try {
+      const timeStamp: TimestampData = JSON.parse(cue.text);
+      timeStamp.type = 'timestamp';
+      timeStamp.channelId = this.channelId;
+      timeStamp.currentTimeDiff = parseInt(String(((this.videoElement as HTMLVideoElement).currentTime - cue.startTime) * 1000), 10);
+      timeStamp.videoSize = this.videoSize;
+      this.lastReportedCue = cue;
+      (this.timeStampCallback as (t: unknown) => void)(timeStamp);
+    } catch (error) {
+      throw new RTSPOverWebSocketError({
+        channelId: this.channelId,
+        errorCode: (error as { code?: number }).code,
+        place,
+        message: (error as Error).message
+      });
+    }
+  }
+
+  /** Pull-based fallback, polled by `startTimestampCuePolling()`'s
+   *  `requestAnimationFrame` loop -- see `lastReportedCue`'s own comment for
+   *  why onCueEnter() alone can silently miss cues at a high Playback speed.
+   *
+   *  Deliberately searches `track.cues` (the *full*, static cue list) for
+   *  whichever cue's `[startTime, endTime)` contains the live
+   *  `videoElement.currentTime` right now, instead of reading
+   *  `TextTrack.activeCues` -- confirmed live (via `[DEBUG-CUE]` tracing
+   *  during this fix's own investigation) that `activeCues` is *itself* only
+   *  recomputed by the same coarse "time marches on" algorithm responsible
+   *  for onenter/onexit in the first place, so polling it more often (even
+   *  every rAF tick) gains nothing: a cue whose entire lifetime falls inside
+   *  one scheduling gap of that algorithm never appears in `activeCues` at
+   *  any observed instant either, the exact same blind spot as onenter/
+   *  onexit. `videoElement.currentTime` itself is a plain, always-current
+   *  property with no such batching, so searching the cue list directly
+   *  against it is what actually gains ground -- still bounded by how often
+   *  this polling loop itself runs (rAF, ~60Hz, far finer than "time marches
+   *  on"'s historical ~250ms cadence but not infinite), so this narrows the
+   *  real-world gap without being able to guarantee catching literally every
+   *  frame at extreme speeds -- a hard limit of firing cue-shaped events off
+   *  a `<video>` element's own timeline at all, not fixable from here. */
+  private checkTimestampCueAtCurrentTime(): void {
+    const videoElement = this.videoElement as HTMLVideoElement;
+    const track = videoElement.textTracks[this.timestampTextTrackId];
+    if (typeof track === 'undefined' || track === null || track.cues === null) {
+      return;
+    }
+    const currentTime = videoElement.currentTime;
+    const cues = track.cues;
+    // Cues are appended in chronological order (createVideoSample()/
+    // createSegment() always add the next sample's cue after the previous
+    // one's), so scanning from the end finds the most recent match fastest,
+    // and hitting `lastReportedCue` first means everything before it was
+    // already reported -- safe to stop.
+    for (let i = cues.length - 1; i >= 0; i--) {
+      const cue = cues[i] as VTTCue;
+      if (cue === this.lastReportedCue) {
+        return;
+      }
+      if (currentTime >= cue.startTime && currentTime < cue.endTime) {
+        this.reportCueTimestamp(cue, 'VideoTagPlayer.ts:checkTimestampCueAtCurrentTime');
+        return;
+      }
+    }
+  }
+
+  /** Drives checkTimestampCueAtCurrentTime() every rendered frame via
+   *  `requestAnimationFrame` -- see that method's own comment for why this
+   *  needs to run independently of onTimeUpdate()/`TextTrack.activeCues`
+   *  rather than being folded into either. Started once from init(),
+   *  self-reschedules for the life of the player, and only actually does
+   *  work while `playbackFlag` is set (the reported gap is Playback-
+   *  specific -- Live mode's own timestamp cues aren't affected the same
+   *  way, since Live never compresses frameDuration by a requested speed at
+   *  all). Stopped from close(). */
+  private startTimestampCuePolling(): void {
+    if (this.timestampCuePollHandle !== null) {
+      return;
+    }
+    const loop = (): void => {
+      if (this.playbackFlag) {
+        this.checkTimestampCueAtCurrentTime();
+      }
+      this.timestampCuePollHandle = requestAnimationFrame(loop);
+    };
+    this.timestampCuePollHandle = requestAnimationFrame(loop);
+  }
+
+  private stopTimestampCuePolling(): void {
+    if (this.timestampCuePollHandle !== null) {
+      cancelAnimationFrame(this.timestampCuePollHandle);
+      this.timestampCuePollHandle = null;
+    }
+  }
+
   private makeOnCueEnter(): (this: VTTCue) => void {
     const player = this;
     return function onCueEnter(this: VTTCue): void {
       // legacy declares `var track = videoElement.textTracks[...]` here but
       // never actually uses it (grep-confirmed dead local) — omitted.
       if (typeof this.text !== 'undefined' && this.text !== null) {
-        try {
-          const timeStamp: TimestampData = JSON.parse(this.text);
-          timeStamp.type = 'timestamp';
-          timeStamp.channelId = player.channelId;
-          timeStamp.currentTimeDiff = parseInt(String(((player.videoElement as HTMLVideoElement).currentTime - this.startTime) * 1000), 10);
-          timeStamp.videoSize = player.videoSize;
-          (player.timeStampCallback as (t: unknown) => void)(timeStamp);
-        } catch (error) {
-          throw new RTSPOverWebSocketError({
-            channelId: player.channelId,
-            errorCode: (error as { code?: number }).code,
-            place: 'VideoTagPlayer.ts:onCueEnter',
-            message: (error as Error).message
-          });
-        }
+        player.reportCueTimestamp(this, 'VideoTagPlayer.ts:onCueEnter');
       }
     };
   }
@@ -2354,6 +2464,7 @@ export class VideoTagPlayer extends VideoPlayer {
       this.createMediaSource();
     }
     this.instantplayback = false;
+    this.startTimestampCuePolling();
   }
 
   override onVideoData(playMode: string, streamData: VideoStreamData, videoInfo: VideoInfo): void {
@@ -2515,6 +2626,7 @@ export class VideoTagPlayer extends VideoPlayer {
   override close(): void {
     console.log('[VideoTagPlayer] close() called');
     this.videoPause();
+    this.stopTimestampCuePolling();
 
     try {
       if (this.audiotranscoderWorker) {

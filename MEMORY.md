@@ -3456,3 +3456,93 @@ assignment site is responsible: a permanent stall pointed at a chronic backlog (
 that's transient and self-recovers once `Latency` crosses back to positive pointed specifically at a
 one-shot jump-then-wait pattern (this bug) — the user's own description of the *recovery* behavior,
 not just the negative value itself, was the detail that actually narrowed it down.
+
+## `#renderer_type` "canvas" silently ignored for MJPEG cameras — the new real-MSE tier never checked `defaultVideoTagMode` (fixed)
+
+Same class of bug as the H265 case above, hit again the same day for a different codec. When the MJPEG
+real-MSE tier (WebCodecs `VideoEncoder` re-encode to H264, see this file's own entry on that feature) was
+added to `MediaRouter.ts`'s `selectVideoPlayer()`, its `case 'MJPEG'` block computed `tagMode` purely from
+feature detection (`typeof VideoEncoder !== 'undefined'` + `MediaSource.isTypeSupported()`) and never once
+read `defaultVideoTagMode` — unlike the `case 'H264': case 'H265':` block immediately below it, which
+short-circuits to `defaultVideoTagMode` first on both sides of its own MSE-support check (exactly the
+property the H265 fix above spent an entire incident establishing). Net effect: a host forcing
+`#renderer_type` "canvas" against an MJPEG stream still got `tagMode = 'video'` whenever the browser
+happened to support the real-MSE tier — the override was accepted and stored, just never consulted for
+this one codec.
+
+Caught by the user reading the new `case 'MJPEG'` block directly (`MediaRouter.ts:1488`), not a reported
+runtime symptom — the same read-the-diff instinct that caught the H265 case's second bug.
+
+Fix: added the identical `if (this.defaultVideoTagMode !== null) { this.tagMode = ...; break; }`
+short-circuit ahead of the feature-detection heuristic, mirroring H264/H265's pattern exactly. No change to
+the no-override path (feature-detected `'video'`/`'canvas'` choice, still no bridge fallback for this
+codec — see that feature's own entry for why).
+
+**How to apply**: any future codec branch added to `selectVideoPlayer`'s `switch` needs its own
+`defaultVideoTagMode` short-circuit *from the start* — it's easy to wire up a codec's own
+support-detection heuristic and forget this cross-cutting override entirely, since nothing type-checks or
+tests would catch its absence (the override is a silent no-op, not an error). Check any new case against
+`docs/player/03-mediaSession-core-video.md`'s `selectVideoPlayer` bullet, which now describes this as a
+required pattern, not just an H264/H265 particular.
+
+## Playback timestamp cues silently going missing at higher device Scale — `onCueEnter()`/`TextTrack.activeCues` share the same coarse dispatch cadence, fixed with an independent `requestAnimationFrame` poll of the raw cue list
+
+Reported directly by the user: `VideoTagPlayer.ts` delivers each Playback frame's own timestamp to
+callers (`timeStampCallback`, used throughout the consuming apps for OSD/UI clock sync) by adding a
+`VTTCue` per sample to a hidden `TextTrack` and firing on `cue.onenter` — and this "종종 누락되는"
+(occasionally goes missing) at higher requested playback speed.
+
+**First, a wrong assumption corrected along the way**: initially assumed Playback samples' own
+`frameDuration` (and thus each cue's video-timeline span) compresses by `1/localSpeedValue`, the same
+way `getVideoFrameDuration()` does for *Live* mode. Checked directly: `createVideoSample()`'s Playback
+branch never calls `getVideoFrameDuration()` at all — Playback's own segment builder
+(`createSegment()`) derives `frameDuration` purely from consecutive `videoSamples[].rtpTimestamp`
+deltas, with zero `localSpeedValue` involvement. So a real high-Scale Playback session only actually
+plays back faster if the *device* itself reports compressed rtpTimestamp deltas (which this class then
+faithfully mirrors into an equally compressed muxed PTS) — there is no player-side speed-compression
+mechanism for Playback at all, unlike Live.
+
+**Root cause, confirmed via direct instrumentation (temporary `[DEBUG-CUE]` logging) against a
+synthetic harness feeding both compressed rtpTimestamp deltas *and* a proportionally faster real
+delivery cadence** (simulating what a real device sending at a high requested Scale would produce):
+a first fix attempt — reading `TextTrack.activeCues` from a new `onTimeUpdate()`-driven pull check,
+reasoning that `activeCues` is "freshly recomputed from the current position" — made **no measurable
+difference at all** (identical results with and without it, confirmed via an A/B test). The trace
+explained why: `activeCues` logged `totalCues: 27` at one instant and `totalCues: 0` at the very next
+sampled instant — not a narrow miss, but *every* cue in the list being entered and exited within a
+single gap between two "time marches on" runs. `TextTrack.activeCues` is itself only recomputed by
+that same algorithm, on the same coarse cadence as `onenter`/`onexit` — so polling it, even from a
+different event, inherits the identical blind spot. Neither a push (`onenter`) nor a pull
+(`activeCues`) approach tied to that algorithm can ever observe a cue whose entire lifetime falls
+inside one of its own scheduling gaps.
+
+**Fix**: stopped relying on `TextTrack.activeCues` (or `onenter`/`onexit`) as the *only* signal
+entirely. `checkTimestampCueAtCurrentTime()` now searches `track.cues` (the full, static cue list,
+unaffected by the "time marches on" algorithm's own batching) directly against the live, always-current
+`videoElement.currentTime`, and is driven by a new `requestAnimationFrame` loop
+(`startTimestampCuePolling()`/`stopTimestampCuePolling()`, started from `init()`, stopped from
+`close()`, only doing work while `playbackFlag` is set) — rAF runs at ~60Hz, far finer than "time
+marches on"'s historical ~250ms cadence, so a cue has many more chances to be observed before its
+window closes. `onCueEnter()` (the normal, still-useful common case) and this new poll both funnel
+through a shared `reportCueTimestamp()`, deduped via a new `lastReportedCue` field so a normally-fired
+cue doesn't get double-reported by the poll picking it up too.
+
+**Verified**: a same-speed A/B test (matching the failed `activeCues` attempt's exact scenario, 8x
+requested Scale) went from 3/30 distinct timestamps reported (10% coverage) to 27/30 (90%) with this
+fix — full `npx tsc -b` + `npx vitest run` (63 tests) clean, Live 320x240 unaffected (the poll loop is
+a no-op outside `playbackFlag`).
+
+**Residual gap, expected and not fully fixable from here**: coverage is substantially better but not
+literally 100% at extreme requested speeds — firing any cue-shaped event off a `<video>` element's own
+timeline is fundamentally bounded by how often *something* samples `currentTime` against the cue list,
+and rAF (~60Hz) is fast but not infinite; a real device compressing enough content into a narrow enough
+window can still produce a cue no poll ever catches. This is treated as a hard limit of the underlying
+approach (worth flagging to the user, not silently declaring "fixed"), not a bug still left to chase.
+
+**How to apply**: "poll a value more often" only helps if the value itself isn't *already* rate-limited
+by the same underlying mechanism you're trying to route around — `TextTrack.activeCues` looked like an
+obvious, spec-blessed escape hatch from `onenter`/`onexit`'s reliability problem, but it's computed by
+the exact same algorithm, so it inherited the exact same gap. Confirmed via a live A/B test rather than
+assumed from the spec text alone — worth remembering as a second, cheaper instance of this session's
+running theme (verify empirically, don't reason from source/spec alone) before trusting the "obvious"
+fix for a scheduling-cadence problem.
