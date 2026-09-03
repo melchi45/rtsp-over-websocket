@@ -3527,17 +3527,32 @@ window closes. `onCueEnter()` (the normal, still-useful common case) and this ne
 through a shared `reportCueTimestamp()`, deduped via a new `lastReportedCue` field so a normally-fired
 cue doesn't get double-reported by the poll picking it up too.
 
-**Verified**: a same-speed A/B test (matching the failed `activeCues` attempt's exact scenario, 8x
-requested Scale) went from 3/30 distinct timestamps reported (10% coverage) to 27/30 (90%) with this
-fix — full `npx tsc -b` + `npx vitest run` (63 tests) clean, Live 320x240 unaffected (the poll loop is
-a no-op outside `playbackFlag`).
+**Verified, with an important caveat found while re-confirming it**: a same-speed A/B test (matching
+the failed `activeCues` attempt's exact scenario, 8x requested Scale) initially went from 3/30 distinct
+timestamps reported (10% coverage) to 27/30 (90%) with this fix. Re-running the identical A/B later the
+same session (same machine, now under heavier concurrent load from unrelated processes) showed *no*
+difference at all between with/without the fix at that same 8x speed (both ~10%), and at a more modest
+2x speed showed both configurations landing at the same ~67% independently of run order — i.e. the
+measured percentage is **highly sensitive to how much real CPU is available for the encode/mux pipeline
+at the moment of the test**, not a stable property of the fix alone. Under heavy contention, the
+dominant bottleneck shifts to encode throughput itself (the seventh bug's territory — see that entry)
+rather than cue-scheduling granularity, and no amount of polling can report a timestamp for a frame that
+was never muxed into a cue in the first place. The one *reliably reproducible* signal across every
+repeat, regardless of load, is directional: this fix never measured worse than the pre-fix baseline in
+back-to-back same-load comparisons, and the original clean run demonstrates the mechanism genuinely
+closes the scheduling-granularity gap when the encode pipeline itself isn't the bottleneck. Full
+`npx tsc -b` + `npx vitest run` (63 tests) clean either way; Live 320x240 unaffected (the poll loop is a
+no-op outside `playbackFlag`).
 
-**Residual gap, expected and not fully fixable from here**: coverage is substantially better but not
-literally 100% at extreme requested speeds — firing any cue-shaped event off a `<video>` element's own
-timeline is fundamentally bounded by how often *something* samples `currentTime` against the cue list,
-and rAF (~60Hz) is fast but not infinite; a real device compressing enough content into a narrow enough
-window can still produce a cue no poll ever catches. This is treated as a hard limit of the underlying
-approach (worth flagging to the user, not silently declaring "fixed"), not a bug still left to chase.
+**Residual gap, expected and not fully fixable from here**: even under favorable (low-contention)
+conditions, coverage is substantially better but not literally 100% at extreme requested speeds —
+firing any cue-shaped event off a `<video>` element's own timeline is fundamentally bounded by how
+often *something* samples `currentTime` against the cue list, and rAF (~60Hz) is fast but not infinite;
+a real device compressing enough content into a narrow enough window can still produce a cue no poll
+ever catches. Under heavy CPU contention (see the caveat above) the gap can be much larger still, for
+an entirely different (throughput, not scheduling) reason. This is treated as a hard limit of the
+underlying approach (worth flagging to the user, not silently declaring "fixed"), not a bug still left
+to chase.
 
 **How to apply**: "poll a value more often" only helps if the value itself isn't *already* rate-limited
 by the same underlying mechanism you're trying to route around — `TextTrack.activeCues` looked like an
