@@ -2493,3 +2493,29 @@ exactly the case that should start fresh rather than reuse a previous stream's p
 
 See `docs/player/01-elements-interface-exceptions.md`'s "Time normalization" Method Analysis section
 and History table for the line-referenced detail.
+
+## `GMT` setter's loose validation for non-number input was intentionally preserved, then deliberately removed
+
+`RTSPOverWebSocket.ts`'s `GMT` setter used to have a documented, intentionally-preserved legacy quirk:
+a non-number value (e.g. a string) wasn't rejected — it silently fell through the `< -12`/`> 13` range
+check (both comparisons evaluate `false` against a non-numeric operand) and got written straight to
+the `gmt` attribute via `setAttribute('gmt', String(v))`. Only `undefined` threw, and only `null` reset
+to the default `0`.
+
+Two direct, separate requests from the user changed this in the same session, in this order:
+
+1. Fold `undefined` into the `null` branch (both now reset `GMT` to `0`) instead of throwing on
+   `undefined` — the old `if (typeof v !== 'number' && v === undefined)` throw-guard was redundant
+   anyway, since `v === undefined` already implies `typeof v !== 'number'`.
+2. Once that first change had already narrowed what needed separate handling, remove the loose
+   validation itself: any non-number that isn't `null`/`undefined` is now rejected up front with the
+   same `RTSPOverWebSocketError` (0x0414) an out-of-range number gets — `if (typeof v !== 'number' ||
+   v < -12 || v > 13) throw ...`.
+
+Worth remembering: this is a case where a documented "preserved legacy bug" was later deliberately
+reversed on direct user instruction, not rediscovered and "fixed" by accident. If another loose-
+validation quirk elsewhere in this class is ever found and preserved the same way, don't assume it's
+permanent — it may just not have come up for a decision yet.
+
+See `docs/player/01-elements-interface-exceptions.md`'s History table (two 2026-09-03 entries) for the
+line-referenced before/after.

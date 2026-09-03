@@ -1889,28 +1889,23 @@ export class RTSPOverWebSocket extends HTMLElement {
     return this._gmt;
   }
   set GMT(v: number | null | undefined) {
-    // Legacy bug preserved (loose validation): only `v === undefined` throws
-    // here; any other non-number garbage (e.g. a string) falls through to
-    // the range check below unvalidated (which, for a non-numeric string,
-    // silently evaluates both `< -12` and `> 13` as `false`).
-    if (typeof v !== 'number' && v === undefined) {
-      throw new RTSPOverWebSocketError({
-        channelId: this.channel,
-        elementId: this.getAttribute('id') ?? undefined,
-        errorCode: fromHex('0x0414'),
-        place: 'RTSPOverWebSocket.ts:GMT',
-        message: 'invalid input parameter type, check your input parameter type, this value need to a range of value -12 ~ 13 or null'
-      });
-    } else {
-      if (v === null) {
-        // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md) --
-        // normalize an explicit reset to the default instead of `null`.
-        this.info.device.gmt = this._gmt = 0;
-        return;
-      }
+    // `undefined` is now treated identically to `null` (both reset GMT to
+    // the default `0`) -- previously only `null` did this and `undefined`
+    // threw.
+    if (v === null || v === undefined) {
+      // `GMT` is unconditionally defaulted to `0` now (see MEMORY.md) --
+      // normalize an explicit reset (or omitted value) to the default
+      // instead of `null`/`undefined`.
+      this.info.device.gmt = this._gmt = 0;
+      return;
     }
 
-    if ((v as number) < -12 || (v as number) > 13) {
+    // Legacy loose validation removed at the user's request: a non-number
+    // (e.g. a string) used to silently fall through to the range check
+    // below, which evaluated both `< -12` and `> 13` as `false` for it and
+    // let it through unvalidated. Now rejected up front, same error as an
+    // out-of-range number.
+    if (typeof v !== 'number' || v < -12 || v > 13) {
       throw new RTSPOverWebSocketError({
         channelId: this.channel,
         elementId: this.getAttribute('id') ?? undefined,
