@@ -40,6 +40,19 @@ function normalizeStartEndInput(value: string): string {
   return /^\d{14}$/.test(value) ? formatCompactTimestampAsNaiveIso(value) : value;
 }
 
+/**
+ * Every accepted spelling of the `start`/`end`/`overlappedid` `?query`
+ * param or legacy path-embedded `key=value` pseudo-param `applySrcAttribute()`
+ * understands — kept in sync with the `case` labels in both of that
+ * method's `switch (paramName)`/`switch (legacyKey)` blocks, and used by
+ * the camera recording-shape block to check `queryProvidedKeys` for *any*
+ * of them before falling back to its own positional `segments[2]`/
+ * `segments[3]` parsing.
+ */
+const START_QUERY_KEYS = ['start', 'start_time', 'start-time', 'starttime'];
+const END_QUERY_KEYS = ['end', 'end_time', 'end-time', 'endtime'];
+const OVERLAP_QUERY_KEYS = ['overlap', 'overlappedid', 'overlapped-id'];
+
 let ffmpegAACDecoderLoadPromise: Promise<void> | null = null;
 
 /**
@@ -4725,6 +4738,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         if (queryProvidedKeys.has(legacyKey)) continue;
         switch (legacyKey) {
           case 'session':
+          case 'sessionkey':
             this.sessionKey = legacyValue;
             break;
           case 'start':
@@ -4809,13 +4823,13 @@ export class RTSPOverWebSocket extends HTMLElement {
           // this same compact digit string. Just re-punctuate the digits
           // into that naive-ISO shape and let the existing setter do the
           // GMT math, instead of duplicating it here.
-          if (!queryProvidedKeys.has('start') && !queryProvidedKeys.has('start_time')) this.startTime = formatCompactTimestampAsNaiveIso(rangeMatch[1]);
-          if (rangeMatch[2] !== undefined && !queryProvidedKeys.has('end') && !queryProvidedKeys.has('end_time')) this.endTime = formatCompactTimestampAsNaiveIso(rangeMatch[2]);
+          if (!START_QUERY_KEYS.some((key) => queryProvidedKeys.has(key))) this.startTime = formatCompactTimestampAsNaiveIso(rangeMatch[1]);
+          if (rangeMatch[2] !== undefined && !END_QUERY_KEYS.some((key) => queryProvidedKeys.has(key))) this.endTime = formatCompactTimestampAsNaiveIso(rangeMatch[2]);
         }
 
         const overlapSegment = segments[3];
         const overlapMatch = overlapSegment !== undefined ? /^OverlappedID=(.*)$/i.exec(overlapSegment) : null;
-        if (overlapMatch !== null && !queryProvidedKeys.has('overlap') && !queryProvidedKeys.has('overlappedid')) {
+        if (overlapMatch !== null && !OVERLAP_QUERY_KEYS.some((key) => queryProvidedKeys.has(key))) {
           this.overlappedId = overlapMatch[1];
         }
       } else if (profileSegment !== undefined) {

@@ -734,6 +734,29 @@
                     placeholder="rtsp://user:pass@host:port/1/profile1/media.smp?device=camera&statistics&controls"
                   />
                 </label>
+                <div class="hint" style="grid-column: 1 / -1; margin-top: -4px">
+                  <strong style="font-weight: 600">URL parameters</strong> — each of these can be given as a real
+                  <code>?query=value</code>, or (legacy) as a <code>/key=value</code> path segment anywhere after
+                  the channel, e.g.
+                  <code>.../recording/play.smp/device=camera/gmt=9/start=.../end=.../overlappedid=0</code>. An
+                  explicit value from either source always wins over anything <code>applySrcAttribute()</code>
+                  would otherwise infer from the URL's shape.
+                  <ul style="margin: 4px 0 0; padding-left: 18px">
+                    <li><code>device</code> &mdash; <code>camera</code> or <code>nvr</code>; resolved from this, then the element's existing attribute, then defaults to <code>camera</code>.</li>
+                    <li><code>mode</code> &mdash; <code>live</code> (default) or <code>playback</code>. If omitted entirely, a literal <code>recording</code> path segment (e.g. <code>.../0/recording/play.smp</code>) still infers <code>playback</code> on its own; an explicit <code>mode=</code> always overrides that inference.</li>
+                    <li><code>gmt</code> &mdash; the device's UTC offset in hours (e.g. <code>9</code> for KST). Needed to correctly convert a compact or naive <code>start</code>/<code>end</code> value to true UTC &mdash; apply it <em>before</em> <code>start</code>/<code>end</code> in a path-embedded URL (parsed left to right) so the conversion sees the right offset.</li>
+                    <li><code>start</code> / <code>start_time</code> / <code>start-time</code> / <code>starttime</code> &mdash; playback range start; all four spellings are equivalent. Accepts a compact <code>YYYYMMDDHHMMSS</code> digit string, or a full ISO string (naive &mdash; <code>2026-09-03T14:07:24</code>, interpreted in the <code>gmt</code> zone &mdash; or with an explicit <code>Z</code>/<code>&plusmn;HH:MM</code> designator, trusted as an absolute instant).</li>
+                    <li><code>end</code> / <code>end_time</code> / <code>end-time</code> / <code>endtime</code> &mdash; playback range end, same accepted shapes as <code>start</code>.</li>
+                    <li><code>overlappedid</code> / <code>overlap</code> / <code>overlapped-id</code> &mdash; disambiguates overlapping recordings covering the same time range on the device.</li>
+                    <li><code>session</code> / <code>sessionkey</code> &mdash; resumes an existing RTSP-over-WebSocket session key instead of starting a new one.</li>
+                    <li><code>statistics</code> &mdash; boolean flag (present/<code>=true</code> is on, absent/<code>=false</code> is off; a bare <code>?statistics</code> counts as present). Shows the on-screen fps/bitrate/latency statistics overlay panel this element renders over the video.</li>
+                    <li><code>controls</code> &mdash; same boolean-flag convention as <code>statistics</code>. Shows the native <code>&lt;video&gt;</code> element's own playback controls (play/pause, seek bar, volume) when rendering through the <code>video</code> tag mode; has no visible effect in <code>canvas</code> tag mode, which has no native controls to show.</li>
+                  </ul>
+                  Only real <code>?query</code> params are joined with <code>&amp;</code>; a path-embedded
+                  <code>mode=</code> (or any other pair) after another path-embedded pair must still be its own
+                  <code>/key=value</code> segment, not appended with <code>&amp;</code> or <code>/</code> onto the
+                  previous one's value.
+                </div>
                 <label class="checkbox-field">
                   <input id="srcurl-use-sunapi" type="checkbox" />
                   Connect via SUNAPI Manager
