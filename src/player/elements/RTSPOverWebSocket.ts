@@ -12,6 +12,34 @@ import type { StreamPlayerInfo } from '../interface/StreamPlayer';
 import { RTSPOverWebSocketPlayType, RTSPOverWebSocketPlayState, RTSPOverWebSocketBestshotFilter, RTSPOverWebSocketPlaySpeed, type RTSPOverWebSocketPlaySpeedEntry } from './RTSPOverWebSocketTypes';
 import * as panelStyles from './panelStyles';
 
+/**
+ * Re-punctuates a `YYYYMMDDHHMMSS` compact timestamp (the digit-only shape
+ * `generateRTSPURL()`'s camera `playback`/`backup` branches embed in the RTSP
+ * path, and the shape `applySrcAttribute()` parses back out of a pasted
+ * `src`) into a naive ISO string (`YYYY-MM-DDTHH:mm:ss`, no `Z`/offset
+ * designator) suitable for the `startTime`/`endTime` setters, which already
+ * know how to convert a naive ISO string from `GMT`-zone local wall clock to
+ * true UTC (`normalizeTimeInputToUtcIso()`).
+ */
+function formatCompactTimestampAsNaiveIso(digits: string): string {
+  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}T${digits.slice(8, 10)}:${digits.slice(10, 12)}:${digits.slice(12, 14)}`;
+}
+
+/**
+ * A `start=`/`end=` value arriving via a real `?query` param or a legacy
+ * path-embedded `key=value` pseudo-param (`applySrcAttribute()`) can itself
+ * be a bare compact `YYYYMMDDHHMMSS` timestamp — e.g.
+ * `.../play.smp?start=20260903140724&end=20260903150724` — rather than a
+ * full ISO string; the `startTime`/`endTime` setters only accept the ISO
+ * shape and would otherwise throw. Re-punctuates via
+ * `formatCompactTimestampAsNaiveIso()` when the value is exactly 14 digits;
+ * passes anything else through unchanged for the setters' own validation to
+ * accept or reject.
+ */
+function normalizeStartEndInput(value: string): string {
+  return /^\d{14}$/.test(value) ? formatCompactTimestampAsNaiveIso(value) : value;
+}
+
 let ffmpegAACDecoderLoadPromise: Promise<void> | null = null;
 
 /**
@@ -4438,50 +4466,72 @@ export class RTSPOverWebSocket extends HTMLElement {
       return;
     }
 
-    // A `src` pointing at a *different* device than the one this element
-    // was last connected to must not silently keep answering challenges
-    // with the previous device's credentials — a new device very often
-    // means different (or no) credentials. Compared before `hostname`
-    // itself is overwritten below. `previousHostname === null` (this
-    // element's very first `src`) deliberately does NOT count as a
-    // "change" — nothing to clear yet, and it'd otherwise wipe out
-    // username/password that arrived via markup/property assignment
-    // *before* `src` was ever set (e.g. this page's Player tab sets
-    // `username`/`password` as plain properties, then `src` separately).
-    const previousHostname = this.getAttribute('hostname');
-    const hostnameChanged = url.hostname !== '' && previousHostname !== null && url.hostname !== previousHostname;
+    // Every `applySrcAttribute()` call is a fresh, complete "connect to
+    // exactly this stream" request (requested directly, 2026-09-03) —
+    // reset every session-identifying field to its default *before*
+    // parsing the new `src`, so nothing a *previous* `src` (or a previous
+    // connection's leftover state) set can leak into this one; only what
+    // the new `src` itself supplies (below), or a property assigned
+    // *afterward* (e.g. `sunapiClient`), takes effect. This supersedes the
+    // old hostname-change-only credential-clearing logic this block used
+    // to have (kept until 2026-09-03 — see MEMORY.md for that history):
+    // that only cleared `username`/`password`, and only when the hostname
+    // actually changed; resetting unconditionally on every call, to every
+    // one of these fields, makes that conditional redundant.
+    //
+    // `username`/`password` reset to `''`, NOT via `removeAttribute()`
+    // (regression found live 2026-08-26, preserved here): `removeAttribute
+    // ()` fires the `'username'`/`'password'` case with `newValue = null`,
+    // setting `info.device.user`/`username`/`password` to `undefined` — a
+    // *different* state from this element's actual "no credentials"
+    // default (`''`, matching the `info` object literal in the
+    // constructor). `StreamPlayer.ts`'s `open()` treats those two
+    // differently: `typeof info.device.username !== 'undefined'` is `true`
+    // for `''` (no throw) but `false` for `undefined` (throws
+    // `RTSPOverWebSocketError`, "username is empty from input parameter").
+    this.setAttribute('username', '');
+    this.setAttribute('password', '');
+    // `hostname`/`port`/`device` reset via `removeAttribute()` — each
+    // case's `attributeChangedCallback` handler accepts `newValue = null`
+    // safely (no validation/throw), unlike `profile`/`profile_number`/
+    // `mode` below. Resetting `port` also resets `_secure` as an intended
+    // side effect of its own case handler (`_secure = (port === 443)`,
+    // `443 !== NaN`); an explicit `?secure`/`?https` or port in the new
+    // `src`, processed below, re-derives it correctly either way.
+    this.removeAttribute('hostname');
+    this.removeAttribute('port');
+    this.removeAttribute('device');
+    // `session`/`start`/`end`/`overlappedid` were never real attributes —
+    // plain get/set properties, all of which already accept `null` as
+    // their reset value (the same value `stop()` already resets
+    // `startTime` to elsewhere, for the same "clear the stale range"
+    // reason).
+    this.sessionKey = null;
+    this.startTime = null;
+    this.endTime = null;
+    this.overlappedId = null;
+    // `multicast`'s own `attributeChangedCallback` case has a pre-existing
+    // quirk this reset must route around: `case 'multicast': { this.
+    // _multicast = true; break; }` sets `true` unconditionally whenever the
+    // case fires at all — including on `removeAttribute()`, whose
+    // `newValue` it never actually checks. Assigned directly instead.
+    this._multicast = false;
+    // `mode`'s setter throws for anything that isn't a `string` (`typeof v
+    // !== 'string'`), and `newValue` from a `removeAttribute()` case fire
+    // is `null` — assigned directly (matching `_playType`'s own `null`
+    // default, which the `mode` getter already treats identically to
+    // `RTSPOverWebSocketPlayType.LIVE`) instead of going through
+    // `setAttribute`/the property setter.
+    this._playType = null;
+    // `profile`/`profile_number`'s own `attributeChangedCallback` cases
+    // both throw `RTSPOverWebSocketError` for a non-string/non-integer
+    // `newValue` — which `null` (from `removeAttribute()`) always is.
+    // Assigned directly instead, matching their own declared defaults.
+    this._profile = null;
+    this._profile_number = null;
 
-    if (url.username !== '') {
-      this.setAttribute('username', decodeURIComponent(url.username));
-    } else if (hostnameChanged) {
-      // Confirmed live 2026-08-26: connecting to 192.168.x.32 (no
-      // credentials in the URL) correctly prompted for username/password
-      // via the "Credentials required" flow; changing only the src's IP to
-      // 192.168.x.40 (still no credentials in the URL) and reconnecting on
-      // the same, reused element silently answered with .32's credentials
-      // instead of prompting again — because nothing here ever cleared
-      // them for a `src` that simply omits its own.
-      //
-      // setAttribute('', '') — NOT removeAttribute() (regression found live
-      // 2026-08-26, same day): removeAttribute() fires the 'username' case
-      // below with `newValue = null`, which sets `_username = null` and
-      // therefore `info.device.user`/`username = null ?? undefined` =
-      // `undefined` — a *different* state from this element's own default
-      // (`info.device.username: ''` in its `info` object literal, see the
-      // constructor). StreamPlayer.ts's `open()` treats those two
-      // differently: `typeof info.device.username !== 'undefined'` is
-      // `true` for `''` (no throw — this is the normal "no credentials"
-      // state every fresh element starts in) but `false` for `undefined`,
-      // throwing `RTSPOverWebSocketError` ("username is empty from input
-      // parameter."). `''` is this class's actual "no credentials"
-      // representation; `removeAttribute()`'s `null` is not.
-      this.setAttribute('username', '');
-    }
-    if (url.password !== '') {
-      this.setAttribute('password', decodeURIComponent(url.password));
-    } else if (hostnameChanged) {
-      this.setAttribute('password', '');
-    }
+    if (url.username !== '') this.setAttribute('username', decodeURIComponent(url.username));
+    if (url.password !== '') this.setAttribute('password', decodeURIComponent(url.password));
     if (url.hostname !== '') this.setAttribute('hostname', url.hostname);
     // An *explicit* port is applied immediately, same position as always —
     // must stay before the passthrough loop below so that an explicit
@@ -4505,26 +4555,38 @@ export class RTSPOverWebSocket extends HTMLElement {
     // attributes to begin with (only plain get/set properties) and are
     // special-cased onto those instead of setAttribute().
     const knownAttributes = new Set(RTSPOverWebSocket.observedAttributes);
-    // Tracks every key a *real* `?query` param already supplied this parse,
-    // so the legacy path-embedded fallback below (nvr mode only) never
-    // overrides an explicit query value with a guess from the path — see
-    // that fallback's own comment for why it exists at all.
+    // Tracks every key a *real* `?query` param, or a legacy path-embedded
+    // `key=value` pseudo-param (see the shared scan below, camera and nvr
+    // both), already supplied this parse — so neither the legacy scan nor
+    // the camera-mode recording-shape block further down ever overrides an
+    // explicitly-provided value with a guess. Named for the `?query` loop
+    // it started as; the legacy scan below adds to it too, once a key from
+    // *there* has actually been applied — same "explicit beats inferred"
+    // precedence, just from a second source.
     const queryProvidedKeys = new Set<string>();
     for (const [key, value] of url.searchParams) {
       const paramName = key.toLowerCase();
       queryProvidedKeys.add(paramName);
       switch (paramName) {
         case 'session':
+        case 'sessionkey':
           this.sessionKey = value;
           break;
         case 'start':
-          this.startTime = value;
+        case 'start_time':
+        case 'start-time':
+        case 'starttime':
+          this.startTime = normalizeStartEndInput(value);
           break;
         case 'end':
-          this.endTime = value;
+        case 'end_time':
+        case 'end-time':
+        case 'endtime':
+          this.endTime = normalizeStartEndInput(value);
           break;
         case 'overlap':
         case 'overlappedid':
+        case 'overlapped-id':
           this.overlappedId = value;
           break;
         default:
@@ -4559,10 +4621,15 @@ export class RTSPOverWebSocket extends HTMLElement {
     // the generic passthrough *only if* `src`'s query string explicitly
     // included `?device=...`), so it's resolved fresh here with the same
     // fallback chain (URL param -> existing attribute -> 'camera') and
-    // written back explicitly — a `src` with no `?device=` param on an
-    // element that never had the attribute set otherwise (e.g. the very
-    // first `src` on a fresh element) would otherwise leave the actual
-    // `device` attribute/`_deviceType` at its `null` default forever
+    // written back explicitly. The middle tier is effectively always
+    // inert now that the reset above unconditionally clears `device` at
+    // the top of every call (`this.getAttribute('device')` here reads
+    // `null` unless the generic passthrough *just* re-set it from this
+    // same `src`'s own `?device=`) — kept for defensiveness/clarity rather
+    // than removed, since a `src` with no `?device=` param on an element
+    // that never had the attribute set otherwise (e.g. the very first
+    // `src` on a fresh element) would otherwise leave the actual `device`
+    // attribute/`_deviceType` at its `null` default forever
     // (generic passthrough only fires for params the URL's query string
     // actually contains), and generateRTSPURL() throws `0x0404` ("device
     // attribute is not define") the moment play() runs — confirmed live:
@@ -4571,13 +4638,30 @@ export class RTSPOverWebSocket extends HTMLElement {
     // filename segment (media.smp/play.smp/backup.smp — whatever
     // generateRTSPURL() would itself produce on the way out) is purely
     // decorative in a `src` URL and discarded rather than parsed for
-    // meaning; `mode` (also just a normal query param, already handled
-    // above) is what actually selects live/playback/backup.
+    // meaning — `mode` (a real `?query` param, a legacy path-embedded
+    // pseudo-param, or — for camera mode only — inferred from a literal
+    // `recording` path segment when neither of those gave an explicit
+    // value, see the camera-mode branch below) is what actually selects
+    // live/playback/backup. Not the filename specifically: an earlier
+    // version of this fix inferred `mode` from `play.smp` itself rather
+    // than the `recording` segment before it, removed 2026-09-03 at the
+    // user's request ("smpFilename이 아니라 mode로") in favor of gating on
+    // `mode` throughout — see MEMORY.md for the full back-and-forth,
+    // including the brief window where this inference was removed
+    // entirely and had to be restored the same day once the very first
+    // reported bug URL (no `mode=` anywhere) regressed without it.
     const deviceType = (url.searchParams.get('device') ?? this.getAttribute('device') ?? 'camera').toLowerCase();
     this.setAttribute('device', deviceType);
     const segments = url.pathname.split('/').filter((segment) => segment.length > 0);
-    if (segments.length > 0 && /\.smp$/i.test(segments[segments.length - 1])) {
-      segments.pop();
+    // Removed from `segments` wherever it appears, not just checked-and-
+    // popped as the last element (fixed 2026-09-03): a real `src` can carry
+    // legacy path-embedded pseudo-params (see the shared scan below) *after*
+    // the `.smp` segment too — e.g. `.../play.smp/device=camera/gmt=9/
+    // mode=playback` — so `.smp` isn't guaranteed to be last, and left in
+    // place it would otherwise be misread as `profile`/a stray legacy pair.
+    const smpIndex = segments.findIndex((segment) => /\.smp$/i.test(segment));
+    if (smpIndex !== -1) {
+      segments.splice(smpIndex, 1);
     }
     if (segments[0] === 'multicast') {
       this.setAttribute('multicast', '');
@@ -4605,61 +4689,141 @@ export class RTSPOverWebSocket extends HTMLElement {
       if (!Number.isNaN(channelWire)) this.setAttribute('channel', String(channelWire + 1));
     }
 
+    // Legacy path-embedded `key=value` pseudo-params — originally nvr-only
+    // (`generateRTSPURL()`'s nvr branch used to embed `/profile=H264`, or
+    // with a session key a single `/session=X&start=Y&profile=Z`-shaped
+    // segment, instead of a real `?query` string; fixed 2026-08-26, see
+    // that method's own entry below). Still accepted here so a `src`
+    // written in that old style (hand-typed, bookmarked, or — the case that
+    // widened this to camera mode too, 2026-09-03 — a camera recording
+    // `src` with trailing `device=`/`gmt=`/`mode=` pairs after `play.smp`,
+    // e.g. `.../play.smp/device=camera/gmt=9/mode=playback`) keeps working.
+    // Every remaining path segment after the channel is scanned for
+    // `&`-joined `key=value` pairs and routed through the exact same
+    // knownAttributes/session/start/end/overlap handling as the real
+    // `?query` loop above. A segment that's just a resource-type suffix
+    // (`media.smp`/`play.smp`/`backup.smp`) would already have been removed
+    // by the `.smp` search above; the defensive `continue` below only
+    // guards a shape this parser doesn't otherwise produce. Never overrides
+    // a key the real `?query` string already supplied this parse
+    // (`queryProvidedKeys`) — a legacy path fragment is a best-effort
+    // fallback guess, not authoritative over an explicit `?query` value —
+    // and, once applied, adds its own key to `queryProvidedKeys` too, so a
+    // key explicitly given *this* way (e.g. `mode=playback`) still counts
+    // as "already provided" for the camera-mode recording-shape block below
+    // (which otherwise infers `mode` on its own from the `play.smp` shape):
+    // no `mode=` anywhere at all still defaults to `live` (this element's
+    // ordinary baseline, untouched); an explicit `mode=` — from either
+    // source — always wins over that inference.
+    for (const legacySegment of segments.slice(1)) {
+      if (/\.smp$/i.test(legacySegment)) continue;
+      for (const pair of legacySegment.split('&')) {
+        const eq = pair.indexOf('=');
+        if (eq === -1) continue;
+        const legacyKey = pair.slice(0, eq).toLowerCase();
+        const legacyValue = pair.slice(eq + 1);
+        if (queryProvidedKeys.has(legacyKey)) continue;
+        switch (legacyKey) {
+          case 'session':
+            this.sessionKey = legacyValue;
+            break;
+          case 'start':
+          case 'start_time':
+          case 'start-time':
+          case 'starttime':
+            this.startTime = normalizeStartEndInput(legacyValue);
+            break;
+          case 'end':
+          case 'end_time':
+          case 'end-time':
+          case 'endtime':
+            this.endTime = normalizeStartEndInput(legacyValue);
+            break;
+          case 'overlap':
+          case 'overlappedid':
+          case 'overlapped-id':
+            this.overlappedId = legacyValue;
+            break;
+          default:
+            if (knownAttributes.has(legacyKey)) this.setAttribute(legacyKey, legacyValue);
+            break;
+        }
+        queryProvidedKeys.add(legacyKey);
+      }
+    }
+
     if (deviceType === 'camera') {
       const profileSegment = segments[1];
-      if (profileSegment !== undefined) {
+      // Infer `mode = 'playback'` from the literal `recording` path segment
+      // (restored 2026-09-03, same day it was removed — the filename-based
+      // version of this inference was removed at the user's request, but a
+      // `src` with no explicit `mode=` anywhere still needs *some* signal,
+      // and the very first reported bug URL — `.../recording/{start}-
+      // {end}/OverlappedID=0/play.smp`, no `mode=` — regressed without one;
+      // see MEMORY.md for the full back-and-forth) — but ONLY as an *input*
+      // to `mode`, never as the gate itself: an explicit `mode=` (real
+      // `?query` or legacy path-embedded, both handled by the scan above,
+      // both already applied by this point) always wins over this
+      // inference, via the same `queryProvidedKeys` check. `'recording'` is
+      // shared by both the `playback` and `backup` shapes
+      // (`generateRTSPURL()`'s camera branch writes that same literal
+      // segment for both `info.media.type` values), but that ambiguity
+      // doesn't matter here: `play()` — the method `applySrcAttribute()`
+      // calls to reconnect — has no `'backup'` `info.media.type` path of
+      // its own (only the separate `backup()` method does), so `'playback'`
+      // is the only sensible inferred value regardless.
+      if (profileSegment === 'recording' && !queryProvidedKeys.has('mode')) {
+        this.setAttribute('mode', 'playback');
+      }
+      // The block below is gated on the resulting `mode`, not on
+      // `profileSegment`/any filename directly — symmetric with
+      // `generateRTSPURL()`'s own camera branch, which dispatches on
+      // `info.media.type` (`mode`'s underlying source) to decide *what to
+      // write*.
+      if (this.mode === 'playback') {
+        // Playback shape: `{channel}/recording/{start}[-{end}]/OverlappedID={id}/play.smp` —
+        // exactly what generateRTSPURL()'s own camera `playback` branch produces, and (with an
+        // explicit `mode=playback`) what a pasted playback `src` needs to resolve `start`/`end`/
+        // `OverlappedID` from instead of misreading `profileSegment` ('recording') as
+        // `profile = 'recording'` — the original form of this bug, reported live 2026-09-03. The
+        // start/end/OverlappedID segments parsed below are themselves only one possible source —
+        // an explicit `start=`/`end=`/`overlappedid=` pair (path-embedded or `?query`, via the
+        // scan above) already applied its own value and is left alone here (`queryProvidedKeys`).
+
+        // Mirrors `mode` onto `info.media.type` immediately (requested directly, 2026-09-03) rather
+        // than leaving it to `play()`'s own `this.info.media.type = 'playback'` (in its
+        // `playType !== LIVE/INSTANTPLAYBACK` branch) to catch up later — `generateRTSPURL()`'s
+        // camera branch reads `info.media.type` directly, not `mode`/`playType`, so anything that
+        // calls it (or otherwise inspects `info.media.type`) between this parse finishing and
+        // `play()` actually running would still see the stale value from this element's *previous*
+        // connection without this.
+        this.info.media.type = 'playback';
+
+        const rangeSegment = segments[2];
+        const rangeMatch = rangeSegment !== undefined ? /^(\d{14})(?:-(\d{14}))?$/.exec(rangeSegment) : null;
+        if (rangeMatch !== null) {
+          // `startTime`/`endTime`'s own setters already convert a naive (no
+          // `Z`/offset) ISO string from GMT-zone local wall clock to true UTC
+          // (`normalizeTimeInputToUtcIso()`) — exactly the inverse of the
+          // `+ GMT*3600*1000` shift `generateRTSPURL()` applied to produce
+          // this same compact digit string. Just re-punctuate the digits
+          // into that naive-ISO shape and let the existing setter do the
+          // GMT math, instead of duplicating it here.
+          if (!queryProvidedKeys.has('start') && !queryProvidedKeys.has('start_time')) this.startTime = formatCompactTimestampAsNaiveIso(rangeMatch[1]);
+          if (rangeMatch[2] !== undefined && !queryProvidedKeys.has('end') && !queryProvidedKeys.has('end_time')) this.endTime = formatCompactTimestampAsNaiveIso(rangeMatch[2]);
+        }
+
+        const overlapSegment = segments[3];
+        const overlapMatch = overlapSegment !== undefined ? /^OverlappedID=(.*)$/i.exec(overlapSegment) : null;
+        if (overlapMatch !== null && !queryProvidedKeys.has('overlap') && !queryProvidedKeys.has('overlappedid')) {
+          this.overlappedId = overlapMatch[1];
+        }
+      } else if (profileSegment !== undefined) {
         const profileNumberMatch = /^profile(\d+)$/i.exec(profileSegment);
         if (profileNumberMatch !== null) {
           this.setAttribute('profile_number', profileNumberMatch[1]);
         } else {
           this.setAttribute('profile', profileSegment);
-        }
-      }
-    } else if (deviceType === 'nvr') {
-      // Backward-compat only: generateRTSPURL()'s nvr branch used to embed
-      // pseudo-params directly in the path — `/profile=H264`, or (with a
-      // session key) a single `/session=X&start=Y&profile=Z`-shaped segment
-      // — instead of a real `?query` string (fixed 2026-08-26; see
-      // generateRTSPURL()'s own comment on that change). Still accepted
-      // here so a `src` written in that old style (hand-typed, or
-      // saved/bookmarked from before the fix) keeps working — every
-      // remaining path segment after the channel is scanned for `&`-joined
-      // `key=value` pairs and routed through the exact same
-      // knownAttributes/session/start/end/overlap handling as the real
-      // `?query` loop above. A segment that's just the resource-type
-      // suffix (`media.smp`/`play.smp`/`backup.smp` — not necessarily the
-      // *last* segment here, since without a leading `?` nothing marks
-      // where the path "ends" and the pseudo-query "begins") is skipped.
-      // Never overrides a key the real query string already supplied this
-      // parse (`queryProvidedKeys`) — a legacy path fragment is a
-      // best-effort fallback guess, not authoritative over an explicit
-      // `?query` value.
-      for (const legacySegment of segments.slice(1)) {
-        if (/\.smp$/i.test(legacySegment)) continue;
-        for (const pair of legacySegment.split('&')) {
-          const eq = pair.indexOf('=');
-          if (eq === -1) continue;
-          const legacyKey = pair.slice(0, eq).toLowerCase();
-          const legacyValue = pair.slice(eq + 1);
-          if (queryProvidedKeys.has(legacyKey)) continue;
-          switch (legacyKey) {
-            case 'session':
-              this.sessionKey = legacyValue;
-              break;
-            case 'start':
-              this.startTime = legacyValue;
-              break;
-            case 'end':
-              this.endTime = legacyValue;
-              break;
-            case 'overlap':
-            case 'overlappedid':
-              this.overlappedId = legacyValue;
-              break;
-            default:
-              if (knownAttributes.has(legacyKey)) this.setAttribute(legacyKey, legacyValue);
-              break;
-          }
         }
       }
     }

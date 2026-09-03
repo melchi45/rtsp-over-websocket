@@ -15,6 +15,14 @@
 | 2026-08-13 | Add `.env` support for the live-device test; fix `describe.skip` collection bug; docs |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-26 | Add `RTSPOverWebSocket.transportFactory` get/set — exposes `StreamPlayer`/`RtspClient`'s existing `transportFactory` constructor param as a settable element property |
+| 2026-09-03 | Fix `applySrcAttribute()`'s camera-mode path parsing silently discarding a pasted recording `src`'s `mode`/start/end/`OverlappedID` (misread as `profile = 'recording'`, causing a 404 on the following RTSP `OPTIONS`) |
+| 2026-09-03 | Follow-up, same fix: widen the `.smp` search to anywhere in the path (not just the last segment) and hoist the legacy path-embedded `key=value` pseudo-param scan to run for camera mode too, ahead of the recording-shape block — so a `src` with trailing `device=`/`gmt=`/`mode=` pairs after `play.smp` (path-embedded or real `?query`) resolves `GMT`/`mode` correctly, with an explicit `mode=` always winning over the `play.smp`-shape inference |
+| 2026-09-03 | Second follow-up, same fix: gate the recording-shape block on `this.mode === 'playback'` instead of `smpFilename === 'play.smp'` directly (symmetric with `generateRTSPURL()`'s own `info.media.type` dispatch), and make `start=`/`end=` accept a bare compact `YYYYMMDDHHMMSS` value (not just a combined `{start}-{end}` range segment or a full ISO string) via a new `normalizeStartEndInput()` helper, in both the real `?query` loop and the legacy path scan |
+| 2026-09-03 | Third follow-up, same fix: accept `start_time`/`end_time` as alternate key names for `start`/`end` (falling through to the same `case` in both switches), each accepting either value shape (compact digits or full naive ISO); widened the recording-shape block's own start/end deferral checks to also recognize the `_time`-suffixed keys |
+| 2026-09-03 | Fourth follow-up, same fix, at the user's explicit request: removed the `play.smp`-filename-based `mode` inference entirely (the `smpFilename` variable is gone) — `mode` is now resolved purely from an explicit `?query`/legacy-path `mode=` value, defaulting to `live` otherwise with no filename fallback. The original reported URL shape (no `mode=` anywhere) no longer auto-resolves to `playback` as a result — a deliberate simplification, not a regression; see MEMORY.md for the full history |
+| 2026-09-03 | Fifth follow-up, same fix: the fourth follow-up's removal regressed the original reported URL for real (reported live within the same session — `generateRTSPURL()` producing `.../0/recording/media.smp` instead of the expected playback URL for a `src` with no `mode=`) — restored the fallback inference, this time keyed on the literal `recording` **path segment** (`profileSegment === 'recording'`) rather than the filename, still only feeding the `mode`-based gate rather than being the gate itself |
+| 2026-09-03 | Sixth follow-up, same fix: mirrors `mode` onto `info.media.type` immediately inside the `mode === 'playback'` block (`this.info.media.type = 'playback';`), rather than leaving it to `play()`'s own assignment moments later, requested directly |
+| 2026-09-03 | `applySrcAttribute()` now resets `username`/`password`/`hostname`/`port`/`sessionKey`/`startTime`/`endTime`/`overlappedId`/`device`/`multicast`/`mode`/`profile`/`profile_number` unconditionally at the top of every call, requested directly — supersedes the narrower hostname-change-only credential clearing this method used to have. Real behavior change: setting `username`/`password` as properties *before* `src` no longer survives the next `src` assignment (see MEMORY.md) |
 | 2026-09-01 | Fix mouse-wheel zoom anchoring on the wrong point: `ensureRTSPOverWebSocketWrapper()` now sets `transform-origin: 0 0` on the wrapper div |
 | 2026-09-01 | Fix `statistics` attribute requiring two toggles to hide the panel: `attributeChangedCallback`'s `'statistics'` case now treats a removed attribute as off, matching the sibling boolean-attribute convention |
 | 2026-09-01 | Fix camera-device drag-seek sending the wrong time: `generateRTSPURL()` no longer double-applies `GMT` to `seekingTime`, and `seeking()`'s camera branch now always recomputes `rangeClock` from `seekingTime` (was stuck on stale `_useIso`-gated logic) with the trailing `Z` stripped to match the camera's `samsung-replay-timezone` extension |
@@ -206,32 +214,50 @@ their exact location rather than fixed silently (file header comment,
   Deliberately does **not** also write the legacy `_source` field (long comment at `:1656-1670`
   explains why: doing so would make every `if (this._source === null) generateRTSPURL()` gate
   elsewhere permanently skip URL generation after the first `src` write).
-- `applySrcAttribute(srcValue)` (private, `:4297-4558`) — parses `src` as a `URL`. **A `src` whose
-  `hostname` differs from this element's *current* `hostname` attribute clears `username`/
-  `password` first** (fixed 2026-08-26, fourth fix from the same investigation) unless the new
-  `src` supplies its own — a different device very often means different (or no) credentials, and
-  the RTSP URL demo tab's element is created once and reused across "Connect" clicks, not
-  recreated per attempt. Confirmed live: connecting to one IP with no credentials in the URL
-  correctly triggered the "Credentials required" prompt and the user typed a
-  username/password; changing only the IP in the URL and reconnecting on the same element then
-  silently answered with the *first* IP's credentials instead of prompting again, because nothing
-  cleared them for a `src` that simply omits its own. `previousHostname === null` (this element's
-  very first `src`) deliberately does **not** count as a "change" — otherwise a `src` set after
-  `username`/`password` had already arrived via markup/property assignment (e.g. this page's
-  Player tab, which sets `username`/`password` as plain properties before `src`) would wipe them
-  out immediately. Reconnecting a `src` to the *same* hostname leaves existing credentials alone.
-  **Clearing uses `setAttribute('username'/'password', '')`, not `removeAttribute()`** — the first
-  version of this fix used `removeAttribute()` and shipped a same-day regression: it fires the
-  `'username'` `attributeChangedCallback` case with `newValue = null`, which computes
-  `info.device.username = null ?? undefined` = `undefined` — a *different* state from this
-  element's own default (`info.device.username: ''` in the `info` object literal). `StreamPlayer.ts`'s
-  `open()` treats those two differently: `typeof info.device.username !== 'undefined'` is `true`
-  for `''` (the normal "no credentials" state every fresh element already starts in — no throw)
-  but `false` for `undefined`, throwing `RTSPOverWebSocketError` ("username is empty from input
-  parameter."). Confirmed live: switching a `src`'s IP with `removeAttribute()` in place threw this
-  on the very next connect attempt — `''` is this class's actual "no credentials" representation,
-  `removeAttribute()`'s `null` is not, and the two are not interchangeable here even though both
-  read as "falsy"/"empty" at a glance.
+- `applySrcAttribute(srcValue)` (private, `:4460-...`) — parses `src` as a `URL`.
+
+  **Resets every session-identifying field to its default at the very top, unconditionally, on
+  every call** (requested directly, 2026-09-03 — supersedes the narrower hostname-change-only
+  clearing this bullet used to describe; see MEMORY.md for that history): `username`/`password`
+  (to `''`), `hostname`/`port`/`device` (via `removeAttribute()`), `sessionKey`/`startTime`/
+  `endTime`/`overlappedId` (to `null`, via their plain-property setters), `multicast` (`_multicast
+  = false`, assigned directly), `mode` (`_playType = null`, assigned directly), and
+  `profile`/`profile_number` (assigned directly). Every `applySrcAttribute()` call is now a
+  complete, self-contained "connect to exactly this stream" request: only what the new `src` itself
+  specifies (below), or a property assigned *afterward* (e.g. `sunapiClient`), takes effect —
+  nothing a *previous* `src` or connection left behind carries over.
+
+  **Consequence worth knowing** (this is a real behavior change, not just an internal
+  simplification): setting `username`/`password` as plain properties *before* assigning `src` on
+  the same element — a pattern an earlier version of this method's own comments explicitly
+  protected — no longer works; those properties are wiped by this reset the moment `src` is next
+  assigned, unless the new `src` itself supplies its own credentials in its authority component
+  (`user:pass@host`). No code in this repo's own demo pages or `react/Player.tsx` currently relies
+  on that pattern (checked at the time of this change — the "RTSP URL" tab's SUNAPI-checked flow
+  sets `username`/`sunapiClient` then calls `play()` directly, never also assigning `src`; the
+  "Player" tab sets `username`/`password` as properties but never assigns `src` at all), but an
+  external consumer of this element following the old documented pattern would need to switch to
+  supplying credentials via the `src` URL's authority component, or via `sunapiClient`, instead.
+
+  Three fields needed special handling to avoid throwing, since their `attributeChangedCallback`
+  cases don't accept a `removeAttribute()`-style `newValue = null` cleanly: `mode`'s setter throws
+  for anything that isn't a `string` (`null` always is); `profile`/`profile_number`'s cases both
+  throw `RTSPOverWebSocketError` for a non-string/non-integer `newValue` (`null` again always is).
+  `multicast` has a different problem — its case (`case 'multicast': { this._multicast = true;
+  break; }`) sets `true` *unconditionally* whenever it fires at all, never actually checking
+  `newValue`, so `removeAttribute('multicast')` would (per this pre-existing quirk) set `_multicast
+  = true`, the opposite of a reset. All three are assigned directly to their private field instead
+  of going through `setAttribute`/`removeAttribute`, matching each field's own true declared
+  default. `hostname`/`port`/`device`, by contrast, all accept a `null` `newValue` safely in their
+  own cases (no validation to trip), so `removeAttribute()` is used for those — it also keeps their
+  `info.device.*` mirrors (`cameraIp`/`hostname`, `deviceType`) in sync, which a direct private-field
+  poke would have missed. `username`/`password` reset to `''` via `setAttribute()`, not
+  `removeAttribute()`, for the same reason this distinction mattered in the original hostname-change
+  fix this reset now supersedes: `removeAttribute()` would set `info.device.username`/`password` to
+  `undefined` rather than `''`, and `StreamPlayer.ts`'s `open()` throws `RTSPOverWebSocketError`
+  ("username is empty from input parameter.") for `undefined` but not for `''` (this class's actual
+  "no credentials" representation).
+
   Otherwise, username/password/hostname from the authority go through `setAttribute`
   unconditionally; `port` is handled specially (see below). Every recognized `?query=value` param
   is passed through generically to the matching attribute (bare flags like
@@ -257,20 +283,139 @@ their exact location rather than fixed silently (file header comment,
   segment before the channel number, unlike camera mode where the channel is `segments[0]` with
   no prefix — `applySrcAttribute()` now strips that literal prefix (matched case-insensitively)
   before reading the channel segment when `deviceType === 'nvr'`; previously `Number('LiveChannel')`
-  was always `NaN` and `channel` silently never got set for *any* nvr-shaped `src`. The path also
-  supplies, for camera devices, `profile`/`profile_number`. **nvr mode also accepts the *old*
-  path-embedded pseudo-param style as a fallback** (`:4483-4530`, added 2026-08-26, same day
-  `generateRTSPURL()`'s nvr branch switched to emitting a real `?query` string instead — see that
-  entry below): every path segment after the channel is scanned for `&`-joined `key=value` pairs
-  (a segment that's just `media.smp`/`play.smp`/`backup.smp` is skipped) and routed through the
-  same `session`/`start`/`end`/`overlap`/`knownAttributes` handling the real `?query` loop above
-  uses — so a hand-typed or bookmarked `.../media.smp/profile=H264` (or the old
+  was always `NaN` and `channel` silently never got set for *any* nvr-shaped `src`.
+
+  **Legacy path-embedded `key=value` pseudo-params, now shared by both device types** (originally
+  nvr-only, `:4483-4530`, added 2026-08-26 the same day `generateRTSPURL()`'s nvr branch switched
+  to emitting a real `?query` string instead of embedding these in the path; widened to camera mode
+  too, and hoisted to run once for both, 2026-09-03). `generateRTSPURL()`'s nvr branch used to embed
+  pseudo-params directly in the path — `/profile=H264`, or (with a session key) a single
+  `/session=X&start=Y&profile=Z`-shaped segment — instead of a real `?query` string; this fallback
+  keeps a `src` written that way (hand-typed, bookmarked, or — the case that widened it to camera
+  mode — a camera recording `src` with trailing `device=`/`gmt=`/`mode=` pairs *after* `play.smp`,
+  e.g. `.../play.smp/device=camera/gmt=9/mode=playback`) working. Every path segment after the
+  channel is scanned for `&`-joined `key=value` pairs (a bare resource-type suffix segment like
+  `media.smp`/`play.smp`/`backup.smp` — already removed by the `.smp` search below by the time this
+  runs, in practice — is skipped defensively) and routed through the same
+  `session`/`start`/`end`/`overlap`/`knownAttributes` handling the real `?query` loop above uses —
+  so a hand-typed or bookmarked `.../media.smp/profile=H264` (or the old
   `/session=X&start=Y&profile=Z` combined-segment form) still works, alongside the new
-  `?profile=H264` form. Never overrides a key the real query string already supplied in the same
+  `?profile=H264` form. Never overrides a key the real `?query` string already supplied in the same
   parse (tracked via `queryProvidedKeys`, populated by the `?query` loop above) — the path fallback
-  is a best-effort guess, not authoritative over an explicit `?query` value. Verified live against
-  this repo's own bridge (`rtspOverWebSocket/server.ts`): both `.../media.smp?device=nvr&profile=H264`
-  and `.../media.smp/profile=H264?device=nvr` reach `200 OK` on the same session. **`port` resolves
+  is a best-effort guess, not authoritative over an explicit `?query` value — and once one of *its
+  own* keys is applied, adds that key to `queryProvidedKeys` too, so (for example) a path-embedded
+  `mode=playback` here still counts as "already provided" for the camera recording-shape block just
+  below, the same way a real `?mode=` would. Verified live against this repo's own bridge
+  (`rtspOverWebSocket/server.ts`): both `.../media.smp?device=nvr&profile=H264` and
+  `.../media.smp/profile=H264?device=nvr` reach `200 OK` on the same session.
+
+  The path also supplies, for camera devices, `profile`/`profile_number` — **or, if `mode` has
+  already resolved to `'playback'` by this point, `start`/`end`/`overlappedid` instead** (fixed
+  2026-09-03 across several iterations the same day, found live via a reported 404 on the RTSP
+  `OPTIONS` that followed pasting a recording `src`; the block itself gates on the resolved `mode`,
+  not directly on any filename or path segment — see below for how it got there). Camera-mode
+  `generateRTSPURL()`'s
+  `playback`/`backup` branches emit `{channel}/recording/{start}[-{end}]/OverlappedID={id}/
+  {play|backup}.smp` (the compact `YYYYMMDDHHMMSS` digit pair, GMT-shifted — see that method's own
+  entry below), not the plain `{channel}/{profile}/media.smp` live shape. Originally, camera mode had
+  no equivalent of nvr's path-embedded fallback above (which didn't run for camera mode at all yet):
+  `segments[1]` (`'recording'`) fell straight into the plain-profile case and was written out as
+  `profile = 'recording'`, `mode` silently stayed at its `'live'` default, and the
+  start/end/`OverlappedID` segments were dropped entirely — so pasting a camera recording `src`
+  (including one copied from `generatertspurl`'s own reflected `src` value) resolved to the
+  nonexistent `{channel}/recording/media.smp` and 404'd.
+
+  **This went through four iterations the same day before settling on the current shape**
+  (each corrected in response to the user testing a further real `src` shape — see MEMORY.md's four
+  "follow-up" subsections for the blow-by-blow if this needs revisiting):
+  1. First keyed the branch directly off `segments[1] === 'recording'` — worked for the initial
+     report, but conflated "what shape is this path" with "what is `mode`" (no gate/inference split
+     yet).
+  2. Re-keyed off the trailing filename instead (`play.smp` vs `backup.smp`, captured into a
+     `smpFilename` variable before removing it from `segments`) — motivated by `'recording'` being
+     shared by *both* the `playback` and `backup` shapes (`generateRTSPURL()` writes that same
+     literal segment for both `info.media.type` values), so it alone can't distinguish them, while
+     the filename can.
+  3. Split the design into an explicit **gate** (`this.mode === 'playback'`) fed by an **inference**
+     (`smpFilename === 'play.smp'`, only when `mode` wasn't already given explicitly) — at the
+     user's request, to make the gate itself symmetric with `generateRTSPURL()`'s own camera branch,
+     which dispatches on `info.media.type` (`mode`'s underlying source), never on a filename.
+  4. Removed the filename-based inference entirely, at the user's explicit request ("`smpFilename`의
+     구분은 삭제해줘" — "delete the `smpFilename` distinction") — briefly leaving `mode` resolved
+     *purely* from an explicit source (real `?query`/legacy path-embedded `mode=`), with no fallback
+     inference of any kind. This regressed the *original* reported URL shape (no `mode=` anywhere at
+     all) back to `profile = 'recording'`/`live` — reported live within the same conversation.
+  5. **Current shape**: restored the inference, but keyed on the literal `recording` **path
+     segment** (`profileSegment === 'recording'`, `segments[1]`) rather than the filename —
+     satisfying both the step-4 request (no filename check) and the need for *some* fallback signal
+     when `mode` isn't given explicitly. The `playback`-vs-`backup` ambiguity step 2 flagged about
+     `'recording'` alone turns out not to matter for *this* inference specifically: `play()` (the
+     method `applySrcAttribute()` calls to reconnect) has no `'backup'` `info.media.type` path of
+     its own at all — that's only ever reached through the separate `backup()` method, a
+     fundamentally different call shape — so inferring `'playback'` is the only sensible choice
+     regardless of which the `src` was "really" for. The gate itself is still `this.mode ===
+     'playback'`, fed by (in priority order) an explicit `?query`/legacy-path `mode=` value, then
+     this `recording`-segment inference, then this element's ordinary `'live'` baseline.
+
+  `.smp` is still searched for and removed from `segments` wherever it appears regardless of any of
+  the above (needed so a trailing `play.smp`/`media.smp`/`backup.smp`, or one followed by further
+  legacy pseudo-param segments, is never itself misread as a profile or a stray legacy pair) — it's
+  just not consulted for `mode` inference purposes any more; only `profileSegment` is.
+
+  **Also mirrors `mode` onto `info.media.type` immediately, inside this same `mode === 'playback'`
+  block** (`this.info.media.type = 'playback';`, requested directly, sixth follow-up, 2026-09-03) —
+  `generateRTSPURL()`'s camera branch reads `info.media.type` directly, not `mode`/`playType`, and
+  `play()`'s own `this.info.media.type = 'playback'` assignment (in its `playType !==
+  LIVE/INSTANTPLAYBACK` branch) otherwise wouldn't run until `play()` itself executes, moments
+  later at the very end of `applySrcAttribute()` — leaving a brief window where `info.media.type`
+  would still read this element's *previous* connection's value (e.g. `'live'`) if anything called
+  `generateRTSPURL()` or otherwise inspected `info.media.type` in between.
+
+  Within the `mode === 'playback'` block: parses `segments[2]` as `{start}[-{end}]` and
+  re-punctuates each half via the module-level `formatCompactTimestampAsNaiveIso()` helper into a
+  naive ISO string (`YYYY-MM-DDTHH:mm:ss`, no designator) before assigning it to `startTime`/
+  `endTime` — those setters' own `normalizeTimeInputToUtcIso()` already converts a naive ISO string
+  from `GMT`-zone local wall clock to true UTC, the exact inverse of the `+ GMT*3600*1000` shift
+  `generateRTSPURL()` applies on the way out, so this reuses that existing conversion rather than
+  duplicating the GMT math (this is also *why* the legacy `key=value` scan had to move ahead of this
+  block and start running for camera mode too: a path-embedded `gmt=9` needs to already be applied
+  to `this.GMT` before this conversion runs, not after) — and parses `segments[3]` as
+  `OverlappedID={id}` into `overlappedId`. Each of these is itself only a fallback: an explicit
+  `start=`/`end=`/`overlappedid=` pair (path-embedded or `?query`, handled by the shared scan above)
+  already applied its own value and is left alone here via `queryProvidedKeys`, the same precedence
+  `mode` gets. **That explicit `start=`/`end=` pair's *value* can itself be the same bare compact
+  `YYYYMMDDHHMMSS` digit string** `segments[2]`'s combined range uses (e.g.
+  `.../play.smp?start=20260903140724&end=20260903150724`, no `-`-joined range segment at all) —
+  the real `?query` loop's and the legacy scan's `start`/`end` cases both now run the value through
+  a small new module-level `normalizeStartEndInput()` helper first (regex-detects a bare 14-digit
+  string and re-punctuates it the same way `formatCompactTimestampAsNaiveIso()` does; anything else
+  passes through unchanged for `startTime`/`endTime`'s own ISO validation to accept or reject) —
+  without it, a compact digit value there would fail that validation and throw `RTSPOverWebSocketError`
+  0x0414, since the setters otherwise only accept a full ISO string. **`start_time`/`end_time` are
+  also accepted as alternate key names for `start`/`end`** (requested directly, third follow-up,
+  same day) — both the real `?query` loop's and the legacy scan's switches fall `start_time` through
+  to the same `case 'start'` handling (and `end_time` to `case 'end'`), so
+  `start_time=2026-09-03T14:07:24`/`end_time=2026-09-03T15:07:24` (a full naive-ISO value this time,
+  no compact digits — `normalizeStartEndInput()` passes it through unchanged, then `startTime`'s own
+  `normalizeTimeInputToUtcIso()` does the usual GMT-zone-to-UTC conversion) works the same as
+  `start=`/`end=` with either value shape. The camera recording-shape block's own
+  `!queryProvidedKeys.has('start')`/`'end'` deferral checks were widened to also check
+  `'start_time'`/`'end_time'`, so a `start_time=`-only `src` (no `start=`) still correctly defers to
+  it instead of also attempting `segments[2]`'s positional range parsing on top.
+
+  Verified by hand-tracing the exact round trip with `GMT = 9`: `20260903140724-20260903150724`
+  (no `mode=` anywhere) → correctly inferred `mode: 'playback'` from the `recording` segment → true-
+  UTC `startTime`/`endTime` of `2026-09-03T05:07:24.000Z`/`06:07:24.000Z` → back through
+  `generateRTSPURL()` to the identical `rtsp://.../0/recording/20260903140724-20260903150724/
+  OverlappedID=0/play.smp` — the exact round trip reported broken partway through this fix's
+  iterations, now working again; and by tracing eight further URL shapes end-to-end —
+  `.../play.smp/device=camera/gmt=9/mode=playback` (explicit `mode=`) and its real-`?query`
+  equivalent, `.../play.smp/device=camera/gmt=9/start=.../end=.../overlappedid=0` (separate pairs,
+  compact digits, *no* `mode=` — confirmed inferred from `recording` again, not left at `live`) and
+  its real-`?query` equivalent, the same again with `start_time=`/`end_time=` (full naive ISO,
+  still no `mode=`) instead of `start=`/`end=` for both path-embedded and `?query` forms, and a
+  plain live `.../profile1/media.smp` — all resolving to the expected state, with the plain-live
+  case confirming `profile` parsing is unaffected by any of this. **`port` resolves
   to a real default
   when the URL omits it, instead of silently keeping whatever a previous connection on this same
   element left behind** (fixed 2026-08-26, third fix from the same investigation): an explicit
