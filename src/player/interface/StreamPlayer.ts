@@ -137,10 +137,28 @@ export class StreamPlayer {
   private readonly mediaRouter: MediaRouter;
   private readonly rtspClient: RtspClient;
   private rtpClient: RtpClient | null = null;
-  /** Stashed from `configInfo.debug` at construction time -- `mediaRouter` gets it immediately
-   *  (constructor, below), `rtpClient` only once it exists (constructed lazily in
-   *  `startStreaming()`, not here). See util/debugLog.ts. */
-  private readonly debugConfig: DebugConfig | null = null;
+  /** Stashed from `configInfo.debug` at construction time -- `mediaRouter`/`rtspClient` get it
+   *  immediately (constructor, below), `rtpClient` only once it exists (constructed lazily in
+   *  `startStreaming()`, not here, so `startStreaming()` re-reads the getter below rather than a
+   *  captured value). See util/debugLog.ts.
+   *
+   * Live-refresh (added 2026-09-04, requested directly by the user after finding a mid-stream
+   * `setRTSPOverWebSocketDebug(null)` had no visible effect): `set debug()` below re-applies to
+   * `mediaRouter`/`rtspClient`/`rtpClient` (if already constructed) every time it's called, not
+   * just once at construction -- `RTSPOverWebSocket.ts`'s own `debug` property setter calls this
+   * setter on `this.player` whenever a session is already running. */
+  private _debugConfig: DebugConfig | null = null;
+  get debugConfig(): DebugConfig | null {
+    return this._debugConfig;
+  }
+  set debug(config: DebugConfig | null) {
+    this._debugConfig = config;
+    this.mediaRouter.debug = config;
+    this.rtspClient.debug = config;
+    if (this.rtpClient !== null) {
+      this.rtpClient.debug = config;
+    }
+  }
   private isValidBackupCheck: boolean | null = null;
 
   private readonly connectionInfo: { protocol: string; hostname: string; port: number | string; proxy: string; ClientIPAddress?: string } = {
@@ -227,11 +245,11 @@ export class StreamPlayer {
     transportFactory?: TransportFactory
   ) {
     this.channelId = configInfo.device.channelId ?? 0;
-    this.debugConfig = configInfo.debug ?? null;
+    this._debugConfig = configInfo.debug ?? null;
 
     this.mediaRouter = new MediaRouter(mediaRouterFactories);
     this.mediaRouter.channelId = this.channelId;
-    this.mediaRouter.debug = this.debugConfig;
+    this.mediaRouter.debug = this._debugConfig;
     if (typeof configInfo.device.deviceType !== 'undefined' && typeof configInfo.device.deviceType === 'string' && configInfo.device.deviceType.toLowerCase() !== 'camera') {
       this.mediaRouter.deviceType = configInfo.device.deviceType;
     }

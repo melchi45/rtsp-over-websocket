@@ -28,12 +28,17 @@ export type MjpegWorkerFactory = () => MjpegWorkerLike;
 /**
  * Ported from the legacy player’s MediaSession/VideoSession/mjpegSession.
  *
- * Debug-only logger calls are not reproduced. The RTP header fields legacy
- * computes purely for its (dropped) debug log — version/padding/extension/
- * CSRC count/payload type/sequence number — have no other observable effect
- * (they're local closure vars, never stored or read elsewhere) and are
- * dropped along with it; only the marker bit and timestamp are kept, since
- * those drive real control flow below.
+ * The legacy player's always-on debug logger calls were originally not
+ * reproduced. The RTP header fields legacy computed purely for that (dropped)
+ * debug log — version/padding/extension/CSRC count/payload type/sequence
+ * number — have no other observable effect (they're local closure vars,
+ * never stored or read elsewhere) and stay dropped; only the marker bit and
+ * timestamp are kept, since those drive real control flow below. Debug
+ * tracing itself was reintroduced 2026-09-04, gated behind the `debug`
+ * attribute (`util/debugLog.ts`, `video: ["MjpegSession"]`) rather than
+ * always-on, and limited to what this class already computes for real
+ * control flow (byte counts, queue depth) — not a full reproduction of the
+ * legacy log's per-field header dump.
  *
  * `mjpegDepacketizeWorker` is a *per-instance* closure variable in legacy
  * (mjpegSession is a plain factory function, called fresh via `new` for
@@ -62,10 +67,12 @@ export class MjpegSession extends RtpSession {
 
   private handleWorkerMessage(message: MjpegWorkerMessage): void {
     const isMetaImage = this.information === 'MetaImageSession';
+    this.debugLog.info('handleWorkerMessage() -> frame complete', `playMode=${message.playMode}`, `isMetaImage=${isMetaImage}`);
     this.eventVideoCallback?.(message.playMode, message.streamData, message.videoInfo, isMetaImage);
   }
 
   override depacketize(rtspInterleaved: Uint8Array, rtpHeader: Uint8Array, rtpPayload: Uint8Array): void {
+    this.debugLog.debug('depacketize()', `bytes=${rtpPayload.length}`, `queued=${this.rtpDataArray.length}`);
     const rtpData: MjpegRtpDataEntry = {
       deviceType: this.deviceType === 'camera' ? 'camera' : 'nvr',
       rtspInterleave: rtspInterleaved,

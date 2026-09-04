@@ -8,7 +8,7 @@ import { getElementByAttributeValue } from '../util/getElementByAttributeValue';
 import { browserDetect } from '../util/BrowserDetect';
 import { RTSPOverWebSocketError } from '../exceptions/RTSPOverWebSocketError';
 import { fromHex } from '../util/hex';
-import { createDebugLogger, type DebugConfig } from '../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../util/debugLog';
 import type { WaitingEvent, RtpStatistics } from './RtpSession';
 
 /**
@@ -457,7 +457,7 @@ export class MediaRouter {
   private _audioshift = 0;
   private _debugConfig: DebugConfig | null = null;
   /** See util/debugLog.ts. Re-created every time `debug` is set. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
 
   private audioVolume = 0;
   private minRemainTime = 20;
@@ -523,13 +523,26 @@ export class MediaRouter {
    *  util/debugLog.ts. Also applied to every video/audio/talk/backup/metadata-parser instance this
    *  class hands out via `factories.createXxx()` (see those call sites below), since this class
    *  doesn't otherwise know their concrete class -- each instance's own `set debug()` supplies its
-   *  own literal component name to `createDebugLogger()`. */
+   *  own literal component name to `createDebugLogger()`.
+   *
+   * Live-refresh (added 2026-09-04, requested directly by the user after finding
+   * `setRTSPOverWebSocketDebug(null)` mid-stream had no visible effect): also re-applied to
+   * whichever of these instances *already exist* at the moment this setter runs, not just future
+   * ones a factory call constructs later -- a stream started before this setter is ever called
+   * (the original, "read once at play() time" behavior) already has a live `_videoPlayer`/
+   * `audioPlayer`/etc. by the time a host page calls `el.debug = ...` again mid-session, and
+   * without this those instances would silently keep whatever config they were built with. */
   get debug(): DebugConfig | null {
     return this._debugConfig;
   }
   set debug(config: DebugConfig | null) {
     this._debugConfig = config;
     this.debugLog = createDebugLogger(config, 'mediaSession', 'MediaRouter');
+    this._videoPlayer?.setDebugConfig?.(config, this.tagMode === 'video' ? 'VideoTagPlayer' : 'CanvasTagPlayer');
+    if (this.audioPlayer !== null) this.audioPlayer.debug = config;
+    if (this.audioTalker !== null) this.audioTalker.debug = config;
+    if (this.backupProvider !== null) this.backupProvider.debug = config;
+    if (this.metaDataParser !== null) this.metaDataParser.debug = config;
   }
 
   get supportCovertAndOff(): boolean {
@@ -739,6 +752,7 @@ export class MediaRouter {
 
   private handleVideoData(session: SessionContext, playMode: string, streamData: VideoStreamData, videoInfo: VideoInfo, isMetaImage?: boolean): void {
     const self = this;
+    self.debugLog.debug('handleVideoData()', `codecType=${streamData.codecType}`, `bytes=${streamData.frameData.length}`, `frameType=${videoInfo.frameType}`, `playMode=${playMode}`, `isMetaImage=${!!isMetaImage}`);
     if (isMetaImage && self.metaImageCallback) {
       self.metaImageCallback({
         channelId: self.channelId,
@@ -941,6 +955,7 @@ export class MediaRouter {
 
   private handleAudioData(session: SessionContext, playMode: string, streamData: AudioStreamData, audioInfo: AudioInfo): void {
     const self = this;
+    self.debugLog.debug('handleAudioData()', `codecType=${streamData.codecType}`, `bytes=${streamData.frameData.length}`, `playMode=${playMode}`);
     if (self.activeSessions.audio.rtp !== null && self.activeSessions.audio.rtp.interleavedId !== session.interleavedId) {
       self.activeSessions.audio.rtp.stopStatisticsTimer();
       session.startStatisticsTimer();
@@ -1186,7 +1201,7 @@ export class MediaRouter {
   }
 
   sendCommandData(type: MediaRouterCommandType, data: unknown): boolean | void {
-    this.debugLog('sendCommandData()', type);
+    this.debugLog.debug('sendCommandData()', type);
     switch (type) {
       case 'capture':
         if (this.player !== null) {
@@ -1502,7 +1517,7 @@ export class MediaRouter {
   }
 
   selectVideoPlayer(channelid: number, playMode: string, codecType: string, size: number, framerate: number | undefined): VideoPlayerLike | null {
-    this.debugLog('selectVideoPlayer()', { playMode, codecType, size, framerate });
+    this.debugLog.debug('selectVideoPlayer()', { playMode, codecType, size, framerate });
     if (this.player !== null) {
       this.player.close();
       this.player = null;
@@ -1665,7 +1680,7 @@ export class MediaRouter {
     player.setBufferClearInterval(this.getBufferClearInterval());
     player.boxsize = this.boxsize;
 
-    this.debugLog('selectVideoPlayer() -> tagMode:', this.tagMode);
+    this.debugLog.debug('selectVideoPlayer() -> tagMode:', this.tagMode);
     return player;
   }
 

@@ -3,7 +3,7 @@ import { Size } from '../../../util/Size';
 import { fromHex } from '../../../util/hex';
 import { RTSPOverWebSocketError } from '../../../exceptions/RTSPOverWebSocketError';
 import { YUVWebGLCanvas } from './webgl/YUVWebGLCanvas';
-import { createDebugLogger, type DebugConfig } from '../../../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../../util/debugLog';
 
 type CanvasWithUpdatedFlag = HTMLCanvasElement & { updatedCanvas?: boolean };
 
@@ -87,10 +87,16 @@ export class CanvasRenderer {
   private minimapInfo: { isUpdate: boolean; element: CanvasWithUpdatedFlag | null } = { isUpdate: false, element: null };
   private debugConfig: DebugConfig | null = null;
   /** See util/debugLog.ts. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
     this.debugConfig = config;
     this.debugLog = createDebugLogger(config, 'video', 'CanvasRenderer');
+    // Live-refresh (added 2026-09-04, requested directly by the user): re-applied to whichever
+    // drawer(s) already exist, not just the next one `setCanvas()` constructs -- same reasoning
+    // as CanvasTagPlayer.setDebugConfig()'s own override.
+    const drawerName = this.codecType === 'MJPEG' ? 'Image2DCanvas' : 'YUVWebGLCanvas';
+    this.drawer?.setDebugConfig(config, drawerName);
+    this.mapDrawer?.setDebugConfig(config, drawerName);
   }
 
   // Injectable, matching this codebase's established pattern for
@@ -147,7 +153,7 @@ export class CanvasRenderer {
   }
 
   init(element?: CanvasWithUpdatedFlag): void {
-    this.debugLog('init()');
+    this.debugLog.debug('init()');
     if (element === undefined) {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,

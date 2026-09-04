@@ -102,13 +102,139 @@ the coordinate-mapping math) and [docs/SRS.md](docs/SRS.md) §4.10 for the requi
 ## Debug logging
 
 `<rtsp-over-websocket>` has a `debug` attribute/property for per-component `console.log` tracing — silent by
-default. Pass a JSON object naming which internal component groups should log, e.g.
-`debug='{"network":["RtspClient"],"video":true}'` logs only `RtspClient`, plus every component under `video/`
-(`VideoTagPlayer`/`CanvasTagPlayer`/etc). Recognized top-level keys are `mediaSession`, `network`, `listen`,
-`video`, `backup` (each `true` for everything in that group, or an array of specific class names), plus a `"*":
-true` shortcut for everything. See [docs/player/08-util.md](docs/player/08-util.md)'s `debugLog.ts` entry for the
-full schema and [docs/player/01-elements-interface-exceptions.md](docs/player/01-elements-interface-exceptions.md)
-for the attribute itself.
+default.
+
+### Which components log
+
+Pass a JSON object naming which internal component groups should log:
+
+```html
+<rtsp-over-websocket debug='{"network":["RtspClient"],"video":true}' ...></rtsp-over-websocket>
+```
+
+```js
+// equivalent, set as a property instead of an attribute string
+el.debug = { network: ['RtspClient'], video: true };
+```
+
+This logs only `RtspClient`, plus every component under `video/` (`VideoTagPlayer`/`CanvasTagPlayer`/etc).
+Recognized keys:
+
+| Key | Meaning |
+| --- | --- |
+| `mediaSession`, `network`, `listen`, `video`, `backup` | `true` enables every component in that group; a string array (e.g. `["RtspClient"]`) enables only the named classes |
+| `"*"` | `true` enables every component in every group |
+| `level` | see below — the log-level threshold, default `"info"` |
+
+`vendor/` has no `debug` group — it's plain functions and minified vendor glue, nothing to gate. A component
+not named anywhere in the JSON never logs, regardless of `level`.
+
+### Available component names, by group
+
+Every class below extends a shared base that already wires up `debug` — adding a *new* class under one of
+these groups needs no extra plumbing, it's covered automatically as long as it extends the right base
+(`Session`/`RtpSession` for `mediaSession`, `AudioDecoder` for decoders, `AudioPlayer`/`VideoPlayer` for
+renderers/players).
+
+| Group | Component names |
+| --- | --- |
+| `mediaSession` | `MediaRouter`, `RtpClient`, `MetaDataParser`, `H264Session`, `H265Session`, `VP8Session`, `VP9Session`, `AV1Session`, `MjpegSession`, `G711Session`, `G726Session`, `OPUSSession`, `AACSession`, `AudioTalkSession`, `MetaSession`, `RTCPSession` |
+| `network` | `RtspClient`, `Transport`, `AttributeService`, `SunapiClient`, `SunapiManager`, `SunapiRestClient` |
+| `listen` | `AudioPlayer` (covers both `AudioPlayerGxx` and `AudioPlayerAAC` — see note below), `G711AudioDecoder`, `AACAudioDecoder`, `OPUSAudioDecoder`, `G726_16_AudioDecoder`, `G726_24_AudioDecoder`, `G726_32_AudioDecoder`, `G726_40_AudioDecoder` |
+| `video` | `VideoTagPlayer`, `CanvasTagPlayer`, `CanvasRenderer`, `StepBufferList`, `YUVWebGLCanvas`, `Image2DCanvas` |
+| `backup` | `BackupProvider`, `FileMaker` |
+
+```js
+// Only the H.264 RTP depacketizer and the AAC audio decoder:
+el.debug = { level: 'debug', mediaSession: ['H264Session'], listen: ['AACAudioDecoder'] };
+```
+
+#### `mediaSession` group aliases
+
+`mediaSession`'s array also accepts group aliases instead of (or mixed with) individual class names,
+mirroring the real `mediaSession/videoSession`, `audioSession`, `textSession` directory split:
+
+| Alias | Covers |
+| --- | --- |
+| `videoSession` | `H264Session`, `H265Session`, `VP8Session`, `VP9Session`, `AV1Session`, `MjpegSession` |
+| `audioSession` | `G711Session`, `G726Session`, `OPUSSession`, `AACSession`, `AudioTalkSession` |
+| `textSession` | `MetaSession` |
+| `rtpSession` | every one of the above combined (all three groups) |
+| `rtcpSession` | `RTCPSession` (already nameable directly — this is just another spelling) |
+
+```js
+// Every video codec's depacketizer, without listing all 6 by name:
+el.debug = { level: 'debug', mediaSession: ['videoSession'] };
+
+// A group alias mixes freely with individual class names in the same array:
+el.debug = { level: 'debug', mediaSession: ['videoSession', 'RtpClient'] };
+```
+
+`XmlParser` (network) and `AACAudioDecoder`'s own two startup logs are intentionally excluded from this
+system — `XmlParser` is pure/stateless (no state to gate), and those two `AACAudioDecoder` logs are
+preserved legacy behavior that's always on by design, not part of this feature.
+
+> `listen: ['AudioPlayer']` doesn't distinguish `AudioPlayerGxx` from `AudioPlayerAAC` — the factory that
+> constructs the audio renderer doesn't know which concrete class it's building. In practice this doesn't
+> matter: only `AudioPlayerGxx` is ever actually wired up as the default audio renderer.
+
+### Log levels — `debug` / `info` / `warning` / `error`
+
+Every log call inside an enabled component also carries a level. Only levels at or above the configured
+threshold actually print — `debug` shows everything, `error` shows only errors:
+
+```js
+el.debug = { level: 'debug', video: true }; // show everything from video/ components
+el.debug = { level: 'warning', network: true }; // only warning + error from network/ components
+```
+
+The **default level is `info`** when `level` is omitted. `warning` and `error` print in color —
+`console.warn`/`console.error` with a yellow/red `%c`-styled tag — so they also show up under DevTools'
+own Warnings/Errors console filters; `debug`/`info` print as plain `console.log`.
+
+> Most of this player's current tracing (RTSP handshake steps, MediaSource segment appends, etc.) is written
+> at `debug` severity, so `{"network":["RtspClient"]}` alone shows nothing until you add
+> `{"level":"debug", "network":["RtspClient"]}` — the level threshold and the per-component list are two
+> independent filters that both have to pass.
+
+Every codec session's own `depacketize()` (the RTP-packet-in, elementary-bitstream-out step) follows this
+same two-tier split: `debug` logs one line per raw RTP packet (very verbose — this is where it earns the
+name), `info` logs one line per fully assembled frame/access-unit handed up to the rest of the player. So
+`{"level":"info", "mediaSession":["videoSession"]}` gives one line per decoded video frame, while
+`{"level":"debug", ...}` on the same config also shows every RTP packet that went into assembling it —
+useful for narrowing down a stream that arrives but never assembles into a full frame, versus one where
+individual packets never arrive at all.
+
+### Setting it from the browser console
+
+`window.setRTSPOverWebSocketDebug(config, selector?)` is a global convenience function — no need to find
+or hold a reference to a specific element first. It sets `.debug` on every `<rtsp-over-websocket>` element
+currently matching `selector` (default: every one on the page) and returns how many it updated:
+
+```js
+// Turn on everything, on every player on the page:
+setRTSPOverWebSocketDebug({ level: 'debug' , '*': true });
+// -> 2   (updated 2 elements)
+
+// Just one component group, on one specific player:
+setRTSPOverWebSocketDebug({ network: ['RtspClient'] }, '#my-player');
+
+// A JSON string works too, same shape as the attribute:
+setRTSPOverWebSocketDebug('{"level":"warning","video":true}');
+
+// Clear it:
+setRTSPOverWebSocketDebug(null);
+```
+
+It's attached to `window` automatically as soon as the player module loads — usable with either the ESM
+or IIFE (`rtsp-over-websocket.global.js`) build, no import needed. Same "read once at `play()` time, not
+live-reactive" behavior as the `debug` property itself (see above): call it *before* `play()`, or it takes
+effect on the element's *next* reconnect — it doesn't retroactively reconfigure an already-running
+session's internals. Malformed input throws directly in the console, same validation as the attribute.
+
+See [docs/player/08-util.md](docs/player/08-util.md)'s `debugLog.ts` entry for the full schema/API and
+[docs/player/01-elements-interface-exceptions.md](docs/player/01-elements-interface-exceptions.md) for the
+attribute itself.
 
 ## Further documentation
 

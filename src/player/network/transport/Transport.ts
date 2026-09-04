@@ -3,7 +3,7 @@ import { IntervalTimer } from '../../util/IntervalTimer';
 import { uint8ArrayToString, stringToUint8Array } from '../../util/binaryString';
 import { indexOfMulti } from '../../util/indexOfMulti';
 import { WebsocketStatusCode } from '../WebsocketStatusCode';
-import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../util/debugLog';
 
 const MAGIC_NUMBER = 0x24;
 const CR = 0x0d;
@@ -86,7 +86,7 @@ export class Transport {
   private readonly listeners = new Map<(event: TransportEvent) => void, { type: TransportEventType; listener: (event: TransportEvent) => void }>();
 
   /** See util/debugLog.ts. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
     this.debugLog = createDebugLogger(config, 'network', 'Transport');
   }
@@ -351,7 +351,7 @@ export class Transport {
   }
 
   Connect(): void {
-    this.debugLog('Connect() ->', this.serverAddr);
+    this.debugLog.debug('Connect() ->', this.serverAddr);
     try {
       if (this.websock === null) {
         this.websock = this.createWebSocket(this.serverAddr);
@@ -371,7 +371,7 @@ export class Transport {
   }
 
   Disconnect(): void {
-    this.debugLog('Disconnect() -> readyState:', this.readyState);
+    this.debugLog.debug('Disconnect() -> readyState:', this.readyState);
     try {
       if (this.websock !== null) {
         this.websock.close();

@@ -28,6 +28,7 @@ export class MetaSession extends RtpSession {
   override depacketize(rtspInterleaved: Uint8Array, rtpHeader: Uint8Array, rtpPayload: Uint8Array): void {
     const flags = parseRtpHeaderFlags(rtpHeader);
     let paddingSize = 0;
+    this.debugLog.debug('depacketize()', `bytes=${rtpPayload.length}`, `marker=${flags.markerBit}`);
 
     if (rtspInterleaved[0] !== 0x24) {
       throw new RTSPOverWebSocketError({
@@ -74,6 +75,7 @@ export class MetaSession extends RtpSession {
         },
         rtcp_interleavedId: this.rtcpSession?.interleavedId
       };
+      this.debugLog.info('depacketize() -> metadata complete', `bytes=${inputBufferSub.length}`);
       this.eventMetaCallback?.(streamData);
     }
   }

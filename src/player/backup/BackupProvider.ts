@@ -1,6 +1,6 @@
 import { FileMaker } from './FileMaker';
 import type { VideoStreamData, VideoInfo, AudioStreamData, AudioInfo } from '../mediaSession';
-import { createDebugLogger, type DebugConfig } from '../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../util/debugLog';
 
 export type BackupWorkerFactory = () => Worker;
 
@@ -49,7 +49,7 @@ export class BackupProvider {
    *  a module-level singleton shared across every channel's `BackupProvider` (see its own comment
    *  above), so whichever channel initializes a backup most recently wins for its logging too;
    *  an accepted, pre-existing sharing caveat, not new to this feature. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
     this.debugConfig = config;
     this.debugLog = createDebugLogger(config, 'backup', 'BackupProvider');
@@ -68,7 +68,7 @@ export class BackupProvider {
   };
 
   init(data: BackupInitData): void {
-    this.debugLog('init()');
+    this.debugLog.debug('init()');
     this.backupStatus = BACKUP_STATUS.WAIT;
     this.backupWorker = this.backupWorkerFactory();
     this.backupWorker.onmessage = (event: MessageEvent) => this.backupWorkerMessage(event);

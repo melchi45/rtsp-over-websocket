@@ -2,7 +2,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { fromHex } from '../util/hex';
 import { fastJsonStringfy } from '../util/fastJsonStringfy';
 import { RTSPOverWebSocketError } from '../exceptions/RTSPOverWebSocketError';
-import { createDebugLogger, type DebugConfig } from '../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../util/debugLog';
 
 export interface ParsedMetaData {
   channelId: number;
@@ -71,7 +71,7 @@ export class MetaDataParser {
   }
 
   /** See util/debugLog.ts. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
     this.debugLog = createDebugLogger(config, 'mediaSession', 'MetaDataParser');
   }
@@ -128,7 +128,7 @@ export class MetaDataParser {
       const json = xmlParser.parse(metaData.xml);
       metaData.json = fastJsonStringfy(json);
 
-      this.debugLog('parse() ->', metaData.json);
+      this.debugLog.debug('parse() ->', metaData.json);
       this.callback(metaData);
     } catch (error) {
       throw new RTSPOverWebSocketError({

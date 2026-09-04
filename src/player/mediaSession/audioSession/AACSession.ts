@@ -124,6 +124,7 @@ export class AACSession extends RtpSession {
   override depacketize(rtspInterleaved: Uint8Array, rtpHeader: Uint8Array, rtpPayload: Uint8Array): void {
     const flags = parseRtpHeaderFlags(rtpHeader);
     let paddingSize = 0;
+    this.debugLog.debug('depacketize()', `bytes=${rtpPayload.length}`, `marker=${flags.markerBit}`);
 
     if (rtspInterleaved[0] !== 0x24) {
       throw new RTSPOverWebSocketError({
@@ -176,7 +177,8 @@ export class AACSession extends RtpSession {
     let dataOffset = dataStart;
     let auRtpTimeStamp = rtpTimeStamp;
 
-    for (const auSize of auSizes) {
+    for (let auIndex = 0; auIndex < auSizes.length; auIndex++) {
+      const auSize = auSizes[auIndex];
       if (dataOffset + auSize > dataEnd) break;
       const rawPayload = rtpPayload.subarray(dataOffset, dataOffset + auSize);
       dataOffset += auSize;
@@ -211,6 +213,7 @@ export class AACSession extends RtpSession {
         sampleRate: this.sampleRate
       };
 
+      this.debugLog.info('depacketize() -> AU complete', `bytes=${rawPayload.length}`, `auIndex=${auIndex}`, `auCount=${auSizes.length}`);
       this.eventAudioCallback?.(playMode, streamData, audioInfo);
 
       // Consecutive AUs aggregated into one packet are back-to-back in time

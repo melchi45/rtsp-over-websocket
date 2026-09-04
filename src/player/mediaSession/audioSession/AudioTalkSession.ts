@@ -28,6 +28,7 @@ export class AudioTalkSession extends RtpSession {
   }
 
   override getRTPPacket(buffer: Float32Array): Uint8Array {
+    this.debugLog.debug('getRTPPacket()', `samples=${buffer.length}`, `sequenceNum=${this.sequenceNum + 1}`);
     const rtpPayload = this.audioEncoder.encode(buffer);
     const payloadSize = this.rtpHeaderSize + rtpPayload.length;
 

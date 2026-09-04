@@ -35,6 +35,7 @@ export class VP8Session extends RtpSession {
   override depacketize(rtspInterleaved: Uint8Array, rtpHeader: Uint8Array, rtpPayload: Uint8Array): void {
     const flags = parseRtpHeaderFlags(rtpHeader);
     let paddingSize = 0;
+    this.debugLog.debug('depacketize()', `bytes=${rtpPayload.length}`, `marker=${flags.markerBit}`);
 
     if (rtspInterleaved[0] !== 0x24) {
       throw new RTSPOverWebSocketError({
@@ -142,6 +143,7 @@ export class VP8Session extends RtpSession {
         framerate: this.getFramerate()
       };
 
+      this.debugLog.info('depacketize() -> frame complete', `frameType=${this.frameType}`, `bytes=${inputBufferSub.length}`, `packetSeq=${this.getNumberOfReceivedPacketCount()}`);
       this.eventVideoCallback?.(playMode, streamData, videoInfo);
       this.frameType = 'P';
     }

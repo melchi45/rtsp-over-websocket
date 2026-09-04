@@ -1,6 +1,6 @@
 import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError';
 import { fromHex } from '../../util/hex';
-import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../util/debugLog';
 
 /**
  * Ported from the legacy player’s Network/http/sunapiRestClient — a digest-auth
@@ -71,7 +71,7 @@ export class SunapiRestClient {
   private worker?: Worker;
   private promise?: Promise<void>;
   /** See util/debugLog.ts. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
     this.debugLog = createDebugLogger(config, 'network', 'SunapiRestClient');
   }
@@ -157,7 +157,7 @@ export class SunapiRestClient {
   }
 
   init(deviceInfo: SunapiInitDeviceInfo): void {
-    this.debugLog('init()', { hostname: deviceInfo.hostname, deviceType: deviceInfo.deviceType });
+    this.debugLog.debug('init()', { hostname: deviceInfo.hostname, deviceType: deviceInfo.deviceType });
     if (deviceInfo.deviceType !== undefined && deviceInfo.deviceType !== '' && deviceInfo.deviceType !== null) {
       this.deviceConfig.serverType = deviceInfo.deviceType;
     }

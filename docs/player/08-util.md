@@ -13,6 +13,28 @@ subsystem's documentation — data structures, timing, and math utilities.*
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-09-03 | Added `avcConfigParser.ts` (`parseAvcConfigurationRecord`/`buildAvc1CodecString`) — feeds MJPEG's new `WebCodecsVideoEncoder`-based real-MSE tier. See `05-video-player-rendering.md`, `07-talk-backup-worker.md` §3b, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
 | 2026-09-04 | Added `debugLog.ts` (`DebugConfig`/`DebugTarget`, `parseDebugAttribute`, `validateDebugConfig`, `isDebugEnabled`, `createDebugLogger`) — backs the new `debug` attribute on `RTSPOverWebSocket` (`01-elements-interface-exceptions.md`), consumed by every subsystem's own `debug` setter/`setDebugConfig()` (`02` through `07`). |
+| 2026-09-04 | `createDebugLogger()` now returns a `DebugLogger` (four independently-gated methods -- `debug`/`info`/`warning`/`error`, per new `LogLevel` type) instead of one bare function; added `NOOP_DEBUG_LOGGER` (the shared default) and `isLevelEnabled()`. Every one of the ~44 call sites across `02`–`07` that used to call the bare function directly now calls `.debug(...)` on it -- a mechanical migration, no behavior change to *what* those specific calls do, only to how they're gated (see the new "Level filtering" bullet below). Requested directly by the user. |
+| 2026-09-04 | Added `MEDIA_SESSION_GROUPS` and the group-alias branch in `isDebugEnabled()` -- `debug["mediaSession"]`'s string array now also accepts `"videoSession"`/`"audioSession"`/`"textSession"`/`"rtpSession"`/`"rtcpSession"` alongside individual class names. See the "Method Analysis" entry below and `03-mediaSession-core-video.md`'s matching History row for the live-verification detail. |
+
+---
+
+**Level filtering, added 2026-09-04.** A second, independent gate on top of the per-component enable
+check above: `DebugConfig` gained an optional top-level `level: LogLevel` key
+(`'debug' | 'info' | 'warning' | 'error'`, severity in that order, default `'info'` when omitted --
+global, not per-subsystem). `isLevelEnabled(config, level)` checks `severity(level) >=
+severity(config?.level ?? 'info')`; `createDebugLogger()`'s returned methods each check both
+`isDebugEnabled()` *and* `isLevelEnabled()` before printing -- a component still has to be named (or
+covered by `true`/`"*"`) before *any* of its levels can print, the threshold then filters which of
+that already-enabled component's messages actually show. `debug`/`info` print via plain `console.log`;
+`warning`/`error` print via `console.warn`/`console.error` (so DevTools' own Warnings/Errors filters
+still apply) with a `%c` CSS style coloring the `[componentName]` tag yellow (`#b58900`) / red
+(`#dc2626`) respectively -- `%c` only colors the literal string segment it's applied to, trailing
+object/array args still print in the console's normal inspector styling, an inherent Console API
+limitation. **Real behavior change**: every one of the ~44 pre-existing gated call sites logs at
+`'debug'` severity (they're all today's equivalent of trace output), so as of this change the same
+`debug` config that showed them before now shows nothing by default (`'info'` threshold filters
+`'debug'` out) -- `{"level": "debug", ...}` is required to see them, same as it always effectively was
+before `level` existed as a concept at all.
 
 ---
 
@@ -1037,9 +1059,17 @@ Added 2026-09-03, alongside MJPEG's new `WebCodecsVideoEncoder`-based real-MSE t
     Emscripten glue, confirmed by inspection).
   - `DebugTarget = boolean | string[]` — `true` enables every component in a subsystem; a string
     array enables only the named ones (exact match against a literal component name — see below).
-  - `DebugConfig` — `{[K in DebugSubsystem]?: DebugTarget} & {'*'?: boolean}`, the parsed shape of
-    the `debug` attribute's JSON value. `'*': true` is a shortcut that overrides every individual
-    subsystem key.
+    Under `mediaSession` specifically, an array entry may also be a group alias (added
+    2026-09-04) — see `MEDIA_SESSION_GROUPS` below.
+  - `LogLevel = 'debug' | 'info' | 'warning' | 'error'` (added 2026-09-04) — severity in that
+    order. See the "Level filtering" note below.
+  - `DebugConfig` — `{[K in DebugSubsystem]?: DebugTarget} & {'*'?: boolean, level?: LogLevel}`,
+    the parsed shape of the `debug` attribute's JSON value. `'*': true` is a shortcut that
+    overrides every individual subsystem key; `level` is the global severity threshold (default
+    `'info'`).
+  - `DebugLogger` (added 2026-09-04) — `{debug, info, warning, error}`, each
+    `(...args: unknown[]) => void`. What every consuming class's logger field actually holds.
+    `NOOP_DEBUG_LOGGER` is the shared all-four-no-op default.
 
 - **Method Analysis**
   - `parseDebugAttribute(raw: string): DebugConfig` — `JSON.parse`s the attribute string, then
@@ -1047,18 +1077,48 @@ Added 2026-09-03, alongside MJPEG's new `WebCodecsVideoEncoder`-based real-MSE t
     malformed JSON or an invalid shape — `RTSPOverWebSocket.ts`'s `attributeChangedCallback`
     `case 'debug'` catches this and re-throws as `RTSPOverWebSocketError` (`0x0414`, the same
     generic invalid-attribute-value code every other malformed attribute case already uses).
-  - `validateDebugConfig(value: unknown): DebugConfig` — shared by `parseDebugAttribute` and the
+  - `validateDebugConfig(value: unknown): DebugConfig` — shared by `parseDebugAttribute`, the
     `debug` property setter (which also accepts an already-parsed object directly, not just a JSON
-    string). Rejects a non-object top level, an unrecognized key (anything other than the five
-    subsystem names or `'*'`), or a subsystem value that isn't a boolean or string array.
+    string), and `setRTSPOverWebSocketDebug()` (see below). Rejects a non-object top level, an
+    unrecognized key (anything other than the five subsystem names, `'*'`, or `'level'`), a
+    subsystem value that isn't a boolean or string array, or a `level` value outside the four
+    `LogLevel` strings.
   - `isDebugEnabled(config, subsystem, componentName): boolean` — resolves whether one component
-    should log: `false` for a `null`/`undefined` config (the default, attribute never set), `true`
-    if `config['*']`, else the subsystem's own boolean-or-array resolution.
-  - `createDebugLogger(config, subsystem, componentName): (...args: unknown[]) => void` — returns
-    either a no-op or a `console.log`-backed function prefixed `[componentName]`. This is the
-    **only** function in the whole feature that touches `console.log` directly (one
-    `eslint-disable-next-line no-console`) — every consuming class across `02`–`07` just calls the
-    function this returns, so none of them need their own lint exception.
+    should log at all: `false` for a `null`/`undefined` config (the default, attribute never set),
+    `true` if `config['*']`, else the subsystem's own boolean-or-array resolution. For `subsystem
+    === 'mediaSession'` specifically (added 2026-09-04), a literal-name miss falls through to a
+    second check against `MEDIA_SESSION_GROUPS` — `true` if any array entry is a recognized group
+    alias whose expansion includes `componentName`. Independent of `level` — see `isLevelEnabled`.
+  - `MEDIA_SESSION_GROUPS` (added 2026-09-04, not exported — internal to `isDebugEnabled`) — a
+    lookup table mapping `"videoSession"`/`"audioSession"`/`"textSession"`/`"rtcpSession"`/
+    `"rtpSession"` to the real class names each covers, mirroring the `mediaSession/videoSession`,
+    `audioSession`, `textSession`, `RtpSession.ts`, `RTCPSession.ts` directory/inheritance split
+    documented in `03-mediaSession-core-video.md`/`04-mediaSession-audio-text.md`. `"rtpSession"`
+    is the union of the other three (every concrete `RtpSession` subclass); `"rtcpSession"` is
+    `RTCPSession` alone, kept purely for naming symmetry with `"rtpSession"` since it's already
+    directly nameable. No schema change was needed for this — `debug["mediaSession"]` stays a
+    plain `string[]`, an alias is just another valid string in it, so `validateDebugConfig` didn't
+    need touching. Requested directly by the user; verified live against a real camera
+    (`debug["mediaSession"] = ["videoSession", ...]` correctly gated `H264Session`'s tracing
+    without naming it directly — see `03`'s History for the exact counts).
+  - `isLevelEnabled(config, level): boolean` (added 2026-09-04) — `true` when `level`'s severity
+    meets or exceeds `config?.level ?? 'info'`. A second, independent gate checked alongside
+    `isDebugEnabled` — both must pass for a given call to actually print.
+  - `createDebugLogger(config, subsystem, componentName): DebugLogger` — returns
+    `NOOP_DEBUG_LOGGER` if the component isn't enabled, else a real `DebugLogger` whose four
+    methods each check `isLevelEnabled` before dispatching: `debug`/`info` → `console.log`;
+    `warning` → `console.warn` with a `%c` yellow (`#b58900`) style on the `[componentName]` tag;
+    `error` → `console.error` with `%c` red (`#dc2626`). This is the **only** function in the whole
+    feature that touches `console.*` directly (three `eslint-disable-next-line no-console`
+    comments) — every consuming class across `02`–`07` just calls the `DebugLogger` this returns,
+    so none of them need their own lint exception.
+  - `setRTSPOverWebSocketDebug(config, selector = 'rtsp-over-websocket'): number` (added
+    2026-09-04, defined in `elements/RTSPOverWebSocket.ts`, not this file, but documented here
+    since it's the same feature's public surface) — console/devtools convenience: sets `.debug` on
+    every currently-mounted matching element, returns how many were updated. Attached to `window`
+    as a module side effect right after `customElements.define()`. Accepts the same JSON-string-
+    or-object duality as the `debug` property. Same "read once at `play()` time" semantics as
+    `debug` itself. See README.md's "Debug logging" § "Setting it from the browser console".
 
 - **Design notes** (why this shape, not something else — see `MEMORY.md` for the full narrative)
   - **Setters, not constructor parameters.** Every class this feature touches already takes only

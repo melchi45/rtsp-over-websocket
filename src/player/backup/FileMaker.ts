@@ -1,6 +1,6 @@
 import { saveAs } from 'file-saver';
 import { fromHex } from '../util/hex';
-import { createDebugLogger, type DebugConfig } from '../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../util/debugLog';
 
 export type ZipWorkerFactory = () => Worker;
 
@@ -18,7 +18,7 @@ export class FileMaker {
   private zipPassword: string | null = null;
   private compressCallback: ((errorCode: number) => void) | null = null;
   /** See util/debugLog.ts. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
     this.debugLog = createDebugLogger(config, 'backup', 'FileMaker');
   }
@@ -95,7 +95,7 @@ export class FileMaker {
   }
 
   processMessage(target: string, data: unknown): void {
-    this.debugLog('processMessage()', target);
+    this.debugLog.debug('processMessage()', target);
     if (target === 'body') {
       this.addBody(data);
     } else if (target === 'mainHeader') {

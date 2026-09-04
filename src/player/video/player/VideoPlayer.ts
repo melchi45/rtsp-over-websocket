@@ -2,7 +2,7 @@ import { CircularTypedArrayQueue } from '../../util/CircularTypedArrayQueue';
 import { Median } from '../../util/Median';
 import { fromHex } from '../../util/hex';
 import type { VideoStreamData, VideoInfo, AudioStreamData, AudioInfo, WaitingEvent } from '../../mediaSession';
-import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../util/debugLog';
 
 export interface NetworkStateErrorEvent {
   channelId: number;
@@ -64,7 +64,7 @@ export abstract class VideoPlayer {
    *  (`'VideoTagPlayer'`/`'CanvasTagPlayer'`) -- `MediaRouter.selectVideoPlayer()` always knows
    *  which one it just built (from its own `tagMode` decision), same reasoning as
    *  `Session.setDebugConfig()`. */
-  protected debugLog: (...args: unknown[]) => void = () => {};
+  protected debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   protected debugConfig: DebugConfig | null = null;
   setDebugConfig(config: DebugConfig | null, componentName: string): void {
     this.debugConfig = config;

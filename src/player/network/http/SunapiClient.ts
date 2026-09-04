@@ -3,7 +3,7 @@ import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError'
 import { AuthError } from '../../exceptions/AuthError';
 import { fromHex } from '../../util/hex';
 import { HTTP_STATUS_CODES } from './HttpStatusCode';
-import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../util/debugLog';
 
 /**
  * Ported from the legacy player’s Network/http/sunapiClient — digest-auth REST
@@ -147,7 +147,7 @@ export class SunapiClient {
   private authInfo: DigestCache | null | undefined = null;
   private authCount = 0;
   /** See util/debugLog.ts. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
     this.debugLog = createDebugLogger(config, 'network', 'SunapiClient');
   }
@@ -669,7 +669,7 @@ export class SunapiClient {
     isText?: boolean,
     withoutSeqId?: boolean
   ): void {
-    this.debugLog('get()', uri);
+    this.debugLog.debug('get()', uri);
     let resolvedUri = encodeURI(uri);
     if (typeof jsonData !== 'undefined') {
       resolvedUri += this.jsonToText(jsonData);
@@ -699,7 +699,7 @@ export class SunapiClient {
     fileData: unknown,
     specialHeaders: SunapiSpecialHeader[] | null | undefined
   ): void {
-    this.debugLog('post()', uri);
+    this.debugLog.debug('post()', uri);
     let resolvedUri = uri;
     if (typeof jsonData !== 'undefined') {
       resolvedUri += this.jsonToText(jsonData);

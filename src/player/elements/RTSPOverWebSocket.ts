@@ -788,20 +788,21 @@ export class RTSPOverWebSocket extends HTMLElement {
       case 'debug': {
         if (newValue === null || typeof newValue === 'undefined') {
           this._debug = null;
-          break;
-        }
-        try {
-          this._debug = parseDebugAttribute(newValue);
-        } catch (error) {
-          throw new RTSPOverWebSocketError({
-            channelId: this.channel,
-            elementId: this.getAttribute('id') ?? undefined,
-            errorCode: fromHex('0x0414'),
-            place: 'RTSPOverWebSocket.ts:debug',
-            message: (error as Error).message
-          });
+        } else {
+          try {
+            this._debug = parseDebugAttribute(newValue);
+          } catch (error) {
+            throw new RTSPOverWebSocketError({
+              channelId: this.channel,
+              elementId: this.getAttribute('id') ?? undefined,
+              errorCode: fromHex('0x0414'),
+              place: 'RTSPOverWebSocket.ts:debug',
+              message: (error as Error).message
+            });
+          }
         }
         this.info.debug = this._debug;
+        this.pushDebugConfigToRunningPlayers();
         break;
       }
       default:
@@ -2388,6 +2389,25 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
     }
     this.info.debug = this._debug;
+    this.pushDebugConfigToRunningPlayers();
+  }
+
+  /** Live-refresh (added 2026-09-04, requested directly by the user after finding a mid-stream
+   *  `setRTSPOverWebSocketDebug(null)` had no visible effect): the `debug` attribute case and the
+   *  `debug` property setter above both call this after updating `_debug`/`info.debug`, so an
+   *  already-running `player`/`backupplayer` (a `StreamPlayer`, whose own `set debug()` cascades
+   *  the update down into `mediaRouter`/`rtspClient`/`rtpClient` and everything *they* already
+   *  hold -- see those classes' own `set debug()` comments) picks up the change immediately
+   *  instead of only on the next `play()`/reconnect. A no-op when neither is currently playing --
+   *  `info.debug` is still updated either way, so a *future* `play()` still picks up the value
+   *  the original "read once at play() time" design already relied on. */
+  private pushDebugConfigToRunningPlayers(): void {
+    if (this.player !== null) {
+      this.player.debug = this._debug;
+    }
+    if (this.backupplayer !== null) {
+      this.backupplayer.debug = this._debug;
+    }
   }
 
   // ================= internal update / DOM-builder methods =================
@@ -6519,6 +6539,41 @@ export class RTSPOverWebSocket extends HTMLElement {
 }
 
 customElements.define('rtsp-over-websocket', RTSPOverWebSocket);
+
+/**
+ * Console/devtools convenience for the `debug` attribute/property (see its own doc comment
+ * above and README.md's "Debug logging" section): sets `.debug` on every currently-mounted
+ * `<rtsp-over-websocket>` element matching `selector` (default: every one on the page), so a
+ * developer can type e.g. `setRTSPOverWebSocketDebug({level: 'debug', network: ['RtspClient']})`
+ * directly into the browser console instead of having to find/reference a specific element
+ * instance by hand first. Accepts a JSON string (same shape as the attribute) or an already-
+ * parsed object -- the same duality the `debug` property setter itself accepts. Returns how many
+ * elements were updated, a quick console-visible confirmation that `selector` actually matched
+ * something.
+ *
+ * Same "read once at `play()` time, not live-reactive" semantics as the `debug` property itself
+ * -- this only takes effect for elements that haven't called `play()` yet, or on their next
+ * reconnect; it does not retroactively reconfigure an already-running session's internals
+ * (`MediaRouter`/`RtpClient`/already-constructed `*Session` objects keep whatever `debug` config
+ * they were built with). Requested directly by the user.
+ */
+export function setRTSPOverWebSocketDebug(config: DebugConfig | string | null | undefined, selector = 'rtsp-over-websocket'): number {
+  const parsed = config === null || typeof config === 'undefined' ? null : typeof config === 'string' ? parseDebugAttribute(config) : validateDebugConfig(config);
+  const elements = document.querySelectorAll<RTSPOverWebSocket>(selector);
+  elements.forEach((el) => {
+    el.debug = parsed;
+  });
+  return elements.length;
+}
+
+// Attached to `window` as a module side effect so it's callable directly from the browser
+// console regardless of whether the host page uses the ESM or IIFE (`rtsp-over-websocket.global.js`,
+// where every named export is also reachable via the `RTSPOverWebSocketLib` global) build --
+// guarded the same way the constructor's own `typeof window !== 'undefined'` checks are, for
+// non-browser (SSR/test) environments where this module might still get evaluated.
+if (typeof window !== 'undefined') {
+  (window as unknown as { setRTSPOverWebSocketDebug: typeof setRTSPOverWebSocketDebug }).setRTSPOverWebSocketDebug = setRTSPOverWebSocketDebug;
+}
 
 // ---- callback event payload shapes (structural, matching legacy's loosely
 // typed callback parameters) ----

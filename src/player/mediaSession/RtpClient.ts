@@ -13,7 +13,7 @@ import { OPUSSession } from './audioSession/OPUSSession';
 import { AACSession } from './audioSession/AACSession';
 import { MetaSession } from './textSession/MetaSession';
 import type { SdpInfoEntry } from '../network/rtspOverWebsocket';
-import { createDebugLogger, type DebugConfig } from '../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../util/debugLog';
 
 export type MediaRouterMessageType = 'close' | 'backup' | 'stepPlay' | 'bufferFree' | 'audioBackup';
 
@@ -72,7 +72,7 @@ export class RtpClient {
   /** See util/debugLog.ts -- the modernized, opt-in replacement for the always-on legacy
    *  debug/info logger calls this class's own doc comment above notes were dropped during the
    *  TS port. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
 
   constructor(private readonly mediaRouter: MediaRouterLike) {
     this.channelId = mediaRouter.channelId;
@@ -80,10 +80,22 @@ export class RtpClient {
   }
 
   /** See util/debugLog.ts. Applied to every session this class constructs from here on (session-
-   *  construction happens in `sendSdpInfo()`, always after `debug` would already be set). */
+   *  construction happens in `sendSdpInfo()`, always after `debug` would already be set) --
+   *  and, live-refresh (added 2026-09-04, requested directly by the user after finding a mid-
+   *  stream `setRTSPOverWebSocketDebug(null)` had no visible effect), re-applied to every session
+   *  already sitting in `sessionArray` too, via each one's own remembered
+   *  `debugComponentName` (`Session.ts`). */
   set debug(config: DebugConfig | null) {
     this._debugConfig = config;
     this.debugLog = createDebugLogger(config, 'mediaSession', 'RtpClient');
+    for (const session of this.sessionArray) {
+      if (session.debugComponentName !== null) {
+        session.setDebugConfig(config, session.debugComponentName);
+      }
+    }
+    if (this.audioTalkSession !== null) {
+      this.audioTalkSession.setDebugConfig(config, 'AudioTalkSession');
+    }
   }
   get debug(): DebugConfig | null {
     return this._debugConfig;
@@ -130,7 +142,7 @@ export class RtpClient {
   }
 
   sendSdpInfo(sdpInfo: SdpInfoEntry[]): void {
-    this.debugLog(
+    this.debugLog.debug(
       'sendSdpInfo()',
       sdpInfo.map((e) => e.codecName)
     );
@@ -329,6 +341,7 @@ export class RtpClient {
   sendRtpData(rtspinterleave: Uint8Array, rtpheader: Uint8Array, rtpPacketArray: Uint8Array): void {
     const interleavedId = rtspinterleave[1];
     const session = this.sessionArray[interleavedId];
+    this.debugLog.debug('sendRtpData()', `interleavedId=${interleavedId}`, `bytes=${rtpPacketArray.length}`, `sessionFound=${typeof session !== 'undefined'}`);
     if (typeof session !== 'undefined') {
       session.depacketize(rtspinterleave, rtpheader, rtpPacketArray);
     }

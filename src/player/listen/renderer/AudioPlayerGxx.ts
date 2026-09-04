@@ -57,12 +57,25 @@ export class AudioPlayerGxx extends AudioPlayer {
   private readLength = 0;
   private sourceNode: AudioBufferSourceNode | null = null;
   private audioDecoder: AudioDecoderLike | null = null;
+  /** The literal name last passed to `audioDecoder.setDebugConfig()` -- remembered so `set debug()`
+   *  below can live-refresh an already-constructed decoder (added 2026-09-04, requested directly
+   *  by the user) without needing to re-derive which decoder class is currently active. */
+  private audioDecoderDebugName = '';
 
   constructor(
     private readonly audioContextFactory: () => AudioContext = () => new AudioContext(),
     private readonly aacAudioDecoderFactory: AACAudioDecoderFactory = defaultAACAudioDecoderFactory
   ) {
     super();
+  }
+
+  /** Live-refresh (added 2026-09-04, requested directly by the user): `audioInit()` wires
+   *  `debugConfig` into `audioDecoder` once, at (re)initialization -- overridden here so a later
+   *  `set debug()` call (`MediaRouter`'s own live-refresh, see its `set debug()`) reaches an
+   *  already-constructed decoder too, via the name `audioInit()` already remembered. */
+  override set debug(config: DebugConfig | null) {
+    super.debug = config;
+    this.audioDecoder?.setDebugConfig?.(config, this.audioDecoderDebugName);
   }
 
   private static isAppleSafari(): boolean {
@@ -158,30 +171,29 @@ export class AudioPlayerGxx extends AudioPlayer {
   }
 
   override audioInit(codecType: string, codecMime: string | undefined, bitrate: number | undefined, volume: number): boolean {
-    this.debugLog('audioInit()', { codecType, codecMime, bitrate, volume });
+    this.debugLog.debug('audioInit()', { codecType, codecMime, bitrate, volume });
     this.nextStartTime = 0;
 
     this.audioDecoder = null;
     this.codecInfo.samplingRate = 8000;
-    let debugComponentName = '';
     if (codecType === 'G711') {
       const decoder = new G711AudioDecoder();
       decoder.mime = codecMime as G711Mime;
       this.audioDecoder = decoder;
-      debugComponentName = 'G711AudioDecoder';
+      this.audioDecoderDebugName = 'G711AudioDecoder';
     } else if (codecType === 'AAC') {
       this.audioDecoder = this.aacAudioDecoderFactory();
       this.codecInfo.samplingRate = 16000;
-      debugComponentName = 'AACAudioDecoder';
+      this.audioDecoderDebugName = 'AACAudioDecoder';
     } else if (codecType === 'OPUS') {
       this.audioDecoder = new OPUSAudioDecoder();
       this.codecInfo.samplingRate = 48000;
-      debugComponentName = 'OPUSAudioDecoder';
+      this.audioDecoderDebugName = 'OPUSAudioDecoder';
     } else {
       this.audioDecoder = new G726xAudioDecoder(Number(bitrate) as 16 | 24 | 32 | 40) as unknown as AudioDecoderLike;
-      debugComponentName = `G726_${bitrate}_AudioDecoder`;
+      this.audioDecoderDebugName = `G726_${bitrate}_AudioDecoder`;
     }
-    this.audioDecoder.setDebugConfig?.(this.debugConfig, debugComponentName);
+    this.audioDecoder.setDebugConfig?.(this.debugConfig, this.audioDecoderDebugName);
 
     // NOTE: write-only for the G.726x path — G726xAudioDecoder has no
     // `channelId` field (confirmed: audioDecoderG726x never references

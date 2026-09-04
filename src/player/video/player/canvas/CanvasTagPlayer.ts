@@ -6,6 +6,7 @@ import type { BufferControlMessage } from '../../../mediaSession/videoSession/Bu
 import type { VideoStreamData, VideoInfo, WaitingEvent } from '../../../mediaSession';
 import { RTSPOverWebSocketError } from '../../../exceptions/RTSPOverWebSocketError';
 import { fromHex } from '../../../util/hex';
+import type { DebugConfig } from '../../../util/debugLog';
 
 export type DecoderWorkerFactory = () => Worker;
 
@@ -116,6 +117,20 @@ export class CanvasTagPlayer extends VideoPlayer {
       new Worker(new URL('../../../worker/videoDecoder/decoderWorker.ts', import.meta.url))
   ) {
     super();
+  }
+
+  /** Live-refresh (added 2026-09-04, requested directly by the user): `init()` wires
+   *  `debugConfig` into `renderer`/`stepVideoList` once, at construction -- overridden here so a
+   *  later `setDebugConfig()` call (`MediaRouter`'s own live-refresh, see its `set debug()`)
+   *  reaches whichever of the two already exist too, not just the base `VideoPlayer` fields. */
+  override setDebugConfig(config: DebugConfig | null, componentName: string): void {
+    super.setDebugConfig(config, componentName);
+    if (this.renderer !== null) {
+      this.renderer.debug = config;
+    }
+    if (this.stepVideoList !== null) {
+      this.stepVideoList.debug = config;
+    }
   }
 
   private createDecoderWorker(codecType: string, videoInfo: VideoInfo, playMode: string): void {
@@ -309,7 +324,7 @@ export class CanvasTagPlayer extends VideoPlayer {
     this.canvasElement = element.cloneNode(true) as HTMLCanvasElement;
     (element.parentNode as ParentNode).replaceChild(this.canvasElement, element);
 
-    this.debugLog('init()');
+    this.debugLog.debug('init()');
     this.renderer = new CanvasRenderer();
     this.renderer.channelId = this.channelId;
     this.renderer.debug = this.debugConfig;

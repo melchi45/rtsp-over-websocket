@@ -4,7 +4,7 @@ import { SunapiException } from './SunapiException';
 import { fromHex } from '../../util/hex';
 import { SunapiClient, type SunapiClientDeviceInfo, type SunapiClientError, type DigestCache } from './SunapiClient';
 import { HTTP_STATUS_CODES } from './HttpStatusCode';
-import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../util/debugLog';
 
 /**
  * Ported from the legacy player’s Network/http/sunapiManager — a thin
@@ -229,7 +229,7 @@ export class SunapiManager {
   /** See util/debugLog.ts -- console.log tracing gate, unrelated to `this.device.debug` above
    *  (a pre-existing SUNAPI device-config flag mirroring the camera's own `?debug=` query param,
    *  not this feature). */
-  private debugLog: (...args: unknown[]) => void = () => {};
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
     this.debugLog = createDebugLogger(config, 'network', 'SunapiManager');
   }
@@ -239,17 +239,17 @@ export class SunapiManager {
   }
 
   attach(v: SunapiClientLike): void {
-    this.debugLog('attach()');
+    this.debugLog.debug('attach()');
     this._sunapiClient = v;
   }
 
   dettach(): void {
-    this.debugLog('dettach()');
+    this.debugLog.debug('dettach()');
     this._sunapiClient = null;
   }
 
   init(info: SunapiManagerDeviceInfo): Promise<unknown> {
-    this.debugLog('init()', { hostname: info.hostname, port: info.port, protocol: info.protocol });
+    this.debugLog.debug('init()', { hostname: info.hostname, port: info.port, protocol: info.protocol });
     this.device = info;
 
     // Only sync device.protocol to the host page's own protocol when that

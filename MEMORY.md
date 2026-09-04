@@ -4139,3 +4139,225 @@ threw, nothing failed a type check) that a live check was the only way to actual
 re-checking whenever a new dispatcher/factory call site is added to this propagation chain in the
 future, since "compiles clean" alone doesn't prove a `debug` setter is actually being called anywhere
 along the real path.
+
+## `debug` attribute gained log levels (debug/info/warning/error) + colored warning/error output
+
+Requested directly by the user as a follow-up to the `debug` attribute above, same session: split
+tracing output by severity, filterable via a threshold (default `'info'`), with `warning`/`error`
+rendered in yellow/red.
+
+`createDebugLogger()` (`util/debugLog.ts`) now returns a `DebugLogger` — `{debug, info, warning,
+error}`, each independently checking two gates: the pre-existing per-component `isDebugEnabled()`
+check, and a new `isLevelEnabled()` severity check against `DebugConfig`'s new top-level `level` key
+(`'debug' | 'info' | 'warning' | 'error'`, global not per-subsystem, default `'info'`). Both gates must
+pass — a component still has to be named in the config before *any* of its levels print; `level` then
+filters which of that already-enabled component's messages actually show. `debug`/`info` stay plain
+`console.log`; `warning`/`error` moved to `console.warn`/`console.error` (so DevTools' own built-in
+Warnings/Errors filters still work) with a `%c`-styled `[ComponentName]` tag — yellow `#b58900`, red
+`#dc2626`. `NOOP_DEBUG_LOGGER` is the new shared all-four-no-op default every class's logger field
+starts as.
+
+**Real, intentional behavior change**: every one of the ~44 call sites the earlier `debug` feature
+already had across `network`/`mediaSession`/`listen`/`video`/`backup` logs at `'debug'` severity (they
+were all written as trace-level output). With the new default threshold being `'info'`, the *exact
+same* `debug` config that showed those lines before this change now shows nothing unless `"level":
+"debug"` is added explicitly. This is the correct, intended behavior per the user's own spec ("default
+는 info") — flagged here because it's easy to mistake for a regression when re-testing an example from
+before this change without also adding the level key.
+
+**Migration approach**: mechanical, not a redesign. Every field previously typed
+`(...args: unknown[]) => void = () => {}` became `DebugLogger = NOOP_DEBUG_LOGGER` (18 files); every
+bare `this.debugLog(...)` call became `this.debugLog.debug(...)` (44 call sites, same 17 files plus 4
+that only call through an inherited base-class field) — done with a small Python script matching those
+two exact patterns, not by hand-editing each site, since the transformation was uniform and mechanical.
+One follow-up fix needed after the mechanical pass: `AttributeService.ts` has several plain (non-arrow)
+`function (response) {...}`/`function (error) {...}` callbacks where `this` doesn't refer to the class
+instance (`SunapiClient.get()`'s success/fail callback params) — these already had a
+`const debugLog = this.debugLog.bind(this);` local capture from the original feature (working around
+the same `this`-binding issue) that needed updating to `this.debugLog.debug.bind(this)` once
+`this.debugLog` became an object instead of a bare function; `tsc -b` caught all 8 instances at once
+(`Property 'bind' does not exist on type 'DebugLogger'`) since `.bind()` only exists on the old
+function shape.
+
+No new `info`/`warning`/`error`-level call sites were added in this pass — this only built the
+*capability*. Revisiting which of the 44 migrated `debug`-level calls are actually warning/error-shaped
+(e.g. `RtspClient`'s various `connectionCbFunc()`/`RtspResponseHandler()` branches) and promoting them
+is a natural follow-up, not done here since it wasn't asked for.
+
+Verified end-to-end via the same live-browser technique as the original `debug` feature (Playwright
+against the demo page, unroutable test address): `{level: 'debug', network: [...]}` reproduced the
+exact same four lines the original feature's own verification showed; `{level: 'warning', ...}` and no
+`level` at all (default `'info'`) both correctly showed zero lines, since every existing call is
+`'debug'`-severity.
+
+## `window.setRTSPOverWebSocketDebug()` — console-callable global for the `debug` attribute
+
+Requested directly by the user, same session: a global function settable from the browser DevTools
+console, so `debug` can be turned on for whatever `<rtsp-over-websocket>` element(s) are already on the
+page without first finding/holding a reference to one.
+
+`setRTSPOverWebSocketDebug(config, selector = 'rtsp-over-websocket')` (defined and exported from
+`elements/RTSPOverWebSocket.ts`, right after `customElements.define()`) resolves `config` through the
+same `parseDebugAttribute`/`validateDebugConfig` duality the `debug` property setter already uses
+(JSON string or pre-parsed object, both accepted), then does
+`document.querySelectorAll(selector).forEach(el => el.debug = parsed)` and returns the match count —
+a quick, console-visible confirmation `selector` actually found something. Attached to `window` as a
+module side effect (`typeof window !== 'undefined'` guarded, matching the constructor's own SSR-safety
+pattern) immediately after the custom-element registration, so it's available the moment the player
+module loads, regardless of whether the host page uses the ESM or IIFE build — no import ceremony
+needed to use it from a console.
+
+**Deliberately not** a live mid-session reconfiguration tool: same "read once at `play()` time, not
+live-reactive" semantics as the `debug` property itself (documented in the entry above and originally
+in the first `debug`-feature entry) — it only affects elements that haven't called `play()` yet, or
+takes effect on their *next* reconnect. Extending it to retroactively push into an already-running
+session's `MediaRouter`/`RtpClient`/already-constructed `*Session` objects was considered and
+deliberately not built — it would mean `RtpClient` (and every other dispatcher) tracking and
+re-applying to every object it's ever handed out, a materially bigger change than what was asked for,
+and inconsistent with the property's own already-documented "read once" contract.
+
+Verified live (Playwright against the demo page): `typeof window.setRTSPOverWebSocketDebug ===
+'function'` immediately on page load; returns `0` before any element is mounted; returns `1` and
+correctly sets `el.debug` after `#btn-connect`; both the JSON-string and object forms work; a
+malformed `level` throws the same validation error the attribute itself would; `null` clears it back
+to `no elements enabled`.
+
+## `depacketize()` had no debug tracing at all — added, real per-packet vs. per-frame split
+
+The user pointed out, correctly, that the `debug` feature's per-component *enable* gates
+(`MediaRouter`/`RtpClient`/`MetaDataParser`/all 13 `*Session` classes) had nothing to actually show
+even when turned on — none of them had a single trace call inside `depacketize()`, the method that
+does the real work (turning raw RTP packets into elementary-bitstream frames). Same root gap in two
+other places: `RTCPSession.ts` and `MjpegSession.ts` both carry their own doc comments stating "the
+legacy player's debug logger calls were not reproduced" during the original TS port — this session's
+work is literally what those comments were describing as missing, just properly gated this time
+instead of always-on.
+
+Design: two severities, matching the two genuinely distinct events in this pipeline. `debug` = one
+line per raw RTP packet (`RtpClient.sendRtpData()`, and each `*Session.depacketize()`'s own entry) —
+the highest-frequency, most-verbose tier, matching `LogLevel`'s own "debug shows everything"
+contract. `info` = one line per fully assembled unit handed to the next layer up
+(`eventVideoCallback`/`eventAudioCallback`/`eventMetaCallback`/`eventRtcpCallback` firing, and
+`MediaRouter.handleVideoData()`/`handleAudioData()` receiving it) — the default threshold, so simply
+enabling a component with no explicit `level` already gives a meaningful "one line per frame"
+summary without RTP-packet noise. For codecs where one packet *is* already one complete frame
+(G.711/G.726/Opus — RFC 3551/7587, no reassembly), only the `info`-level call was added, right
+before the callback fires; a separate `debug`-level "packet arrived" line would have been pure
+duplication for these, unlike the NAL/OBU/AU-reassembling codecs where packet-in and frame-out are
+genuinely different moments.
+
+Two structural exceptions handled deliberately, not by rote copy-paste of the H264Session pattern:
+`AudioTalkSession` has no `depacketize()` override at all (it's the outbound talk-back path, no
+incoming RTP) — traced `getRTPPacket()` instead, the real per-outbound-packet method.
+`MjpegSession` offloads actual frame reassembly to a Worker (`mjpegDepacketizeWorker.ts`), so its
+`depacketize()` only queues raw packets and periodically posts a batch to the worker — `debug` traces
+that queueing, but the `info`-level "frame complete" trace had to go in `handleWorkerMessage()`
+instead, the actual point a decoded frame comes back (asynchronously, from the worker's `onmessage`).
+
+**Verified live against the real camera** (same device/credentials as this session's earlier `debug`
+attribute verification): `debug["mediaSession"] = ["videoSession", "RtpClient", "MediaRouter"]` at
+`level: "debug"` against a real ~4s H.264 Live capture produced 1308 packet-level `[H264Session]`
+lines and exactly 61 frame-complete lines; `RtpClient.sendRtpData()` logged 1367 times (matching the
+packet volume through the dispatcher); `MediaRouter.handleVideoData()` logged exactly 61 times —
+matching `H264Session`'s own frame count 1:1, confirming one call reaches `MediaRouter` per
+assembled frame, no more, no less. Frame content was real, sane data (`frameType=I`,
+`bytes=108795`, `codecType=H264`), not just correctly-shaped noise.
+
+## `mediaSession` group aliases (`videoSession`/`audioSession`/`textSession`/`rtpSession`/`rtcpSession`)
+
+Requested directly by the user, immediately after the `depacketize()` tracing above: rather than
+listing all 6 video codec classes (or all 5 audio classes) by hand every time, allow
+`debug["mediaSession"]`'s array to also accept a group alias matching the real
+`mediaSession/videoSession`, `audioSession`, `textSession` directory split (plus `rtpSession` for
+"all of the above combined" and `rtcpSession` for symmetry, even though `RTCPSession` was already
+directly nameable on its own).
+
+Deliberately kept as a **flat-array convenience, not a schema change**: `DebugTarget` stays
+`boolean | string[]`, `DebugConfig`'s shape is untouched, and `validateDebugConfig` needed zero
+edits — an alias is just another valid string in the same array a literal class name would go in,
+so the existing "any string passes validation, unknown ones just never match anything" behavior
+already covers it for free. Only `isDebugEnabled()` changed: a literal-name miss now falls through
+to a second check against a new `MEDIA_SESSION_GROUPS` lookup table before returning `false`. A
+nested-object schema (`mediaSession: {rtpSession: {video: true, ...}}`) was considered and rejected
+as unnecessary complexity — the flat-array-with-aliases approach gives the same practical
+expressiveness (any subset, at any granularity, mixed with individual names in one array) without a
+new type shape, new validation code, or inconsistency with how the other four subsystems work.
+
+**Verified live against the real camera**, in the same session as the `depacketize()` tracing above:
+`debug["mediaSession"] = ["videoSession", ...]` (no `H264Session` named directly) correctly gated
+`H264Session`'s new tracing — identical line counts to naming `H264Session` explicitly, confirming
+the alias expansion works against real, not just unit-tested, matching.
+
+## `debug` config now genuinely live-reactive, not just "read once at play() time"
+
+Reported directly by the user, hitting exactly the limitation this file's own earlier `debug`-feature
+entries already called out on purpose: `setRTSPOverWebSocketDebug({level: 'debug', '*': true})`
+before playback started worked, but `setRTSPOverWebSocketDebug(null)` *during* playback had no
+effect — packet-level tracing kept printing. The original design (see the `window.
+setRTSPOverWebSocketDebug()` entry above) explicitly chose not to build this, reasoning it would
+mean every dispatcher tracking and re-pushing into everything it's ever handed out — a real cost
+that seemed disproportionate at design time. Once a real user actually hit the gap in practice
+rather than it being a hypothetical, that cost was worth paying — this entry is that build.
+
+**The mechanism, one link at a time** — every class in the propagation chain that already had a
+`debug`/`setDebugConfig()` setter now also re-pushes into whatever it's *already holding*, not just
+what it hands out to future callers:
+- `RTSPOverWebSocket.ts`'s `debug` attribute case and property setter both now call a new private
+  `pushDebugConfigToRunningPlayers()`, which sets `.debug` on `this.player`/`this.backupplayer` if
+  either already exists (previously: only ever wrote `this.info.debug`, read again only on the
+  *next* `play()`).
+- `StreamPlayer.ts`'s `debugConfig` field is no longer `readonly` — it's now a real `set debug()`
+  that re-applies to `mediaRouter`/`rtspClient` unconditionally and `rtpClient` if already
+  constructed (it's built lazily in `startStreaming()`, may not exist yet even mid-setup).
+- `MediaRouter.ts`'s `set debug()` now also re-applies to `_videoPlayer`/`audioPlayer`/
+  `audioTalker`/`backupProvider`/`metaDataParser`, whichever already exist — `_videoPlayer` via
+  `setDebugConfig(config, tagMode === 'video' ? 'VideoTagPlayer' : 'CanvasTagPlayer')` (MediaRouter
+  already knows this from its own `tagMode`, same reasoning as the original wiring), the rest via
+  their own plain `.debug =` setters.
+- `RtpClient.ts`'s `set debug()` now also re-applies to every session already sitting in
+  `sessionArray` (`session.setDebugConfig(config, session.debugComponentName)`) and
+  `audioTalkSession` if present. This needed a small addition to `Session.ts`: a new public
+  `debugComponentName` field that `setDebugConfig()` remembers, so `RtpClient` doesn't need its own
+  parallel bookkeeping of which literal name belongs to which already-constructed session.
+- `RtspClient.ts`'s `set debug()` now also re-applies to `this.transport` if already constructed.
+- Two more hops handled for full-depth coverage, not just the hot path the user's own repro hit:
+  `CanvasTagPlayer` overrides `setDebugConfig()` to also re-push into `renderer`/`stepVideoList`;
+  `CanvasRenderer`'s own `set debug()` re-pushes into `drawer`/`mapDrawer` (recomputing the
+  `Image2DCanvas`-vs-`YUVWebGLCanvas` name from its own `codecType`, same as the original wiring);
+  `AudioPlayerGxx` overrides `set debug()` to re-push into `audioDecoder`, remembering the active
+  decoder's name in a new `audioDecoderDebugName` field (promoted from what used to be a local
+  variable inside `audioInit()`) so the override doesn't need to re-derive it.
+
+**Deliberately not changed**: `VideoTagPlayer` has no child components needing this treatment (it
+doesn't construct any sub-object that holds its own debug logger, unlike `CanvasTagPlayer`), so it
+needed no override. `AudioPlayerAAC` (the unwired sibling of `AudioPlayerGxx` — see this file's
+earlier `debug`-feature entry) wasn't touched for the same reason it was already out of scope: never
+actually constructed by the default factory.
+
+**How to apply going forward**: any *new* class added to this propagation chain that itself holds a
+reference to an already-constructed child with its own debug logger needs this same
+"also re-push to existing children" treatment in its own `debug` setter/`setDebugConfig()`
+override from the start — it's the same silent, untestable-by-`tsc` gap the original `debug`
+feature's own StreamPlayer→rtspClient/Transport gap turned out to be (see that entry above): nothing
+throws, nothing fails a type check, the only symptom is "I turned it off and it's still logging,"
+exactly what the user reported here.
+
+**Verified live against the real camera, reproducing the user's exact repro**: `#btn-connect` →
+`setRTSPOverWebSocketDebug({level: 'debug', '*': true})` → `#btn-play` → wait 3s (well past the
+initial handshake, a genuinely already-running stream) → measured 2294 `[H264Session]`/`[RtpClient]`/
+`[MediaRouter]` lines in the next 2s window → `setRTSPOverWebSocketDebug(null)` (returned `1`,
+confirming it found and updated the live element) → measured the *same* 2s window immediately after:
+**0** lines, while `el.readyState` stayed `1` (`PLAYING`) throughout, confirming the stream itself
+was never disrupted by the toggle — only the tracing stopped, immediately, mid-stream, exactly as
+asked.
+
+**Follow-up question from the user, verified the same way**: does switching `level` (not clearing
+`debug` entirely) also take effect immediately mid-stream — e.g. `{level: 'debug', '*': true}` →
+`{level: 'info', '*': true}` while still playing? Same mechanism, so yes by construction (every
+`debug` setter call rebuilds a fresh `DebugLogger` via `createDebugLogger(newConfig, ...)`
+regardless of *what* changed in the new config, level included), confirmed live rather than just
+reasoned from the code: level `'debug'` measured 1879 lines in a 2s window (1843 raw-packet +
+36 frame-complete); switching to level `'info'` mid-stream (still enabled, `'*': true` unchanged)
+measured 39 lines in the next 2s window — **all 39 frame-complete, zero raw-packet** — proving the
+severity *comparison* itself re-evaluates against the fresh config, not just the on/off enable
+state. `readyState` stayed `1` throughout here too.

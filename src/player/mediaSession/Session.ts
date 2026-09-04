@@ -1,4 +1,4 @@
-import { createDebugLogger, type DebugConfig } from '../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../util/debugLog';
 
 export interface TimeData {
   timestamp: number | null;
@@ -32,9 +32,16 @@ export class Session {
    *  `'H264Session'`) -- `RtpClient.ts` always knows exactly which class it just constructed at
    *  each call site, so it supplies this directly rather than this base class trying to derive it
    *  via `constructor.name` (unsafe under a minified production build, see that file's comment
-   *  for the full reasoning). One implementation here covers every `*Session` subclass. */
-  protected debugLog: (...args: unknown[]) => void = () => {};
+   *  for the full reasoning). One implementation here covers every `*Session` subclass.
+   *
+   * `debugComponentName` (public, added 2026-09-04) remembers the last name this instance was
+   * configured with, so `RtpClient`'s own `debug` setter can *live-refresh* an already-constructed
+   * session (`session.setDebugConfig(newConfig, session.debugComponentName)`) without needing to
+   * re-derive or re-store which literal name belongs to which session itself. */
+  protected debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
+  debugComponentName: string | null = null;
   setDebugConfig(config: DebugConfig | null, componentName: string): void {
+    this.debugComponentName = componentName;
     this.debugLog = createDebugLogger(config, 'mediaSession', componentName);
   }
 

@@ -17,8 +17,11 @@ export interface SdesEntry {
 
 /**
  * Ported from the legacy player’s MediaSession/rtcpSession.
- * Debug-only logger calls from the legacy file are not reproduced (see
- * Design doc, Layer 5 notes) — they carried no behavior, only console noise.
+ * The legacy file's always-on debug logger calls were originally not
+ * reproduced (see Design doc, Layer 5 notes) — they carried no behavior,
+ * only console noise. Reintroduced 2026-09-04, this time gated behind the
+ * `debug` attribute (`util/debugLog.ts`, `mediaSession: ["RTCPSession"]`)
+ * instead of always-on.
  */
 export class RTCPSession extends Session {
   sessionId: string | null = null;
@@ -84,16 +87,19 @@ export class RTCPSession extends Session {
             timezone: this.timeData!.timezone
           }
         };
+        this.debugLog.info('parse() -> sender report', `packetCount=${data.packetCount}`, `octetCount=${data.octetCount}`);
         this.eventRtcpCallback?.(data);
         break;
       }
       case RTCP_TYPE.RTCP_SDES: {
         const ptr = 4;
         this.ssrc.set(rtcpData.subarray(ptr, ptr + 4), 0);
-        this.sdesParse(rtcpData.subarray(ptr + 4, rtcpData.length));
+        const sdesEntries = this.sdesParse(rtcpData.subarray(ptr + 4, rtcpData.length));
+        this.debugLog.debug('parse() -> SDES', `entries=${sdesEntries.length}`);
         break;
       }
       case RTCP_TYPE.RTCP_BYE:
+        this.debugLog.info('parse() -> BYE');
         if (this.type === 'video') {
           throw new RTCPError({
             channelId: this.channelId,
@@ -107,6 +113,7 @@ export class RTCPSession extends Session {
   }
 
   override depacketize(_rtspInterleaved: unknown, rtcpHeader: Uint8Array, rtpPayload: Uint8Array): void {
+    this.debugLog.debug('depacketize()', `bytes=${rtcpHeader.length + rtpPayload.length}`);
     const data = new Uint8Array(rtcpHeader.length + rtpPayload.length);
     data.set(rtcpHeader, 0);
     data.set(rtpPayload, rtcpHeader.length);

@@ -71,6 +71,7 @@ export class H265Session extends RtpSession {
   override depacketize(rtspInterleaved: Uint8Array, rtpHeader: Uint8Array, rtpPayload: Uint8Array): void {
     const flags = parseRtpHeaderFlags(rtpHeader);
     let paddingSize = 0;
+    this.debugLog.debug('depacketize()', `bytes=${rtpPayload.length}`, `marker=${flags.markerBit}`);
 
     // NOTE: unlike H264Session, the legacy h265Session checks raw bits here
     // instead of the computed csrcCount/padding flags — in particular the
@@ -218,6 +219,7 @@ export class H265Session extends RtpSession {
         framerate: this.getFramerate()
       };
 
+      this.debugLog.info('depacketize() -> frame complete', `frameType=${frameType}`, `bytes=${inputBufferSub.length}`, `packetSeq=${this.getNumberOfReceivedPacketCount()}`);
       this.eventVideoCallback?.(playMode, streamData, videoInfo);
     }
   }

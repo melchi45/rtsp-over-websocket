@@ -4,7 +4,7 @@ import { RtspStatusCode } from '../RtspStatusCode';
 import { DigestGenerator, type AuthenticateData, type ParsedWwwAuthenticate } from '../../util/DigestGenerator';
 import { fromHex, decimalToHex } from '../../util/hex';
 import { Transport } from '../transport/Transport';
-import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
+import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../util/debugLog';
 
 /**
  * Ported from the legacy player’s Network/RTSPoverWebsocket/rtspClient.
@@ -323,12 +323,18 @@ export class RtspClient {
   autoconnection?: boolean;
   rtpClient?: RtpClientLike;
   /** See util/debugLog.ts. Also applied to the `Transport` this class constructs internally (see
-   *  `Connect()`), which is why the raw config is kept, not just the resolved logger function. */
-  private debugLog: (...args: unknown[]) => void = () => {};
+   *  `Connect()`), which is why the raw config is kept, not just the resolved logger function --
+   *  and, live-refresh (added 2026-09-04, requested directly by the user), re-applied to
+   *  `this.transport` immediately if one already exists, not just the next one `Connect()`
+   *  constructs. */
+  private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   private debugConfig: DebugConfig | null = null;
   set debug(config: DebugConfig | null) {
     this.debugConfig = config;
     this.debugLog = createDebugLogger(config, 'network', 'RtspClient');
+    if (this.transport !== null) {
+      this.transport.debug = config;
+    }
   }
 
   constructor(transportFactory: TransportFactory = (serverAddr) => new Transport(serverAddr)) {
@@ -921,7 +927,7 @@ export class RtspClient {
   }
 
   private formDigestAuthHeader(uri: string): void {
-    this.debugLog('formDigestAuthHeader() called -> currentState:', this.currentState, ' has pw:', typeof this.pw === 'string' && this.pw !== '', ' has sunapiClient:', this.sunapiClient !== null && typeof this.sunapiClient !== 'undefined');
+    this.debugLog.debug('formDigestAuthHeader() called -> currentState:', this.currentState, ' has pw:', typeof this.pw === 'string' && this.pw !== '', ' has sunapiClient:', this.sunapiClient !== null && typeof this.sunapiClient !== 'undefined');
     const digestInfo = this.digestGenerator.getDigestInfoInWwwAuthenticate(this.wwwAuthenticate!);
     const data: AuthenticateData & { Nc?: string; Cnonce?: string } = {
       Method: this.currentState.toUpperCase(),
@@ -982,7 +988,7 @@ export class RtspClient {
           this.SendUnauthorizedRtspCmd();
         },
         (errorCode) => {
-          this.debugLog('formDigestAuthHeader() -> sunapiClient.get() digest-challenge request failed, errorCode:', errorCode);
+          this.debugLog.debug('formDigestAuthHeader() -> sunapiClient.get() digest-challenge request failed, errorCode:', errorCode);
           this.sunapiErrorResponse(errorCode);
         },
         '',
@@ -1252,7 +1258,7 @@ export class RtspClient {
     }
 
     const rtspResponseMsg = this.parseRtspResponse(stringMessage);
-    this.debugLog('RtspResponseHandler() -> currentState:', this.currentState, ' ResponseCode:', rtspResponseMsg.ResponseCode, ' unahtuorizedCount:', this.unahtuorizedCount);
+    this.debugLog.debug('RtspResponseHandler() -> currentState:', this.currentState, ' ResponseCode:', rtspResponseMsg.ResponseCode, ' unahtuorizedCount:', this.unahtuorizedCount);
     if (rtspResponseMsg.ContentBase) {
       this.ContentBase = rtspResponseMsg.ContentBase;
     }
@@ -1382,7 +1388,7 @@ export class RtspClient {
       });
     }
 
-    this.debugLog('RtspResponseHandler() -> non-200/401 ResponseCode', rtspResponseMsg.ResponseCode, 'at currentState:', this.currentState, '-> calling clearTransport()');
+    this.debugLog.debug('RtspResponseHandler() -> non-200/401 ResponseCode', rtspResponseMsg.ResponseCode, 'at currentState:', this.currentState, '-> calling clearTransport()');
     if (this.transport !== null) {
       this.clearTransport();
     }
@@ -1751,12 +1757,12 @@ export class RtspClient {
         }
       }
     } else if (this.currentState === 'Playing' && this.nextState === 'Teardown') {
-      this.debugLog('RtspResponseHandler: TEARDOWN response matched (Playing+Teardown) -> clearTransport()');
+      this.debugLog.debug('RtspResponseHandler: TEARDOWN response matched (Playing+Teardown) -> clearTransport()');
       if (this.transport !== null) {
         this.clearTransport();
       }
     } else {
-      this.debugLog('RtspResponseHandler: fell into generic else branch -> currentState:', this.currentState, ' nextState:', this.nextState);
+      this.debugLog.debug('RtspResponseHandler: fell into generic else branch -> currentState:', this.currentState, ' nextState:', this.nextState);
       if (this.transport !== null) {
         this.clearTransport();
       }
@@ -1784,7 +1790,7 @@ export class RtspClient {
   }
 
   connectionCbFunc(type: TransportConnectionStatus, statusObject: unknown): void {
-    this.debugLog('connectionCbFunc() called -> type:', type, ' currentState:', this.currentState, ' has responseDisconnectCallback:', this.responseDisconnectCallback !== null);
+    this.debugLog.debug('connectionCbFunc() called -> type:', type, ' currentState:', this.currentState, ' has responseDisconnectCallback:', this.responseDisconnectCallback !== null);
     try {
       const status = statusObject as { getStatusCode(): number | string; getName(): string; getDescription(): string; getObject?: () => unknown };
       if (type === 'open') {
@@ -1920,7 +1926,7 @@ export class RtspClient {
       }
 
       if (typeof this.responseDisconnectCallback !== 'undefined' && this.responseDisconnectCallback !== null) {
-        this.debugLog('connectionCbFunc() -> firing responseDisconnectCallback');
+        this.debugLog.debug('connectionCbFunc() -> firing responseDisconnectCallback');
         const data: RtspDisconnectResult = {
           current: this.currentState,
           next: this.nextState,
@@ -1930,7 +1936,7 @@ export class RtspClient {
         this.responseDisconnectCallback(data);
         this.responseDisconnectCallback = null;
       } else {
-        this.debugLog('connectionCbFunc() -> no responseDisconnectCallback to fire');
+        this.debugLog.debug('connectionCbFunc() -> no responseDisconnectCallback to fire');
       }
     } catch (error) {
       console.error('[RtspClient] connectionCbFunc() threw:', error);
@@ -2019,7 +2025,7 @@ export class RtspClient {
   }
 
   Disconnect(response?: RtspDisconnectCallback): void {
-    this.debugLog('Disconnect() called -> currentState:', this.currentState, ' transport readyState:', this.transport?.readyState);
+    this.debugLog.debug('Disconnect() called -> currentState:', this.currentState, ' transport readyState:', this.transport?.readyState);
     this.responseDisconnectCallback = response ?? null;
     if (typeof this.transport !== 'undefined' && this.transport !== null && this.transport.readyState === Transport.OPEN) {
       if (this.currentState === 'Playing' || this.currentState === 'Pause' || this.currentState === 'Setup') {
@@ -2056,7 +2062,7 @@ export class RtspClient {
   }
 
   clearTransport(): void {
-    this.debugLog('clearTransport() called -> currentState:', this.currentState, ' transport readyState:', this.transport?.readyState);
+    this.debugLog.debug('clearTransport() called -> currentState:', this.currentState, ' transport readyState:', this.transport?.readyState);
     if (this.teardownWatchdogHandler !== null) {
       clearTimeout(this.teardownWatchdogHandler);
       this.teardownWatchdogHandler = null;
