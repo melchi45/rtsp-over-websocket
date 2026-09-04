@@ -1153,7 +1153,7 @@ export class VideoTagPlayer extends VideoPlayer {
         endTime = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1) * 1;
 
         if (
-          (videoElement.currentTime < endTime - this.getMaxInstantPlayback() || (endTime !== 0 && videoElement.currentTime === 0)) &&
+          (videoElement.currentTime < endTime - this.getMaxInstantPlaybackTime() || (endTime !== 0 && videoElement.currentTime === 0)) &&
           endTime - this.defaultDelay > 0 &&
           this.userPaused === false &&
           this.localSpeedValue === 1
@@ -1165,7 +1165,7 @@ export class VideoTagPlayer extends VideoPlayer {
           // (`parseInt(String(currentTime), 10)`) on *every* 'waiting'
           // event reaching this branch -- which is the normal, expected
           // case (a brief buffering pause nowhere near the
-          // getMaxInstantPlayback()-sized backlog the branch above handles),
+          // getMaxInstantPlaybackTime()-sized backlog the branch above handles),
           // not just some rare recovery scenario. Confirmed live via native
           // <video> event tracing: a real MJPEG Playback session hitting
           // ordinary 'waiting' pauses every ~0.5-0.9s (its own segments
@@ -2194,13 +2194,13 @@ export class VideoTagPlayer extends VideoPlayer {
       const startTime = sourceBuffer.buffered.start(sourceBuffer.buffered.length - 1) * 1;
       const endTime = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1) * 1;
 
-      if (Math.abs(endTime - startTime) > this.getMaxInstantPlayback()) {
+      if (Math.abs(endTime - startTime) > this.getMaxInstantPlaybackTime()) {
         if (!sourceBuffer.updating) {
           if (this.boxsize !== 1) {
-            const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlayback());
+            const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime());
             sourceBuffer.remove(0, removeEnd);
           } else {
-            const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlayback()) - 60;
+            const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime()) - 60;
             if (removeEnd > 0) {
               sourceBuffer.remove(0, removeEnd);
             }

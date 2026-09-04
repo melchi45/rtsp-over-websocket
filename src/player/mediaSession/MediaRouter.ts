@@ -207,7 +207,7 @@ export interface VideoPlayerLike {
   setFrameRate(fr: number): void;
   setRequestTime?(t: unknown): void;
   setDefaultDelay(d: number): void;
-  setMaxInstantPlayback(t: number): void;
+  setMaxInstantPlaybackTime(t: number): void;
   setBufferClearInterval(i: number): void;
 }
 
@@ -1625,7 +1625,7 @@ export class MediaRouter {
     if (this.captureCallback) player.addEventListener('capture', this.captureCallback);
     if (this.instantplaybackCallback) player.addEventListener('instantplayback', this.instantplaybackCallback);
 
-    player.setMaxInstantPlayback(this.getMaxInstantPlaybackTime());
+    player.setMaxInstantPlaybackTime(this.getMaxInstantPlaybackTime());
     player.setBufferClearInterval(this.getBufferClearInterval());
     player.boxsize = this.boxsize;
 

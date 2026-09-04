@@ -222,11 +222,11 @@ export abstract class VideoPlayer {
     return this.frameRate;
   }
 
-  setMaxInstantPlayback(thresholdInstantPlaybackTime: number): void {
+  setMaxInstantPlaybackTime(thresholdInstantPlaybackTime: number): void {
     this.minRemainTime = thresholdInstantPlaybackTime;
   }
 
-  getMaxInstantPlayback(): number {
+  getMaxInstantPlaybackTime(): number {
     return this.minRemainTime;
   }
 
