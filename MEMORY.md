@@ -4361,3 +4361,45 @@ reasoned from the code: level `'debug'` measured 1879 lines in a 2s window (1843
 measured 39 lines in the next 2s window — **all 39 frame-complete, zero raw-packet** — proving the
 severity *comparison* itself re-evaluates against the fresh config, not just the on/off enable
 state. `readyState` stayed `1` throughout here too.
+
+## Default `level` changed from `'info'` to `'warning'`, plus a real miscategorization fix
+
+Reported directly by the user, immediately after the level-switching verification above: even with
+the level feature working correctly, the *default* (`'info'` when `level` is omitted) was still too
+noisy in practice — every trace call in this codebase is `debug` or `info` severity, so `'info'` as
+the default meant simply naming a component (with no `level` at all) produced a steady stream of
+output. The user specifically called out `G711Session` and `H264Session` as the worst offenders,
+and separately asked why `G711Session`'s `depacketize()` output showed up at `info` when
+conceptually it felt like `debug`-level detail.
+
+Two changes, addressing both symptoms:
+
+1. **`DEFAULT_LOG_LEVEL` (`util/debugLog.ts`) changed from `'info'` to `'warning'`.** Since no
+   `warning`/`error`-level call sites exist anywhere in this codebase yet, the practical effect is
+   that enabling a component with no explicit `level` now produces **zero** output, not just
+   reduced output — silent-by-default in practice, matching what a debug tool's resting state
+   should feel like. Getting to `debug`/`info` output now always requires an explicit `"level"` key,
+   which is itself a form of "I actually want to see this" confirmation.
+2. **`G711Session`/`G726Session`/`OPUSSession` reclassified from `info` to `debug`** — this was a
+   real design mistake, not just a symptom of the default being wrong. These three codecs have no
+   packet-vs-frame distinction (one RTP packet is already one complete frame, RFC 3551/7587), so the
+   original reasoning was "the single per-packet trace is also the frame-complete event, promote it
+   to `info`." But that reasoning only looked at *semantics*, not *frequency* — G.711/G.726/Opus
+   packetize far more often than video frames arrive (typically ~50/s vs. ~15-30/s), so tagging that
+   line `info` made these three audio codecs noisier at the "meaningful milestone" tier than the
+   video codecs' actual frame-complete events, despite carrying strictly less reassembly
+   information per line. Fixed by keeping `depacketize()`-level output uniformly `debug` regardless
+   of whether a codec happens to have a separate frame-assembly step — `AACSession`'s own
+   `debug`(packet)/`info`(AU) split is correct and unaffected, since AAC genuinely has two distinct
+   moments per packet.
+
+**How to apply**: when deciding whether a trace call is `debug` or `info`-worthy, frequency matters
+as much as semantic meaning — a technically-accurate "this is the assembled unit" justification
+isn't enough on its own if that unit arrives at packet-rate rather than frame-rate. The right
+question is "would enabling this component at the default non-`debug` threshold produce a
+reasonable amount of output," not just "is this conceptually a complete unit." Verified via updated
+unit tests (`debugLog.test.ts`'s `isLevelEnabled`/`createDebugLogger` suites now assert the
+`'warning'` default) — `tsc -b` and the full suite (115 tests) both clean; not re-verified live
+against the real camera for this specific change (a live check would just confirm "zero packet
+noise, same as before" for a default that's simple, well-covered by existing unit tests, and
+mechanically identical to the already-live-verified level-switching behavior from the entry above).

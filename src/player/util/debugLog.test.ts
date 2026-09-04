@@ -132,11 +132,11 @@ describe('isDebugEnabled', () => {
 });
 
 describe('isLevelEnabled', () => {
-  it('defaults the threshold to "info" when config/level is absent', () => {
+  it('defaults the threshold to "warning" when config/level is absent', () => {
     expect(isLevelEnabled(null, 'debug')).toBe(false);
     expect(isLevelEnabled({}, 'debug')).toBe(false);
-    expect(isLevelEnabled(null, 'info')).toBe(true);
-    expect(isLevelEnabled({}, 'info')).toBe(true);
+    expect(isLevelEnabled(null, 'info')).toBe(false);
+    expect(isLevelEnabled({}, 'info')).toBe(false);
     expect(isLevelEnabled(null, 'warning')).toBe(true);
     expect(isLevelEnabled(null, 'error')).toBe(true);
   });
@@ -187,14 +187,14 @@ describe('createDebugLogger', () => {
   it('the per-component gate and the level threshold are independent -- enabled component still filters by level', () => {
     const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    // default threshold is 'info': debug is enabled-but-filtered, info/warning/error print.
+    // default threshold is 'warning': debug/info are enabled-but-filtered, only warning/error print.
     const logger = createDebugLogger({ video: ['VideoTagPlayer'] }, 'video', 'VideoTagPlayer');
     logger.debug('suppressed');
-    logger.info('shown');
-    logger.warning('shown too');
-    expect(consoleLog).toHaveBeenCalledTimes(1);
-    expect(consoleLog).toHaveBeenCalledWith('[VideoTagPlayer]', 'shown');
+    logger.info('suppressed too');
+    logger.warning('shown');
+    expect(consoleLog).not.toHaveBeenCalled();
     expect(consoleWarn).toHaveBeenCalledTimes(1);
+    expect(consoleWarn).toHaveBeenCalledWith('%c[VideoTagPlayer]', 'color:#b58900;font-weight:bold', 'shown');
     consoleLog.mockRestore();
     consoleWarn.mockRestore();
   });

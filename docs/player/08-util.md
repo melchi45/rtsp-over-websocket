@@ -15,14 +15,16 @@ subsystem's documentation — data structures, timing, and math utilities.*
 | 2026-09-04 | Added `debugLog.ts` (`DebugConfig`/`DebugTarget`, `parseDebugAttribute`, `validateDebugConfig`, `isDebugEnabled`, `createDebugLogger`) — backs the new `debug` attribute on `RTSPOverWebSocket` (`01-elements-interface-exceptions.md`), consumed by every subsystem's own `debug` setter/`setDebugConfig()` (`02` through `07`). |
 | 2026-09-04 | `createDebugLogger()` now returns a `DebugLogger` (four independently-gated methods -- `debug`/`info`/`warning`/`error`, per new `LogLevel` type) instead of one bare function; added `NOOP_DEBUG_LOGGER` (the shared default) and `isLevelEnabled()`. Every one of the ~44 call sites across `02`–`07` that used to call the bare function directly now calls `.debug(...)` on it -- a mechanical migration, no behavior change to *what* those specific calls do, only to how they're gated (see the new "Level filtering" bullet below). Requested directly by the user. |
 | 2026-09-04 | Added `MEDIA_SESSION_GROUPS` and the group-alias branch in `isDebugEnabled()` -- `debug["mediaSession"]`'s string array now also accepts `"videoSession"`/`"audioSession"`/`"textSession"`/`"rtpSession"`/`"rtcpSession"` alongside individual class names. See the "Method Analysis" entry below and `03-mediaSession-core-video.md`'s matching History row for the live-verification detail. |
+| 2026-09-04 | `DEFAULT_LOG_LEVEL` changed from `'info'` to `'warning'` — reported directly by the user as "too many logs" after live-camera testing (`'info'` meant enabling any component produced a steady stream of per-frame output, since every call site is `debug`/`info` severity and none are `warning`/`error` yet). Practical effect: enabling a component with no explicit `level` now shows nothing at all by default, not just "less." See `04-mediaSession-audio-text.md` for the matching `G711Session`/`G726Session`/`OPUSSession` reclassification. |
 
 ---
 
 **Level filtering, added 2026-09-04.** A second, independent gate on top of the per-component enable
 check above: `DebugConfig` gained an optional top-level `level: LogLevel` key
-(`'debug' | 'info' | 'warning' | 'error'`, severity in that order, default `'info'` when omitted --
-global, not per-subsystem). `isLevelEnabled(config, level)` checks `severity(level) >=
-severity(config?.level ?? 'info')`; `createDebugLogger()`'s returned methods each check both
+(`'debug' | 'info' | 'warning' | 'error'`, severity in that order, default `'warning'` when omitted --
+global, not per-subsystem; changed from an initial default of `'info'` the same day, see the History
+table above). `isLevelEnabled(config, level)` checks `severity(level) >=
+severity(config?.level ?? 'warning')`; `createDebugLogger()`'s returned methods each check both
 `isDebugEnabled()` *and* `isLevelEnabled()` before printing -- a component still has to be named (or
 covered by `true`/`"*"`) before *any* of its levels can print, the threshold then filters which of
 that already-enabled component's messages actually show. `debug`/`info` print via plain `console.log`;
@@ -31,10 +33,10 @@ still apply) with a `%c` CSS style coloring the `[componentName]` tag yellow (`#
 (`#dc2626`) respectively -- `%c` only colors the literal string segment it's applied to, trailing
 object/array args still print in the console's normal inspector styling, an inherent Console API
 limitation. **Real behavior change**: every one of the ~44 pre-existing gated call sites logs at
-`'debug'` severity (they're all today's equivalent of trace output), so as of this change the same
-`debug` config that showed them before now shows nothing by default (`'info'` threshold filters
-`'debug'` out) -- `{"level": "debug", ...}` is required to see them, same as it always effectively was
-before `level` existed as a concept at all.
+`'debug'` or `'info'` severity (they're all today's equivalent of trace output; no `'warning'`/
+`'error'`-level call sites exist anywhere in this codebase yet) -- so as of the `'warning'` default,
+enabling a component with no explicit `level` shows **nothing at all** until `{"level": "info"}` or
+`{"level": "debug"}` is added explicitly.
 
 ---
 

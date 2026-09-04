@@ -26,17 +26,25 @@ export type DebugTarget = boolean | string[];
 
 /** Severity order: `debug` < `info` < `warning` < `error`. A call at level `L` only prints once a
  *  component is enabled (see `isDebugEnabled`) AND `L`'s severity meets or exceeds the configured
- *  `level` threshold (default `'info'` when omitted -- see `DEFAULT_LOG_LEVEL`). This is a second,
- *  independent gate layered on top of the per-component enable check, not a replacement for it: an
- *  `error`-level call from a component that was never named in the `debug` config still prints
- *  nothing. Unrelated to, and doesn't change, this codebase's existing raw `console.error(...)`
- *  calls for real errors elsewhere -- those stay untouched and always-on, as before this feature
- *  existed. */
+ *  `level` threshold (default `'warning'` when omitted -- see `DEFAULT_LOG_LEVEL`). This is a
+ *  second, independent gate layered on top of the per-component enable check, not a replacement
+ *  for it: an `error`-level call from a component that was never named in the `debug` config
+ *  still prints nothing. Unrelated to, and doesn't change, this codebase's existing raw
+ *  `console.error(...)` calls for real errors elsewhere -- those stay untouched and always-on, as
+ *  before this feature existed.
+ *
+ *  Default changed from `'info'` to `'warning'` 2026-09-04 (requested directly by the user,
+ *  reported live as "too many logs" — every existing call site is `debug` or `info` severity, so
+ *  `'info'` as the default meant enabling any component immediately produced a steady stream of
+ *  per-frame output). No `warning`/`error`-level call sites exist anywhere in this codebase yet,
+ *  so as of this change the *practical* effect of the default is: enabling a component with no
+ *  explicit `level` produces zero output until `"level": "info"` or `"debug"` is added explicitly
+ *  — silent-by-default in practice, not just in the absence of any `debug` config at all. */
 export type LogLevel = 'debug' | 'info' | 'warning' | 'error';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warning', 'error'];
 const LOG_LEVEL_SEVERITY: Record<LogLevel, number> = { debug: 0, info: 1, warning: 2, error: 3 };
-const DEFAULT_LOG_LEVEL: LogLevel = 'info';
+const DEFAULT_LOG_LEVEL: LogLevel = 'warning';
 
 export type DebugConfig = {
   [K in DebugSubsystem]?: DebugTarget;
@@ -180,7 +188,7 @@ export function isDebugEnabled(config: DebugConfig | null | undefined, subsystem
   return false;
 }
 
-/** True if `level`'s severity meets or exceeds `config`'s configured threshold (default `'info'`
+/** True if `level`'s severity meets or exceeds `config`'s configured threshold (default `'warning'`
  *  when `config`/`config.level` is absent). Independent of, and always checked alongside,
  *  `isDebugEnabled()` -- see `LogLevel`'s own doc comment for why these are two separate gates. */
 export function isLevelEnabled(config: DebugConfig | null | undefined, level: LogLevel): boolean {

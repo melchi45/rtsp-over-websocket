@@ -188,22 +188,30 @@ el.debug = { level: 'debug', video: true }; // show everything from video/ compo
 el.debug = { level: 'warning', network: true }; // only warning + error from network/ components
 ```
 
-The **default level is `info`** when `level` is omitted. `warning` and `error` print in color —
+The **default level is `warning`** when `level` is omitted. `warning` and `error` print in color —
 `console.warn`/`console.error` with a yellow/red `%c`-styled tag — so they also show up under DevTools'
 own Warnings/Errors console filters; `debug`/`info` print as plain `console.log`.
 
-> Most of this player's current tracing (RTSP handshake steps, MediaSource segment appends, etc.) is written
-> at `debug` severity, so `{"network":["RtspClient"]}` alone shows nothing until you add
-> `{"level":"debug", "network":["RtspClient"]}` — the level threshold and the per-component list are two
-> independent filters that both have to pass.
+> As of this writing, every existing trace call in this player is `debug` or `info` severity — no
+> `warning`/`error`-level call sites exist yet. So in practice, enabling a component with no explicit
+> `level` produces **zero output** until you add `"level": "info"` (coarse, one line per meaningful event)
+> or `"level": "debug"` (verbose, one line per raw RTP packet) — silent by default, not just quiet. This
+> was changed from a default of `info` after real live-camera testing showed it flooding the console
+> (thousands of lines per second across `RtspClient`/`MediaRouter`/every enabled codec session).
 
-Every codec session's own `depacketize()` (the RTP-packet-in, elementary-bitstream-out step) follows this
-same two-tier split: `debug` logs one line per raw RTP packet (very verbose — this is where it earns the
-name), `info` logs one line per fully assembled frame/access-unit handed up to the rest of the player. So
+Every codec session's own `depacketize()` (the RTP-packet-in, elementary-bitstream-out step) follows a
+two-tier split: `debug` logs one line per raw RTP packet (very verbose — this is where it earns the
+name), `info` logs one line per fully assembled frame/access-unit handed up to the rest of the player —
+but only for codecs where a packet and a frame are genuinely different moments (H.264/H.265/VP8/VP9/AV1/
+MJPEG's NAL/OBU reassembly, AAC's multi-access-unit packets). For G.711/G.726/Opus, one RTP packet *is*
+already one complete frame (no reassembly step), so there's nothing to split — that single per-packet
+line is `debug`-level too, not promoted to `info` just because it also happens to be "the frame." So
 `{"level":"info", "mediaSession":["videoSession"]}` gives one line per decoded video frame, while
 `{"level":"debug", ...}` on the same config also shows every RTP packet that went into assembling it —
 useful for narrowing down a stream that arrives but never assembles into a full frame, versus one where
-individual packets never arrive at all.
+individual packets never arrive at all. `{"level":"info", "mediaSession":["audioSession"]}`, by contrast,
+shows nothing for G.711/G.726/Opus specifically (only `AACSession`'s per-access-unit lines) — use
+`"level":"debug"` to see per-packet audio activity.
 
 ### Setting it from the browser console
 

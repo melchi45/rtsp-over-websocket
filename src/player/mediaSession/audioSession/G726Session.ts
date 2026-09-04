@@ -76,7 +76,7 @@ export class G726Session extends RtpSession {
     };
     const audioInfo = { bitrate: this.bitrate };
 
-    this.debugLog.info('depacketize() -> frame complete', `bytes=${processedMessage.length}`, `packetSeq=${this.getNumberOfReceivedPacketCount()}`);
+    this.debugLog.debug('depacketize()', `bytes=${processedMessage.length}`, `packetSeq=${this.getNumberOfReceivedPacketCount()}`);
     this.eventAudioCallback?.(playMode, streamData, audioInfo);
   }
 

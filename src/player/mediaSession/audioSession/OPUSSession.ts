@@ -89,7 +89,7 @@ export class OPUSSession extends RtpSession {
     // Opus as mono, and init()'s comment on the RFC 7587 fixed clock rate.
     const audioInfo = { bitrate: this.bitrate, channelCount: 1, sampleRate: 48000 };
 
-    this.debugLog.info('depacketize() -> frame complete', `bytes=${processedMessage.length}`, `packetSeq=${this.getNumberOfReceivedPacketCount()}`);
+    this.debugLog.debug('depacketize()', `bytes=${processedMessage.length}`, `packetSeq=${this.getNumberOfReceivedPacketCount()}`);
     this.eventAudioCallback?.(playMode, streamData, audioInfo);
   }
 
