@@ -135,6 +135,20 @@ call-stack traces, RFC/standard references, and Relations & Data Flow. Start at
 - If a new class doesn't fit neatly under an existing `docs/player/*.md` file's subsystem, add a
   new section to the closest-matching file rather than leaving it undocumented.
 
+## ONVIF metadata overlay (`src/player/util/onvifMetadata.ts`, `src/player/components/ui/`)
+
+Before touching the ONVIF `VideoAnalytics` bounding-box overlay, the `createSwitch`
+toggle-switch component, or the "ONVIF Event" context-menu row in `RTSPOverWebSocket.ts`, read
+[docs/player/10-onvif-metadata-overlay.md](docs/player/10-onvif-metadata-overlay.md) (class
+reference), [docs/SRS.md](docs/SRS.md) §4.10 (requirements), and
+[docs/DESIGN.md](docs/DESIGN.md) §2.7 (coordinate-mapping algorithm, data flow) — the
+[`onvif-overlay`](.claude/skills/onvif-overlay/SKILL.md) skill has the full before/after
+checklist, mirroring `docs/player/`'s own convention above but scoped to this specific
+subsystem. `src/player/components/ui/` is a general-purpose location for standalone UI
+components used inside this element's shadow DOM (context menu, statistics panel, etc.) — not
+specific to ONVIF; the toggle-switch component there is reusable for future controls, not a
+one-off.
+
 ## Documentation headers
 
 Every file under `docs/` (including `docs/player/*.md`) carries a metadata header, directly below its `#`

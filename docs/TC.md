@@ -10,6 +10,8 @@
 | --- | --- |
 | 2026-08-04 | Harden the YouTube demo pipeline (yt-dlp staleness, graceful shutdown, keyframe gating) and add project docs (initial version) |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-09-04 | Added §13 (ONVIF metadata overlay) |
+| 2026-09-04 | Corrected TC-PLY-112 (Transformation is NOT applied) and updated TC-PLY-113/114/115 for the SVG -> `<div>` rendering surface change |
 
 ---
 
@@ -149,3 +151,18 @@ Legend: **Auto** = covered by an existing automated test · **Manual** = exercis
 | TC-E2E-001 | README "Server ↔ Player: live-session flow" | Server running, all external tools installed | Follow the full flow: probe → create session → wait for `live` → open Player tab with matching channel/credentials → connect → play | Video renders in-browser within the bridge's liveness window; audio plays if not muted; statistics overlay updates | Manual — primary demo-page smoke test, see test-script §3 |
 | TC-E2E-002 | REQ-SRV-016, REQ-PLY-042 | Playing per TC-E2E-001 | `DELETE` the session while the Player is still connected | Player's WebSocket closes (backend socket closes -> `ws.close()`); Player surfaces a `close`/`error` event | Manual |
 | TC-E2E-003 | Demo page Test tab | Built `dist/` | Open the demo page's **Test** tab | All 37 in-browser contract cases (same suite as `custom/RTSPOverWebSocket.test.ts` under `jsdom`) report pass, independent of Node/vitest | Manual — see test-script §4 |
+
+## 13. Player — ONVIF metadata overlay
+
+| ID | Requirement | Preconditions | Steps | Expected result | Coverage |
+| --- | --- | --- | --- | --- | --- |
+| TC-PLY-110 | REQ-PLY-110 | — | Call `parseOnvifVideoAnalyticsFrame(json)` with a real ONVIF `VideoAnalytics` sample (`tt:Frame` with one `tt:Object`) | Returns `{ utcTime, objects: [{ objectId, classCandidates: [{ type, likelihood }], ... }] }` matching the source XML | Auto — `util/onvifMetadata.test.ts` |
+| TC-PLY-111 | REQ-PLY-110 | — | Call `parseOnvifVideoAnalyticsFrame(json)` with non-`VideoAnalytics` metadata JSON (e.g. a different ONVIF topic) or malformed input | Returns `null`, does not throw | Auto |
+| TC-PLY-112 | REQ-PLY-112 | Real device capture with a non-identity `tt:Transformation` present, `BoundingBox`/`CenterOfGravity` already in intrinsic pixel space (2048x1536 Wisenet/Samsung camera — see `MEMORY.md`) | Parse, inspect `objects[0].boundingBox`/`centerOfGravity` | `Transformation` is NOT applied; resulting coordinates equal the raw reported values unchanged | Auto — `util/onvifMetadata.test.ts`'s real-device-capture test |
+| TC-PLY-113 | REQ-PLY-111, REQ-PLY-113 | Overlay mounted, video intrinsic size 1920x1080, container box 1920x1080 (no letterbox) | `OnvifOverlay.render()` with one object with a `boundingBox` | A `<div class="onvif-overlay-box">` appears at the exact mapped pixel position/size; a `<div class="onvif-overlay-label">` sits just above its top edge | Both — `OnvifOverlay.test.ts` (jsdom, exact math) + Playwright synthetic harness (real visual confirmation) |
+| TC-PLY-114 | REQ-PLY-111 | Overlay mounted, video intrinsic size 1920x1080, container box 800x800 (letterboxed both axes) | `OnvifOverlay.render()` with a known bounding box | Rendered box `<div>`'s position/size accounts for the letterbox offset — verified against the same `object-fit: contain` containment math the video element itself uses | Both — `OnvifOverlay.test.ts` + Playwright |
+| TC-PLY-115 | REQ-PLY-114 | — | `render()` with objects of different class types (e.g. `Human`, `Fire`, an unrecognized type) | Each box `<div>`'s border color matches `onvifEventColors.ts`'s palette; the unrecognized type gets the defined fallback color | Auto — `onvifEventColors.test.ts` |
+| TC-PLY-116 | REQ-PLY-115 | Fresh connection, no `meta` event received yet | Open the context menu | No "ONVIF Event" toggle row is present | Manual |
+| TC-PLY-117 | REQ-PLY-115 | A `meta` event carrying `VideoAnalytics` data has been received | Open the context menu | "ONVIF Event" toggle row is present, in the Off (hidden) position by default | Manual |
+| TC-PLY-118 | REQ-PLY-115 | As TC-PLY-117, overlay objects currently rendered | Click the toggle to On, then back to Off | Overlay becomes visible then hidden again; toggle visual state (`createSwitch`'s controller) matches each click | Manual |
+| TC-PLY-119 | REQ-PLY-116 | — | `createSwitch({ initialValue: false, onChange })` | Returns `{ element, getValue, setValue, destroy }`; `element` contains track+thumb structure; `getValue()` reflects `initialValue`; a simulated click fires `onChange` and flips `getValue()` | Auto — `components/ui/switch/Switch.test.ts` (jsdom) |

@@ -15,6 +15,9 @@ Player's custom-element/StreamPlayer wiring.*
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-26 | Add a sequence diagram for the PO Token/`deno` pre-flight check and request flow to §1.3 (`e9a7e70`) |
 | 2026-08-26 | Add a decision flowchart alongside the sequence diagram, showing `hasDeno()`/`potProviderReachable()`'s branch outcomes |
+| 2026-09-04 | Add §2.7 (ONVIF metadata overlay) |
+| 2026-09-04 | §2.7 coordinate mapping fix: `tt:Transformation` is no longer applied to `Shape` coordinates — a real device capture proved the inverse-divide formula corrupted already-pixel-space coordinates |
+| 2026-09-04 | §2.7 rendering surface changed from SVG to plain positioned `<div>`s, per explicit user request |
 
 ---
 
@@ -375,6 +378,102 @@ consumes them — this repository never performs that registration itself. Becau
 this layer depends on (`UniversialManagerService`, `EventNotificationService`, etc.) don't exist in this
 repository, this layer is contract-tested against inferred shapes (`types.ts`) rather than parity-tested against a
 real implementation — see [TC.md](TC.md) §3.
+
+### 2.7 ONVIF metadata overlay
+
+Implements SRS §4.10 (REQ-PLY-110 through REQ-PLY-116). Full class reference:
+[docs/player/10-onvif-metadata-overlay.md](player/10-onvif-metadata-overlay.md). This section
+covers the two non-obvious algorithms: coordinate mapping and data lifecycle.
+
+**Data flow.** `RTSPOverWebSocket.onRTSPOverWebSocketMeta(meta)` — already the sole call site that
+dispatches the public `meta` event (see §2.2's class diagram, `MediaRouter` → callback chain in
+`docs/player/03-mediaSession-core-video.md`) — gains one more side effect at the same point:
+`meta.json` is passed to `parseOnvifVideoAnalyticsFrame()` (`src/player/util/onvifMetadata.ts`, a
+pure function, no DOM/network access), and a successfully-parsed frame is handed to the mounted
+`OnvifOverlay.render()`. The public `meta` event's payload is unchanged — this is a pure addition
+alongside it, not a replacement.
+
+```mermaid
+sequenceDiagram
+    participant MDP as MetaDataParser
+    participant CE as RTSPOverWebSocket
+    participant Parse as parseOnvifVideoAnalyticsFrame()
+    participant Overlay as OnvifOverlay
+
+    MDP->>CE: callback({ channelId, xml, json })
+    CE->>CE: dispatch('meta', { json, xml })  [unchanged public event]
+    CE->>Parse: parseOnvifVideoAnalyticsFrame(json)
+    Parse-->>CE: OnvifVideoAnalyticsFrame | null
+    CE->>Overlay: render(frame, videoIntrinsicSize, renderedBoxRect)
+```
+
+**Coordinate mapping.** A `tt:Object`'s `tt:Shape/tt:BoundingBox`/`tt:CenterOfGravity` coordinates
+go through one step before becoming an on-screen pixel rect (a real device capture disproved an
+earlier two-step design — see below):
+
+1. **`tt:Shape` coordinates are read as intrinsic pixel space directly — `tt:Transformation` is not
+   applied.** An earlier version of this design additionally inverse-applied `tt:Frame`'s
+   `tt:Transformation` (`Translate`/`Scale`) to every raw coordinate
+   (`px = (rx - translateX) / scaleX`), on the theory that non-identity `Translate`/`Scale` meant
+   raw coordinates needed correcting into pixel space. A real Wisenet/Samsung camera capture
+   (2048x1536) disproved that theory in production: its `BoundingBox`/`CenterOfGravity` were
+   already in that camera's own intrinsic pixel space (`CenterOfGravity` was exactly the
+   `BoundingBox`'s own midpoint — only possible if neither needs further transforming), while its
+   accompanying `Transformation` turned out to be a *pixel-to-normalized* ONVIF-compliance recipe
+   instead (`scaleX ~= 2/width`, `scaleY ~= -2/height` — the standard pixel → `[-1, 1]` conversion,
+   useful to a client that wants strictly-normalized ONVIF coordinates, not to this renderer which
+   wants pixel coordinates). Inverse-applying it blew already-correct pixel values up by roughly
+   1000x, producing a `<rect>` with a resulting negative height that browsers silently refuse to
+   draw — the real root cause of a live "toggled the overlay on, no bounding box ever appears"
+   report. See `onvifMetadata.ts`'s `parseBoundingBox` doc comment and `MEMORY.md` for the full
+   writeup, and `onvifMetadata.test.ts`'s real-device-capture regression test.
+2. **Intrinsic pixel space → rendered box.** The video's intrinsic resolution (`videoWidth`/
+   `videoHeight`, already tracked from `onRTSPOverWebSocketResize`, see §2.2) is almost never the
+   same aspect ratio as the element's own CSS box once `object-fit: contain` is applied (see
+   `updateRendering()`'s own comment on this class). `OnvifOverlay` computes the actual rendered
+   image rect within the element (the "letterboxed" sub-rect: same aspect ratio as intrinsic
+   size, centered, `width`/`height` clamped to the container) using the same containment math
+   `object-fit: contain` itself applies, then maps `(px, py)` linearly onto that sub-rect. This
+   keeps the overlay pixel-accurate at any container size/aspect ratio without depending on the
+   browser's own CSS layout of the underlying `<video>`/`<canvas>` (the overlay is a sibling
+   element, not a child, so it can't read that box back from the DOM directly — it's computed the
+   same way `object-fit: contain` would, from the same two inputs `object-fit: contain` uses:
+   intrinsic size and container size).
+
+**Object lifecycle.** Each `tt:Frame` is treated as a full refresh: `OnvifOverlay.render()` clears
+every previously-drawn object and redraws exactly the current frame's `tt:Object` list. There is no
+cross-frame object tracking, interpolation, or fade-out on a stream that stops sending frames —
+the overlay simply shows whatever the most recent frame contained until a new one arrives or the
+toggle is switched off. See `docs/ROADMAP.md` for staleness/timeout handling as a possible future
+enhancement.
+
+**Rendering surface.** Plain positioned `<div>`s, not SVG or `<canvas>`: `OnvifOverlay` mounts one
+absolutely-positioned `<div class="onvif-overlay">` sized to the element's box, as a sibling of the
+video/canvas element (so it works identically regardless of `tagMode`). Each object renders as a
+bordered `<div class="onvif-overlay-box">` (`border: 2px solid <color>`, positioned/sized with
+`left`/`top`/`width`/`height` in px, `box-sizing: border-box` so the border stays inside the mapped
+coordinates) plus a `<div class="onvif-overlay-label">` (positioned at the box's top-left with
+`transform: translateY(-100%)` to sit just above it regardless of its own auto-sized dimensions).
+An earlier version of this used SVG (`<rect>`/`<text>`) instead; switched to plain `<div>`s per
+explicit user request. Chosen (like SVG before it) over `<canvas>` because ONVIF analytics frames
+carry a small, low-frequency set of objects (not a per-video-frame-rate signal), so per-object DOM
+elements cost nothing meaningful here — and `<div>`s additionally avoid the hand-measured
+`APPROX_CHAR_WIDTH`-style text-metrics math the SVG version needed to size its label background
+rect up front, since a `<div>`'s width/height auto-size to its text content.
+
+**Toggle component.** `src/player/components/ui/switch/Switch.ts` (`createSwitch(options)`) is a
+new, standalone, reusable factory — not markup progressively enhanced in place, since this
+element's context menu (unlike a page with static HTML) is built imperatively from scratch
+(`refreshContextMenu()`/menu-construction code, §2.2). It owns its own DOM construction (track +
+thumb) and returns a `{ element, getValue, setValue, destroy }` controller; the existing hand-rolled
+Audio mute toggle in `RTSPOverWebSocket.ts` is left as-is (a pre-existing, working, narrower-scoped
+control) — migrating it onto this new shared component is a possible follow-up, not part of this
+change. CSS lives in the existing `panelStyles.ts` (the one stylesheet string injected into this
+element's shadow DOM) rather than a second parallel styling mechanism, under generic `.ui-switch*`
+class names sized/colored to match `wisenet-camera-discovery`'s `mountSwitch({variant:'slider'})`
+dark-theme values (`40x20` track, `14px` accent-colored thumb, `#191b20`/`#1c2c4a`/`#3a4049`/
+`#3b82f6`) — a deliberate external visual-parity target, not derived from this element's own
+pre-existing (differently-sized/colored) Audio toggle.
 
 ## 3. Cross-cutting: how a Player and the Server interoperate
 

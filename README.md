@@ -89,6 +89,16 @@ End-to-end walkthrough of what happens between the demo page's Server and Player
 See [docs/DESIGN.md](docs/DESIGN.md) for the underlying state machines (session status, keyframe gate) and full
 sequence diagrams.
 
+## ONVIF metadata overlay
+
+When a camera sends ONVIF `VideoAnalytics` metadata (motion/object-detection events) over its RTP `application`
+media line, the player can optionally draw it on top of the video: a bounding box per detected object, colored by
+event type, labeled with its ObjectId/type/Likelihood at the box's top edge. It's off by default and only appears
+in the right-click context menu once the stream has actually sent at least one such frame — an "ONVIF Event"
+toggle switch (styled to match `wisenet-camera-discovery`'s SUNAPI On/Off toggle) shows/hides it. See
+[docs/player/10-onvif-metadata-overlay.md](docs/player/10-onvif-metadata-overlay.md) for the full design (including
+the coordinate-mapping math) and [docs/SRS.md](docs/SRS.md) §4.10 for the requirements.
+
 ## Further documentation
 
 | Doc | Covers |

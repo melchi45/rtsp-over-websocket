@@ -3587,10 +3587,17 @@ frame, all the way back to whenever the MJPEG-tier work (or earlier) first shipp
 No error, no console output, nothing — just quiet data loss, and only surfaced now because the user
 was specifically instrumenting this exact path for the first time.
 
-**Fixed**: the guard now only requires `xml` (the field `MetaDataParser.ts` always populates before
-ever calling back) — `json` still rides along in the dispatched detail when it happens to be present,
-matching the graceful-degradation contract `MetaDataParser.ts`'s own comment already documented but
-this downstream consumer never actually honored.
+**Fixed**: changed the guard's `&&` to `||` — dispatches whenever *either* `json` or `xml` is present,
+per the user's explicit follow-up request (an initial fix narrowed the condition to `xml` alone, since
+that's the field `MetaDataParser.ts` always populates before calling back; the user asked for the `||`
+form instead, which is broader — also covers a hypothetical future producer that sets `json` without
+`xml`, not just today's `MetaDataParser.ts` behavior). A second follow-up request added a guard for
+`meta` itself being `undefined`/`null` — the call site (`info.callback.meta` in the constructor) passes
+`args[0]` straight through with no check, so a caller invoking the callback with no argument at all
+would otherwise throw reading `.json`/`.xml` off `undefined`. Final condition:
+```ts
+if (meta !== undefined && meta !== null && (typeof meta.json !== 'undefined' || typeof meta.xml !== 'undefined')) {
+```
 
 **Verified**: `npx tsc -b` + `npx vitest run` (63 tests) clean.
 
@@ -3601,3 +3608,460 @@ downstream of the class whose comment got the contract right, in code that silen
 "optional" field anyway. A guard that AND-requires two fields where the producer's own contract says
 one is optional is worth a second look any time a consumer reports "nothing ever happens", especially
 when nothing throws or logs an error either.
+
+## `MetaDataParser.parse()`'s `.json` was always `undefined` for every real consumer — bundled `fast-xml-parser` as a real dependency instead of an optional CDN global
+
+Direct follow-up to the `onRTSPOverWebSocketMeta` fix above, same investigation: once the `&&`-vs-`||`
+guard was fixed so the `'meta'` DOM event actually fired, the user pointed out `metaData.json` was
+still `undefined` — traced to `MetaDataParser.ts`'s own `.json` enrichment step, which only ran when a
+global `window.parser` (an optional, externally-loaded `fast-xml-parser`-compatible script the
+*original legacy* player's demo page happened to load) was present. Confirmed live: neither this
+repo's own `src/index.html` demo nor `wisenet-camera-discovery` ever load that script, so `.json` was
+*always* `undefined` for every real consumer of this code — not a rare degraded path, the only path
+that ever actually ran.
+
+**Detour**: before fixing this, the user separately asked whether the real ONVIF `MetadataStream` XML
+a camera sends is itself schema-conformant. Checked against the actual ONVIF `metadatastream.xsd`
+(fetched live, not assumed from memory): the core structure (`MetadataStream` -> `VideoAnalytics` ->
+`Frame`/`UtcTime` -> `Object`/`ObjectId` -> `Appearance` -> `Shape`/`BoundingBox`/`CenterOfGravity`,
+`Transformation`/`Translate`/`Scale`) matches the schema exactly, and `ClassCandidate` containing
+`Type`+`Likelihood` as *child elements* also matches. But the sample also had a bare
+`<tt:Type Likelihood="0.55">Fire</tt:Type>` directly under `<tt:Class>` — the real `ClassDescriptor`
+type only allows `ClassCandidate` (repeated) + `Extension` as children, with no schema-level `Type`
+child and no `Likelihood` as an XML *attribute* anywhere (it's always a `<Likelihood>` child element
+inside `ClassCandidate`). That's a vendor (Hanwha/Samsung) extension layered alongside the standard
+list, not something a strict ONVIF schema validator would recognize — worth knowing if this metadata
+is ever validated against the official schema or handed to a strict ONVIF-compliant consumer. Not a
+bug in this codebase; just a fact about the camera's own output worth having on record.
+
+**Options considered for fixing `.json`**: (1) add the CDN script wisenet-camera-discovery never
+loaded, (2) hand-roll an XML->JSON converter with the browser-native `DOMParser` (zero dependencies),
+(3) bundle a real `fast-xml-parser` package via `import`, letting Vite include it statically in the
+built output. (1) was ruled out without even trying: `dist/chrome-extension/` is a Manifest V3
+extension, and MV3's CSP disallows loading remote/CDN scripts at all — this consumer could never have
+used that path even if it wanted to. (2) would have worked but meant re-implementing (and
+maintaining) XML/attribute/namespace/entity handling by hand. The user chose (3) after confirming it
+was feasible: this player is already Vite-bundled (`build:player`/`build:shared-v2` both run through
+Vite), so `import`ing a real npm package gets statically included in
+`rtsp-over-websocket.esm.js`/`.global.js` at build time — no runtime fetch of any kind, so it's exactly
+as MV3-safe as the `moment`/`vis`/`file-saver` dependencies this repo already bundles the same way.
+
+**Implementation**: added `fast-xml-parser` (`^5.11.1`) as a real dependency. `MetaDataParser.ts` now
+constructs one module-level `XMLParser` instance (options translated from the legacy player's own
+fast-xml-parser v2-era call — `attrNodeName` -> `attributesGroupName`, `ignoreNameSpace: false` ->
+`removeNSPrefix: false` [inverted-sense name, same behavior: keep `tt:`-style namespace prefixes on
+tag names, which this XML needs], `parseNodeValue` -> `parseTagValue`, `decodeHTMLchar` ->
+`htmlEntities` — verified against the actual installed package's own `.d.ts`, not assumed from
+outdated web docs, since a version mismatch here would have silently produced wrong option names) and
+calls `.parse(xml)` directly, dropping the `window.parser`/`FastXmlParserLike` defensive-read
+entirely. The old explicit `.validate()` pre-check (via the same package's `XMLValidator`, itself
+marked `@deprecated` in favor of a *separate* `fast-xml-validator` package) was dropped rather than
+kept — `.parse()`'s own try/catch (already wrapping the whole method) catches a malformed-XML failure
+just as well, without pulling in a second deprecated-on-arrival dependency for one pre-check.
+
+**Verified**: new `MetaDataParser.test.ts` (3 tests) — parses the user's own real ONVIF sample,
+asserting namespace prefixes survive (`tt:MetadataStream`, not stripped), attribute values stay
+strings (`left: "0.0"`, not coerced to a number, matching the original `parseAttributeValue: false`
+intent), and tag text values *do* get parsed (`Likelihood: 0.55` as a real number, matching
+`parseTagValue: true`) — plus two negative cases (non-XML input, empty input) confirming the callback
+still correctly never fires. Full `npx tsc -b` + `npx vitest run` (66 tests, up from 63) clean.
+
+**How to apply**: when translating options between two major versions of the same library (or two
+different libraries with a similar-shaped API), verify option names against the actual installed
+package's own type definitions (`node_modules/<pkg>/**/*.d.ts`), not remembered/searched
+documentation that may be for a different version — a fetched doc page for this exact task returned
+information for the wrong version entirely (`fxparser`/class-based API) before the real installed
+package's `.d.ts` gave the accurate v5 option names used here.
+
+## ONVIF metadata overlay — new feature (bounding boxes/labels, toggle switch), full plan-mode design + implementation in one session
+
+Requested directly by the user as a 7-point spec (parsed ONVIF data displayed scaled to the video,
+bounding boxes scaled to match, labels at the box's top edge, per-event-type colors, a context-menu
+show/hide toggle styled like `wisenet-camera-discovery`'s SUNAPI On/Off, in its own
+`components/ui/` subdirectory). Planned via `EnterPlanMode` (full research pass: existing
+context-menu toggle pattern, `wisenet-camera-discovery`'s `mountSwitch` CSS values, ONVIF schema
+already verified against the real XSD in the prior `MetaDataParser` investigation, a web search
+confirming no suitable npm package exists for this specific need — see below) before any code was
+written; the approved plan is what `docs/player/10-onvif-metadata-overlay.md`/`SRS.md` §4.10/
+`DESIGN.md` §2.7 describe, and the implementation matched it without needing to revise the design
+once actual code was written and tested — worth noting since most of this session's other findings
+came from a design assumption turning out wrong under live testing; this one didn't.
+
+**No suitable npm package**: searched specifically for an ONVIF *metadata-stream* parser (not just
+generic XML-to-JSON, which `fast-xml-parser` already handles) — `onvif-nvt`/`onvif-nvt-ts`/`onvif`
+(agsh) all turned out to be SOAP-based ONVIF *device management* clients (Device/Media/PTZ/Events
+`PullMessages` subscriptions over the ONVIF WSDL services), not parsers for the raw `tt:MetadataStream`
+XML that arrives over the RTSP session's own RTP `application` media line (this repo's actual
+delivery mechanism, via `MetaSession`/`MetaDataParser` — see that class's own entry above). Hand-rolled
+`onvifMetadata.ts` against the real ONVIF XSD schema (already verified in the prior investigation)
+instead of pulling in a mismatched dependency.
+
+**Coordinate mapping confirmed correct on the first real end-to-end test**, no bugs found: fed a
+real ONVIF sample through the actual `<rtsp-over-websocket>` custom element (not just a unit test)
+in a real Playwright-launched Chromium, at 1920x1080 intrinsic video size inside a 640x480
+container (letterboxed both axes) — the rendered `<rect>` landed at the exact hand-calculated
+pixel position (`x=66.67, y=110, width=233.33, height=183.33` for a `left=200,top=150,right=900,
+bottom=700` bounding box), confirming both the `object-fit: contain` containment math and the
+Transformation step were implemented correctly against the design in `DESIGN.md` §2.7 without
+needing a fix-and-retest cycle.
+
+**Real (if minor) testing gotcha, not a bug in the new code**: the first attempt to open the
+context menu programmatically (`element.dispatchEvent(new MouseEvent('contextmenu', ...))`) threw
+`Cannot set properties of undefined (setting 'returnValue')` inside `contextmenuDiv()` — that's the
+class's own already-documented, deliberately-preserved legacy quirk (`window.event.returnValue =
+false`, relying on the deprecated `window.event` global). A manually-constructed/dispatched
+`MouseEvent` is untrusted (`isTrusted: false`) and apparently doesn't populate `window.event` in
+this Chromium build the way a real hardware-originated right-click does — switching the test to
+Playwright's own `page.mouse.click(x, y, { button: 'right' })` (a real, trusted input-injection
+event) avoided it entirely, matching what an actual user's right-click does in production. Confirms
+the legacy-preservation comment at that line is accurate, not stale — worth remembering as the
+right fix for *testing* this specific interaction is a trusted input event, not a code change.
+
+**Verified**: `npx tsc -b` + `npx vitest run` (86 tests, up from 66) clean; a full live Playwright
+run against both the dev and production (minified) builds — metadata received -> toggle appears in
+the context menu -> click shows the overlay -> box position/color/label all correct — with no
+regression to the existing MJPEG Live/Playback scenarios re-checked in the same pass.
+
+**How to apply**: this is the one feature in this whole session that went from a `EnterPlanMode`
+research pass straight through implementation with zero design revisions — the difference from
+every other bug/fix in this saga (which needed live-testing to find where a plan/assumption was
+wrong) is that this was new, additive code built against an already-verified schema and an
+already-proven coordinate-mapping approach (`object-fit: contain`'s own containment formula is
+well-defined, not something this codebase's own quirks could contradict), rather than a fix layered
+on top of existing, possibly-surprising legacy behavior. Planning thoroughly *before* writing code
+still paid off even when nothing needed correcting afterward — the live end-to-end test is what
+actually confirmed that, not an assumption that careful planning made it unnecessary.
+
+### Follow-up, same feature: toggle turned On but no bounding box appeared — a metadata/resize ordering race, not a coordinate-math bug
+
+Reported live by the user shortly after the above ("turned ONVIF Event on in the context menu, but
+the bounding box doesn't show") — the one real bug in an otherwise first-try-correct feature.
+
+**Root cause**: `OnvifOverlay.render()` no-ops if `videoIntrinsicSize.width/height <= 0`, and
+`onvifVideoIntrinsicSize` is only ever set from `onRTSPOverWebSocketResize()` (tied to the video's
+first decoded keyframe). The metadata RTP track and the video RTP track have **no ordering
+guarantee** relative to each other — a metadata frame arriving before the first keyframe hit the
+guard and silently drew nothing, with no retry: the old code only ever called `render()` inline,
+once, at the moment `onRTSPOverWebSocketMeta` ran. Real ONVIF analytics streams are
+event-triggered, not a steady stream, so there was no guarantee a *later* frame would arrive to
+retroactively fix it — the overlay could stay permanently blank for an entire session depending on
+pure timing luck.
+
+**Fix**: cache the most recently parsed frame unconditionally (`onvifLastFrame`, set regardless of
+whether it was drawable at the time) and factor the actual `render()` call out into a private
+`renderOnvifOverlay()` re-callable from three trigger points: `onRTSPOverWebSocketMeta` (new
+frame), `onRTSPOverWebSocketResize` (intrinsic size newly known), and the toggle's own `onChange`
+when turned on. Whichever of "a frame arrives" / "sizing becomes known" / "the user looks at it"
+happens last is what actually triggers the draw — see
+`docs/player/10-onvif-metadata-overlay.md`'s `OnvifOverlay` Call Stack section for the full
+writeup.
+
+**Verified live**, not just by re-reading the code: a dedicated Playwright harness fed metadata
+through `onRTSPOverWebSocketMeta` *before* ever calling `onRTSPOverWebSocketResize`, confirmed the
+`<rect>` did NOT exist yet (reproducing the exact reported bug), turned the toggle on while still
+in that state (confirmed still no box — expected, size is still unknown), then fired the resize
+event and confirmed the box appeared with the exact correct coordinates — plus a re-run of the
+original metadata-after-resize scenario (`onvif_overlay_live.js`) to confirm zero regression.
+`npx tsc -b` and the full `npx vitest run` suite (86 tests) both stayed clean.
+
+**How to apply**: when two independently-timed data sources both gate the same render (here: an
+RTP metadata track and an RTP video track, no cross-track ordering promise), don't assume the
+"obvious" arrival order and render inline from a single call site — cache the latest state from
+each source unconditionally and re-derive the render from whichever combination of triggers fires
+last. This is the same shape of bug as the MJPEG-tier real-bugs above (state that's only ever
+updated from one call site, with no reconciliation once a second, independently-timed input
+changes) — worth checking for this pattern specifically whenever a new feature combines two RTP
+tracks or otherwise merges two independently-arriving async data sources.
+
+### Second follow-up, same feature, same day: box *still* not showing after the race-condition fix — a wrong-direction Transformation formula corrupting real coordinates
+
+The race-condition fix above was real and necessary, but wasn't the whole story: after shipping it,
+the user reported live (with a screenshot of the app's own ONVIF debug panel showing the exact raw
+XML their camera sends) that the bounding box *still* never appeared. Root cause this time: bad
+coordinate math, not timing — every earlier synthetic test had asserted against the same wrong
+formula it was supposedly verifying, so nothing caught it until real device output was in hand.
+
+**The real capture** (a live 2048x1536 Wisenet/Samsung MJPEG camera):
+
+```xml
+<tt:Frame UtcTime="..." VideoSourceToken="VideoSourceToken-0">
+  <tt:Transformation>
+    <tt:Translate x="-1.0" y="1.0"/>
+    <tt:Scale x="0.000977" y="-0.001302"/>
+  </tt:Transformation>
+  <tt:Object ObjectId="0">
+    <tt:Appearance>
+      <tt:Shape>
+        <tt:BoundingBox left="0.0" top="0.0" right="1455.0" bottom="1535.0"/>
+        <tt:CenterOfGravity x="727.5" y="767.5"/>
+      </tt:Shape>
+      ...
+```
+
+**Root cause**: `onvifMetadata.ts`'s `applyTransformation()` treated `BoundingBox`/`CenterOfGravity`
+as needing correction into pixel space, applying `px = (rx - translateX) / scaleX` whenever a
+non-identity `Transformation` was present. For these exact real numbers that computes
+`boundingBox = { left: 1023.5, top: 768, right: 1490286, bottom: -1178187 }` — wildly outside the
+2048x1536 frame, and with `bottom < top` (a negative height once converted to an SVG `<rect>`'s
+`width`/`height` attributes). **A negative `height` on an SVG `<rect>` is invalid per the SVG spec,
+and browsers silently refuse to render it at all** — no console error, no visible box, exactly
+matching the reported symptom. The formula itself came from an *untested assumption* made during
+the original design/plan-mode session (never validated against real hardware) — and every unit test
+written for it (`onvifMetadata.test.ts`'s original "applies a non-identity Transformation" case)
+asserted against that same formula's own output, so it "passed" while encoding the bug; a test that
+computes its expected value from the same logic under test can't catch a wrong-formula bug, only a
+wrong-implementation-of-a-formula bug.
+
+**What the real numbers actually mean, worked out from first principles**: `CenterOfGravity`
+(727.5, 767.5) is *exactly* the `BoundingBox`'s own midpoint ((0+1455)/2, (0+1535)/2) — both must
+already be the same untransformed coordinate system, since a transform applied to one but not
+reflected as consistently in the other would break that relationship. Both also fall within the
+camera's real 2048x1536 resolution. Conclusion: `BoundingBox`/`CenterOfGravity` are **already
+intrinsic pixel coordinates** on this real device. Separately, `Transformation`'s own numbers decode
+cleanly as the *opposite* direction from what was assumed: `scaleX = 0.000977 ~= 2/2048`,
+`scaleY = -0.001302 ~= -2/1536`, `translateX = -1.0`, `translateY = 1.0` is *exactly* the standard
+"pixel → ONVIF-normalized `[-1, 1]`" conversion formula (`normalized = translate + raw * scale`) for
+this camera's own real resolution — i.e. `Transformation` here is a recipe for a strictly-compliant
+ONVIF client that wants *normalized* Shape coordinates (per the ONVIF spec's official convention,
+which this vendor deviates from by putting raw pixel values in `Shape` to begin with), not a
+correction this renderer (which wants pixel coordinates directly) should ever apply.
+
+**Fix**: removed `parseTransformation()`/`applyTransformation()`/`TransformationInput` entirely from
+`onvifMetadata.ts` — `parseBoundingBox()`/`parseCenterOfGravity()` now read `@attributes` straight
+through with no transform step. `docs/SRS.md`'s REQ-PLY-112 and `docs/DESIGN.md` §2.7's coordinate
+mapping writeup were both corrected to describe (and justify, with the real numbers) the opposite of
+what they originally specified.
+
+**Verified**: `onvifMetadata.test.ts`'s wrong-formula test was rewritten to assert the corrected
+pass-through behavior, and a new dedicated test uses the user's exact real capture (full XML,
+including the vendor's non-standard bare `<tt:Type Likelihood="0.55">Fire</tt:Type>` sibling, which
+is still deliberately not read — separate, pre-existing, correct decision) as a regression guard.
+`npx tsc -b` and the full `npx vitest run` suite (87 tests) both clean. Live Playwright re-run,
+feeding this exact real XML through `onRTSPOverWebSocketMeta` at the camera's real 2048x1536
+intrinsic size inside a smaller pillarboxed container, produced a sane on-screen `<rect>`
+(`x=0,y=0,width=727.5,height=767.5`, exactly the expected 0.5x scale-down) instead of the earlier
+garbage coordinates.
+
+**How to apply**: when a real device's own raw wire data becomes available (a screenshot, a debug
+panel dump, a captured packet), treat it as strictly higher-authority than a spec reading or a
+synthetic test fixture built from assumption — especially for anything with more than one plausible
+interpretation (like a coordinate-transform direction, where both directions are "valid-looking"
+formulas and only real numbers reveal which one the vendor actually meant). A unit test built to
+verify a formula, whose expected values are computed FROM that same formula, doesn't verify
+correctness at all — it only pins down that the implementation matches its own derivation; only a
+real, externally-sourced expected value (hand-derived from independent reasoning, or literally
+copied from production) actually catches a wrong-formula bug like this one. Cross-checking two
+independently-reported values that *should* agree if the interpretation is right (here:
+`CenterOfGravity` vs. the `BoundingBox` midpoint) is a cheap, effective sanity check worth applying
+to any new coordinate-space assumption before trusting it.
+
+### Third follow-up, same feature, same day: rendering surface switched from SVG to plain `<div>`s per explicit user request
+
+Not a bug — a direct, explicit instruction ("SVG로 처리하나요? 그냥 div로 처리해야 합니다" / "are
+you using SVG? it should just be `<div>`s"), acted on immediately without re-litigating the original
+SVG-vs-canvas design rationale (data volume is low either way; the "why not canvas" reasoning from
+the original plan-mode design still applies unchanged, only "SVG vs `<div>`" flipped).
+
+`OnvifOverlay.ts` now mounts one `<div class="onvif-overlay">` (absolute, `pointer-events: none`,
+`hidden` property for show/hide) instead of an `<svg>`, and renders each object as a
+`<div class="onvif-overlay-box">` (`border: 2px solid <color>`, `box-sizing: border-box`, `left`/
+`top`/`width`/`height` in px) plus a `<div class="onvif-overlay-label">` (background-colored,
+`transform: translateY(-100%)` to sit above its anchor). The coordinate-mapping math itself
+(`computeRenderedRect`/`mapPoint`, the object-fit: contain containment formula) is completely
+unchanged — only the DOM elements the computed numbers get written into changed. One incidental
+simplification fell out of the switch: the SVG version needed hand-measured
+`APPROX_CHAR_WIDTH`/`PADDING_X`/`PADDING_Y` constants to pre-compute a label background `<rect>`'s
+size before drawing it; a `<div>` auto-sizes to its text content, so the label positioning now uses
+`transform: translateY(-100%)` against the anchor point instead and needs no manual text-metrics
+guess at all.
+
+**Verified**: `onvifMetadata.ts`/coordinate-math logic untouched, so its own tests were unaffected;
+`OnvifOverlay.test.ts` was rewritten to assert against `div.onvif-overlay-box`/`div.onvif-overlay-
+label` (inline `style.left`/`top`/`width`/`height`/`borderColor`) instead of SVG attributes — same
+assertions, same exact expected numbers, just a different DOM shape to read them from.
+`npx tsc -b` + `npx vitest run` (87 tests) clean. Live Playwright re-run against the real device
+capture confirmed zero `<svg>` elements exist anywhere in the shadow DOM, the box/label divs render
+at the exact same coordinates as the pre-switch SVG version did, and the toggle still correctly
+shows/hides via the `hidden` property. `docs/DESIGN.md` §2.7's "Rendering surface", `docs/player/
+10-onvif-metadata-overlay.md`'s `OnvifOverlay` section, and `docs/TC.md`'s TC-PLY-113/114/115 were
+all updated to describe `<div>`s instead of SVG; the W3C SVG row was removed from `docs/player/
+README.md`'s standards map entirely (a `<div>`-based overlay isn't backed by any standards-defined
+graphics API, so there's nothing to cite there anymore).
+
+**How to apply**: when a user gives a direct, unambiguous implementation-swap instruction like this
+one, just make the swap — no need to re-justify or second-guess a design decision that was already
+approved (via `EnterPlanMode`) earlier in the same session. Do carry forward the *portable* parts of
+the original design (the coordinate math, the "why not canvas" reasoning) rather than re-deriving
+them, and do keep every doc/test in sync with the new implementation, same as any other
+`src/player/` change.
+
+## `VideoTagPlayer` Live-mode `SourceBuffer` growing unbounded — `durationchange` stall suspected to affect Live mode too, not just Playback
+
+Reported directly by the user: the `<video>`-tag/MSE `SourceBuffer` grows "exponentially" in memory
+during a Live session. `checkBufferSize()` (`sourceBuffer.remove(0, removeEnd)`, capping buffered
+span at `getMaxInstantPlaybackTime()` (renamed from `getMaxInstantPlayback()` on 2026-09-04), default
+30s) is still fully present in the code — it was never
+deleted — so the question was why it might stop running.
+
+**Root cause (suspected, not yet confirmed against a real device)**: `checkBufferSize()` is only
+ever called from `videoUpdating()`, and `videoUpdating()`'s only trigger in Live mode was
+`onDurationChange()` — the `<video>` element's native `durationchange` event. A 2026-09-03 fix (see
+`05-video-player-rendering.md`'s History, the eighth-bug row) had already found, via a direct trace,
+that `durationchange` stops firing entirely after the first handful of appended segments for a
+continuously-growing fragmented-MP4 `SourceBuffer` — an MSE implementation detail, not something
+this class controls. That fix added an `updateend`-triggered fallback (`updateend` fires reliably on
+every successful append, unlike `durationchange`), but scoped it to Playback only
+(`if (this.playbackFlag) { this.videoUpdating(); }`), explicitly reasoning that Live mode "wasn't
+reported broken" at the time. If the same `durationchange` stall happens in Live mode too (plausible
+— same MSE engine, same continuously-growing stream shape), Live sessions would have the identical
+symptom Playback had, except manifesting as unbounded buffer growth instead of stuck playback,
+since `checkBufferSize()`'s trim is gated behind the exact same dead trigger.
+
+**Fix**: removed the `playbackFlag` gate in `sourceBufferEventListener`'s `'updateend'` case
+(`VideoTagPlayer.ts`) — `videoUpdating()` (and therefore `checkBufferSize()`) now runs on every
+`updateend` for both Live and Playback, not just Playback.
+
+**Not yet verified live** — added temporary `console.log('[VideoTagPlayer][trace] ...')` counters
+(to be stripped once confirmed, same pattern as the stop-button investigation in commit `98485b7`):
+- `onDurationChange()` — counts real `durationchange` firings, to directly confirm whether it
+  actually stalls in Live mode the way it does in Playback.
+- The `updateend` handler — counts `updateend` firings, for cadence comparison against the above.
+- `checkBufferSize()`'s two `sourceBuffer.remove()` call sites — logs buffered span and the computed
+  `remove()` range every time a trim actually happens, to directly confirm trimming resumes/continues
+  in a real Live session.
+
+**How to apply**: when a fix scoped to "only the reported-broken mode" shares a root cause with an
+unreported symptom in a sibling mode (here: Live and Playback share the exact same
+`durationchange`-triggered `videoUpdating()`/`checkBufferSize()` path), treat the narrow scoping as a
+provisional decision, not a settled one — re-examine it as soon as a *new* symptom surfaces that the
+shared root cause would also explain, even without a fresh live trace confirming the sibling mode
+yet. Confirm with the same instrumentation style already established in this file (temporary,
+clearly-tagged `console.log` at the exact trigger and effect sites) rather than reasoning from code
+alone once real-device behavior is what's actually in question.
+
+## Memory still exceeds 1GB and never clears after `stop()` — `<video>` DOM node itself needs replacing, not just its `src`
+
+Direct follow-up, same session as the entry above: even with `checkBufferSize()` confirmed still
+wired up, the user reported memory still climbed past 1GB during a long session and, critically,
+never dropped back down after calling `stop()` — requiring the video tag to be manually
+reinitialized as a workaround.
+
+**Root cause**: `VideoTagPlayer.close()` (run via `stop()` → `StreamPlayer.close()` →
+`mediaRouter.terminate()`, confirmed reliably reached since the `startTime`-null fix, see the
+"Stop button not actually stopping" entry) was already doing everything the MSE API offers to
+release a session — `revokeObjectURL`, clear `src`/`srcObject`, `removeSourceBuffer()`,
+`endOfStream()`, remove all listeners, call `.load()` (Live mode) — but a couple of things were
+still missing, and even a *complete* cleanup this way has a known ceiling: `MediaRouter.ts`'s
+`selectVideoElement()` finds the actual `<video>`/`<canvas>` DOM node once by querying the DOM
+(`rtsp-channel-mapped-id`/`rtsp-channel-id` attributes) and this library never creates a fresh one —
+the *same* node persists across every play/stop/reconnect cycle for the life of the host page.
+Chrome (and other browsers) don't reliably reclaim a `<video>` element's internal MSE/decoder/
+GPU-backed memory just from clearing `src`/`srcObject`, even after doing so correctly — the node
+itself generally has to actually leave the DOM for that memory to be reclaimed. This is a
+well-documented browser quirk, not a bug in this library's cleanup code as such.
+
+**Fix, two parts**:
+1. Hardened `VideoTagPlayer.close()` (`VideoTagPlayer.ts:2642-2745`): `segmentArray`/`videoSamples`/
+   `audioSamples`/`boxStartTime` — which can hold a real backlog of queued `Uint8Array` frame data —
+   are now cleared explicitly instead of left referenced until the instance itself is GC'd, and
+   `this.mediaSource` is now nulled at the very end of `close()` (deliberately *after*
+   `removeAllEventListener()` runs, since that method still needs a non-null `mediaSource` to detach
+   its own `sourceopen`/`error`/`sourceended`/`sourceclose` listeners — previously never nulled at
+   all). Checked `this.sourceBuffer`'s own early-nulling (right after `removeSourceBuffer()`, *before*
+   `removeAllEventListener()` would otherwise null it) before touching anything nearby: that ordering
+   is itself a deliberate, already-comment-documented fix for a real reconnect race (a stale
+   `SourceBuffer` reference throwing "has been removed from the parent media source" if something
+   tried to reuse it before `removeAllEventListener()` got to it) — left untouched.
+2. Added `RTSPOverWebSocket.ts`'s `resetPlayerElement()`, called from `stop()` right after
+   `player.control(this.info)`. Physically removes the current `<video>`/`<canvas>` node and replaces
+   it with a fresh one carrying the same id/`rtsp-channel-id`/`rtsp-channel-mapped-id`/style/class/
+   controls — literally the same swap `onRTSPOverWebSocketVideoMode()` already performs for a
+   canvas↔video Renderer Type switch (an established, already-precedented pattern in this codebase;
+   other code already assumes the video/canvas node can be replaced mid-session — e.g. the
+   `oncontextmenu` handler reads position off the bubbled event instead of a captured node reference
+   specifically because of this), just keyed off `this.video` directly instead of a
+   `document.getElementById()` lookup, since this runs as a method on the same class instance rather
+   than an id-carrying event handler. Confirmed safe to run *synchronously*, immediately after
+   `player.control()`, without waiting for its async TEARDOWN/close chain to finish:
+   `VideoTagPlayer.close()` operates on its own captured element reference (assigned once at `play()`
+   time, never re-queried from the DOM), so it still correctly tears down the old, by-then-detached
+   node regardless of when this swap happens; the *next* `play()` re-queries the DOM by the same
+   preserved attributes (`MediaRouter.selectVideoElement()`) and picks up the new node.
+
+**Not yet verified against a real device** — no live device access from this session. The user
+should confirm actual memory behavior (DevTools memory/performance tab, or `performance.memory`)
+across several play/stop cycles, and confirm nothing else in the app holds a stale direct reference
+to the pre-swap `<video>`/`<canvas>` node across a `stop()` call (anything reading `this.video`
+fresh, or querying the DOM again, is fine; a reference captured once and reused after `stop()` would
+now point at a detached node).
+
+**How to apply**: a "fully correct" MSE-API-level cleanup (revoke/clear/remove/end) is necessary but
+not always sufficient to actually reclaim a `<video>` element's real browser-internal memory —
+when a reported symptom is specifically "doesn't drop after teardown" rather than "grows during
+use," suspect the DOM node's own lifetime, not just the JS-level API calls made against it. Check
+whether the codebase already has a precedent for replacing that kind of node (here,
+`onRTSPOverWebSocketVideoMode()`'s existing swap, originally built for an unrelated reason) before
+inventing a new mechanism — reusing an established, already-tested pattern is lower risk than a
+novel one, especially for something as fiddly as DOM node lifecycle without a real device to verify
+against.
+
+## `RTSPOverWebSocket` instances leaked forever via unremoveable `window`/`window.document` listeners (fixed)
+
+Asked directly by the user to scan `RTSPOverWebSocket.ts` for memory leaks and fix anything fixable
+without changing behavior.
+
+Found three listeners registered against page-lifetime `EventTarget`s (`window`/`window.document`),
+none of them ever removed:
+
+1. Constructor: `window.document.addEventListener('webkitfullscreenchange'/'mozfullscreenchange'/
+   'fullscreenchange'/'MSFullscreenChange', this.exitHandler.bind(this), false)` — four separate
+   `.bind(this)` calls, each producing a distinct function reference.
+2. Constructor: `window.document.addEventListener('keyup', (evt) => {...}, false)` — an inline
+   arrow function.
+3. `contextmenuDiv()` (lazy, first right-click only): `window.addEventListener('click', () => {
+   if (this.menuVisible) toggleMenu('hide'); })` — another inline arrow function.
+
+`disconnectedCallback()` already existed (added 2026-08-11, see this file's own entry above) and
+already called `stop()` to tear down the actual WebSocket/`MediaSource`/RTP session — but it never
+touched these three. Since `document`/`window` outlive any particular `<rtsp-over-websocket>`
+instance, and `removeEventListener` requires the *same* function reference `addEventListener` was
+given, none of the three could ever have been removed even if `disconnectedCallback` had tried,
+without first being restructured to store the reference somewhere. Net effect: every single
+`<rtsp-over-websocket>` instance that had run its constructor (all of them) stayed reachable — via
+`document`/`window`'s own internal listener list holding a closure over `this` — for the rest of
+the page's life, regardless of DOM removal. Everything transitively reachable from `this`
+(`mediaRouter`, `player`/`backupplayer`, buffers, DOM subtrees no longer attached to the visible
+page) stayed pinned in memory too. Worst case: an app that creates/destroys player instances
+repeatedly (e.g. a multi-camera dashboard switching layouts, or this repo's own demo's Connect/
+Disconnect flow) accumulates one fully-alive-but-invisible instance per create/destroy cycle,
+unbounded.
+
+Fix, no behavior change — same listeners, same handlers, same effect while attached, just now
+actually removable:
+- Added three fields to hold the bound/created function references: `boundExitHandler` (a readonly
+  field initializer, `this.exitHandler.bind(this)`, reused for all four fullscreenchange variants
+  instead of calling `.bind()` four times), `boundDocumentKeyupHandler`, and
+  `boundWindowClickHideMenuHandler` (both `null` until actually registered).
+- Constructor and `contextmenuDiv()` now register the stored reference instead of an inline
+  closure.
+- `disconnectedCallback()` now also calls `removeEventListener` for all three, using the exact same
+  stored reference, in its own try/catch (matching the existing `stop()` try/catch's reasoning — a
+  browser-invoked lifecycle callback shouldn't throw uncaught). Guarded by `typeof window !==
+  'undefined'` like the constructor's own registration, and `!== null` for the two lazily-set
+  fields. Safe to call even when the listener was never added (e.g. the context-menu click handler
+  when a user never right-clicked) or already removed — `removeEventListener` is a no-op in both
+  cases, so no extra bookkeeping was needed to make this idempotent.
+
+Verified: `tsc -b` clean, full `npm run test:player` unaffected (63 unit tests still pass; the 2
+`SunapiManager.live.test.ts` failures are the pre-existing no-real-camera-reachable gap, unrelated
+— see this repo's `CLAUDE.md`).
+
+**How to apply**: any *future* `window`/`window.document`/other page-lifetime-`EventTarget`
+listener added to this class needs the same store-the-reference-then-remove-it-in-
+`disconnectedCallback` treatment from the start — an inline `.bind(this)` or arrow function passed
+straight to `addEventListener` is a silent, untestable leak (nothing throws, nothing fails a type
+check; the only symptom is unbounded memory growth in an app that churns instances, which is easy
+to never notice in manual testing of a single long-lived instance). This class's own child-DOM-node
+listeners (`dataToggleElement`/`dotElement`/`menuOptionElement`, etc.) don't need this — they're
+reclaimed together with their node once it's detached and unreferenced, same as any other DOM
+subtree torn down with its parent.

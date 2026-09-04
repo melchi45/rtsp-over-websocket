@@ -303,6 +303,12 @@ export class VideoTagPlayer extends VideoPlayer {
   private lastReportedCue: VTTCue | null = null;
   private timestampCuePollHandle: number | null = null;
   private clearBufferFlag = false;
+  // Temporary tracing for the Live-mode SourceBuffer-growth investigation --
+  // see the 'updateend' case in sourceBufferEventListener and
+  // checkBufferSize() below. To be stripped once the investigation
+  // concludes.
+  private traceDurationChangeCount = 0;
+  private traceUpdateEndCount = 0;
   private audioInfo: Mp4AudioTrackInfo = {
     id: 2,
     channelcount: 1,
@@ -453,29 +459,32 @@ export class VideoTagPlayer extends VideoPlayer {
           this.clearBufferFlag = false;
         }
         this.appendSegmentToSourceBuffer();
-        // Real bug, found live (Playback mode specifically -- confirmed via
-        // a direct trace that `durationchange` (this class's only other
-        // trigger for videoUpdating(), via onDurationChange()) stops firing
-        // entirely after the first handful of appended segments, even
-        // though appendBuffer() keeps succeeding here on every subsequent
+        // Real bug, found live in Playback mode -- confirmed via a direct
+        // trace that `durationchange` (this class's only other trigger for
+        // videoUpdating(), via onDurationChange()) stops firing entirely
+        // after the first handful of appended segments, even though
+        // appendBuffer() keeps succeeding here on every subsequent
         // 'updateend' -- an MSE implementation detail for a continuously-
         // growing fragmented-MP4 stream, not something this class controls.
         // videoUpdating()'s Playback branch is the only place that
         // auto-resumes playback if the <video> element ever pauses itself
-        // (a native buffering/waiting stall) -- once durationchange goes
-        // quiet, nothing does that anymore, which read live as playback
-        // getting stuck/oscillating near a stale position instead of
-        // continuing to advance through newly-buffered content. 'updateend'
-        // fires reliably on every successful append (confirmed by the same
-        // trace), so it's a much sturdier trigger for this than
-        // durationchange ever was. Scoped to Playback only (videoUpdating()
-        // already branches on playbackFlag internally, but this call site's
-        // narrower guard keeps Live mode's own existing durationchange-only
-        // cadence completely unchanged, since that side wasn't reported
-        // broken).
-        if (this.playbackFlag) {
-          this.videoUpdating();
-        }
+        // (a native buffering/waiting stall); it's also the only path that
+        // invokes checkBufferSize()'s `sourceBuffer.remove()` trimming. Once
+        // durationchange goes quiet, both stop -- which read live in
+        // Playback as playback getting stuck/oscillating near a stale
+        // position, and is suspected (pending the trace below) to cause
+        // unbounded SourceBuffer growth in Live mode the same way, since
+        // Live's only videoUpdating() trigger was still durationchange-only
+        // until this change. 'updateend' fires reliably on every successful
+        // append (confirmed by the same trace), so it's a much sturdier
+        // trigger than durationchange ever was -- now used unconditionally
+        // for both Live and Playback, rather than gated on playbackFlag
+        // (videoUpdating() itself still branches on playbackFlag
+        // internally for the rest of its behavior).
+        this.traceUpdateEndCount++;
+        // eslint-disable-next-line no-console
+        // console.log(`[VideoTagPlayer][trace] updateend #${this.traceUpdateEndCount} (playbackFlag=${this.playbackFlag}, durationchangeCount=${this.traceDurationChangeCount})`);
+        this.videoUpdating();
         break;
       }
       default:
@@ -1044,10 +1053,32 @@ export class VideoTagPlayer extends VideoPlayer {
   }
 
   private onVisibilityChange(): void {
-    if (!this.playbackFlag || document.visibilityState !== 'visible') {
+    if (document.visibilityState !== 'visible') {
       return;
     }
-    this.changeCurrentTime();
+    if (this.playbackFlag) {
+      this.changeCurrentTime();
+      return;
+    }
+    // Real bug, found live (reported by the user): minimizing the browser
+    // then restoring it left Live playback permanently stopped. This
+    // handler used to be a no-op for Live mode entirely -- while hidden,
+    // the browser throttles/freezes the <video> element's own playback
+    // (currentTime stops advancing) while RTP/WebSocket delivery and
+    // SourceBuffer appends keep going regardless (same underlying browser
+    // behavior Playback's changeCurrentTime() comment above already
+    // documents), so by the time the tab/window becomes visible again,
+    // currentTime has fallen far behind the buffered/live edge. Nothing
+    // used to force a catch-up check at that exact moment for Live --
+    // recovery depended entirely on the next durationchange/updateend
+    // happening to fire on its own, which could take a while (or, before
+    // durationchange's known stall was worked around, might never happen
+    // again at all). videoUpdating() already contains Live's own
+    // catch-up/resume logic (jump currentTime to endTime - defaultDelay,
+    // call videoPlay() if paused, when latency exceeds this.delay) -- just
+    // never had a reason to run right on visibility restore. Reused here
+    // instead of duplicating that logic.
+    this.videoUpdating();
   }
 
   private onPlaying(): void {
@@ -1223,11 +1254,28 @@ export class VideoTagPlayer extends VideoPlayer {
         if (this.bufferedFrameCount < MAX_BUFFER_FRAME_COUNT) {
           this.bufferedFrameCount += 5;
         }
+        // Real bug, found live (reported by the user): unlike the Playback
+        // branch above (explicit currentTime jump + videoPlay() when
+        // stalled), this Live branch used to only tune bufferedFrameCount
+        // here -- nothing actually moved currentTime forward or resumed
+        // playback on a native 'waiting' stall (e.g. after the tab/window
+        // was minimized and currentTime fell far behind the buffered/live
+        // edge while appends kept happening in the background). Reuses
+        // videoUpdating()'s own Live catch-up/resume logic (jump
+        // currentTime to endTime - defaultDelay, call videoPlay() if
+        // paused, when latency exceeds this.delay) instead of duplicating
+        // it here -- same fix as onVisibilityChange()'s Live branch above,
+        // covering the case where 'waiting' fires before/without a
+        // visibilitychange event.
+        this.videoUpdating();
       }
     }
   }
 
   private onDurationChange(): void {
+    this.traceDurationChangeCount++;
+    // eslint-disable-next-line no-console
+    console.log(`[VideoTagPlayer][trace] durationchange #${this.traceDurationChangeCount} (playbackFlag=${this.playbackFlag}, updateEndCount=${this.traceUpdateEndCount})`);
     this.videoUpdating();
   }
 
@@ -2198,10 +2246,14 @@ export class VideoTagPlayer extends VideoPlayer {
         if (!sourceBuffer.updating) {
           if (this.boxsize !== 1) {
             const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime());
+            // eslint-disable-next-line no-console
+            // console.log(`[VideoTagPlayer][trace] checkBufferSize trimming: buffered=${(endTime - startTime).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
             sourceBuffer.remove(0, removeEnd);
           } else {
             const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime()) - 60;
             if (removeEnd > 0) {
+              // eslint-disable-next-line no-console
+              // console.log(`[VideoTagPlayer][trace] checkBufferSize trimming: buffered=${(endTime - startTime).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
               sourceBuffer.remove(0, removeEnd);
             }
           }
@@ -2625,6 +2677,10 @@ export class VideoTagPlayer extends VideoPlayer {
 
   override close(): void {
     console.log('[VideoTagPlayer] close() called');
+    // eslint-disable-next-line no-console
+    console.log(
+      `[VideoTagPlayer][trace] close() queue sizes before clearing: segmentArray=${this.segmentArray.length}, videoSamples=${this.videoSamples.length}, audioSamples=${this.audioSamples.length}, boxStartTime=${this.boxStartTime.length}, mjpegPendingFrames=${this.mjpegPendingFrames.length}`
+    );
     this.videoPause();
     this.stopTimestampCuePolling();
 
@@ -2642,6 +2698,17 @@ export class VideoTagPlayer extends VideoPlayer {
           this.mediaSource.endOfStream();
         }
       }
+      // Previously left referenced after teardown -- `segmentArray`/
+      // `videoSamples`/`audioSamples` can hold a real backlog of queued
+      // Uint8Array frame data (e.g. if appendSegmentToSourceBuffer() was
+      // ever stalled), and none of them get GC'd until this instance itself
+      // does -- which may not happen promptly if something still holds a
+      // reference to this player. Drop them immediately here instead of
+      // waiting on that.
+      this.segmentArray = [];
+      this.videoSamples = [];
+      this.audioSamples = [];
+      this.boxStartTime = [];
       this.closeBridge();
       this.useBridge = false;
       this.closeMjpegEncoder();
@@ -2696,6 +2763,13 @@ export class VideoTagPlayer extends VideoPlayer {
         this.videoElement.style.background = '';
         window.URL.revokeObjectURL(this.videoElement.src);
       }
+      // `this.mediaSource` was previously never nulled after endOfStream()/
+      // removeSourceBuffer() above -- left until here (after
+      // removeAllEventListener(), which still needs a non-null
+      // `this.mediaSource` to actually detach its own listeners) so the
+      // reference is dropped rather than dangling until this instance is
+      // GC'd, without skipping that cleanup.
+      this.mediaSource = null;
       console.log('[VideoTagPlayer] close() finished cleanup successfully');
     } catch (error) {
       console.error('[VideoTagPlayer] close() cleanup threw:', error);

@@ -1,3 +1,4 @@
+import { XMLParser } from 'fast-xml-parser';
 import { fromHex } from '../util/hex';
 import { fastJsonStringfy } from '../util/fastJsonStringfy';
 import { RTSPOverWebSocketError } from '../exceptions/RTSPOverWebSocketError';
@@ -8,20 +9,43 @@ export interface ParsedMetaData {
   json?: string;
 }
 
-interface FastXmlParserLike {
-  validate(xml: string): boolean;
-  parse(xml: string, options: Record<string, unknown>): unknown;
-}
+// Options mirror the legacy player's own fast-xml-parser v2-era call
+// (attributeNamePrefix/attrNodeName/textNodeName/ignoreAttributes/
+// ignoreNameSpace/allowBooleanAttributes/parseNodeValue/parseAttributeValue/
+// decodeHTMLchar), translated to fast-xml-parser v5's option names --
+// `attrNodeName` -> `attributesGroupName`, `ignoreNameSpace` ->
+// `removeNSPrefix` (inverted sense preserved: `false` on both keeps
+// namespace prefixes like `tt:` on tag names, which ONVIF metadata XML
+// needs), `parseNodeValue` -> `parseTagValue`, `decodeHTMLchar` ->
+// `htmlEntities`.
+const xmlParser = new XMLParser({
+  attributeNamePrefix: '',
+  attributesGroupName: '@attributes',
+  textNodeName: 'value',
+  ignoreAttributes: false,
+  removeNSPrefix: false,
+  allowBooleanAttributes: true,
+  parseTagValue: true,
+  parseAttributeValue: false,
+  htmlEntities: true
+});
 
 /**
- * Ported from the legacy player’s Util/metaDataParser.
+ * Ported from the legacy player's Util/metaDataParser.
  *
- * `window.parser` (the optional `external-lib/fast-xml-parser` CDN script
- * the legacy demo page loaded) is read defensively here rather than
- * bundled as a new dependency: legacy itself treats it as fully optional
- * (`typeof window.parser !== 'undefined'` gates only the `.json` enrichment
- * — `.xml`/the callback still fire without it), so this matches that
- * graceful-degradation contract exactly rather than forcing the feature on.
+ * Real bug, found live: legacy's own `window.parser` (an optional
+ * `external-lib/fast-xml-parser` CDN script the legacy demo page loaded)
+ * used to be read defensively here rather than bundled, matching legacy's
+ * own graceful-degradation contract (`.xml`/the callback still fire without
+ * it, only `.json` enrichment was skipped). Confirmed live: neither of this
+ * repo's own consumers (`src/index.html`'s demo, `wisenet-camera-discovery`)
+ * ever actually loaded that optional script, so `.json` was *always*
+ * `undefined` in practice for every real consumer -- not a rare degraded
+ * path, the only path. Now bundles `fast-xml-parser` as a real dependency
+ * (Vite statically includes it in the built output, same as `moment`/`vis`/
+ * `file-saver` already are -- no runtime CDN fetch, so this is safe for a
+ * Manifest V3 Chrome extension's CSP, unlike loading a CDN script would be)
+ * so `.json` is always populated whenever `.xml` is.
  */
 export class MetaDataParser {
   private channelIdValue = 0;
@@ -94,25 +118,8 @@ export class MetaDataParser {
         return;
       }
 
-      const parser = (globalThis as unknown as { window?: { parser?: FastXmlParserLike } }).window?.parser;
-      if (typeof parser !== 'undefined') {
-        if (!parser.validate(metaData.xml)) {
-          throw new Error('This xml is not valid xml format fast using xml parser library.');
-        }
-        const options = {
-          attributeNamePrefix: '',
-          attrNodeName: '@attributes',
-          textNodeName: 'value',
-          ignoreAttributes: false,
-          ignoreNameSpace: false,
-          allowBooleanAttributes: true,
-          parseNodeValue: true,
-          parseAttributeValue: false,
-          decodeHTMLchar: true
-        };
-        const json = parser.parse(metaData.xml, options);
-        metaData.json = fastJsonStringfy(json);
-      }
+      const json = xmlParser.parse(metaData.xml);
+      metaData.json = fastJsonStringfy(json);
 
       this.callback(metaData);
     } catch (error) {

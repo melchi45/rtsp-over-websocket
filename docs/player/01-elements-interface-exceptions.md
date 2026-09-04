@@ -23,6 +23,7 @@
 | 2026-09-03 | Fifth follow-up, same fix: the fourth follow-up's removal regressed the original reported URL for real (reported live within the same session — `generateRTSPURL()` producing `.../0/recording/media.smp` instead of the expected playback URL for a `src` with no `mode=`) — restored the fallback inference, this time keyed on the literal `recording` **path segment** (`profileSegment === 'recording'`) rather than the filename, still only feeding the `mode`-based gate rather than being the gate itself |
 | 2026-09-03 | Sixth follow-up, same fix: mirrors `mode` onto `info.media.type` immediately inside the `mode === 'playback'` block (`this.info.media.type = 'playback';`), rather than leaving it to `play()`'s own assignment moments later, requested directly |
 | 2026-09-03 | `applySrcAttribute()` now resets `username`/`password`/`hostname`/`port`/`sessionKey`/`startTime`/`endTime`/`overlappedId`/`device`/`multicast`/`mode`/`profile`/`profile_number` unconditionally at the top of every call, requested directly — supersedes the narrower hostname-change-only credential clearing this method used to have. Real behavior change: setting `username`/`password` as properties *before* `src` no longer survives the next `src` assignment (see MEMORY.md) |
+| 2026-09-04 | Fixed a real memory leak: the constructor's `fullscreenchange`/`keyup` listeners (`window.document`) and `contextmenuDiv()`'s lazy click-to-hide-menu listener (`window`) were all registered with inline `.bind(this)`/arrow functions and never removed — `disconnectedCallback()` (added 2026-08-11, see above) only ever called `stop()`, not this. Since those three targets are page-lifetime `EventTarget`s, not this element, every `<rtsp-over-websocket>` instance ever created stayed reachable (pinning `mediaRouter`, players, buffers, everything) for the rest of the page's life once it had run its constructor, regardless of DOM removal — worst in an app that creates/destroys instances repeatedly (e.g. a multi-camera dashboard switching layouts). Fixed by storing each handler on `this` (`boundExitHandler`/`boundDocumentKeyupHandler`/`boundWindowClickHideMenuHandler`) and removing all three in `disconnectedCallback()`. No behavior change — same listeners, same effect, just now actually removable. Found by the user reading this file for exactly this kind of gap. |
 | 2026-09-01 | Fix mouse-wheel zoom anchoring on the wrong point: `ensureRTSPOverWebSocketWrapper()` now sets `transform-origin: 0 0` on the wrapper div |
 | 2026-09-01 | Fix `statistics` attribute requiring two toggles to hide the panel: `attributeChangedCallback`'s `'statistics'` case now treats a removed attribute as off, matching the sibling boolean-attribute convention |
 | 2026-09-01 | Fix camera-device drag-seek sending the wrong time: `generateRTSPURL()` no longer double-applies `GMT` to `seekingTime`, and `seeking()`'s camera branch now always recomputes `rangeClock` from `seekingTime` (was stuck on stale `_useIso`-gated logic) with the trailing `Z` stripped to match the camera's `samsung-replay-timezone` extension |
@@ -43,7 +44,9 @@
 | 2026-09-02 | Fix selecting a new event on a host page's timeline (`player.startTime = ...`) while a stream is already playing silently having no effect on the next `play()` — reported directly by the user. Root cause: `generateRTSPURL()`'s camera `playback` branch intentionally prioritizes `_localTimestamp` (an already-flowing stream's *current* position) over `startTime`, but `_localTimestamp` used to only get cleared by `stop()` or the `GMT` setter, not by `startTime` itself — so a fresh `startTime` assignment left the *previous* stream's stale `_localTimestamp` in place and got silently outranked by it, unlike `seekingTime`, which unconditionally overrides `strStart` regardless of priority. The `startTime` setter (`:~1482`) now also clears `_localTimestamp`, so an explicit new `startTime` always wins on the next `play()`; the pause/resume/speed path is unaffected since it reads `_localTimestamp` directly and never goes through this setter. |
 | 2026-09-03 | `GMT` setter (`:1891-1917`) now treats `v === undefined` the same as `v === null` — both normalize to the default `0` — instead of throwing `RTSPOverWebSocketError` 0x0414 on `undefined`. Requested directly by the user, who pointed at the setter's previous `if (typeof v !== 'number' && v === undefined) throw ... else if (v === null) { ...default...}` shape (the `typeof v !== 'number'` half of that first condition was always redundant, since `v === undefined` already implies it) and asked for `undefined` to fold into the `null` branch instead of the throw branch. The two branches were merged into one `if (v === null || v === undefined)` check; the legacy loose validation for any other non-number garbage (e.g. a string) — falling through to the range check unvalidated — is unchanged. |
 | 2026-09-03 | Direct follow-up, same setter: the "legacy loose validation" the entry above left unchanged (a non-number like a string silently fell through the range check, since `< -12`/`> 13` both evaluate `false` for it) is now removed at the user's explicit request — the range check became `if (typeof v !== 'number' || v < -12 || v > 13) throw ...`, so a non-number (that isn't already caught as `null`/`undefined` above) is rejected with the same `RTSPOverWebSocketError` 0x0414 an out-of-range number gets, instead of silently passing through to `setAttribute('gmt', String(v))`. The `(v as number)` casts on the old range check are gone too — TypeScript narrows `v` to `number` after the merged `typeof`/range guard on its own. |
-| 2026-09-03 | Fixed `onRTSPOverWebSocketMeta` silently dropping every metadata frame: it required both `meta.json` and `meta.xml` before dispatching the `'meta'` DOM event, but `.json` is explicitly optional (only populated if the consuming page loads the optional `external-lib/fast-xml-parser` CDN script, per `MetaDataParser.ts`'s own documented graceful-degradation contract). Reported directly by the user (`wisenet-camera-discovery` never loads that script, so `meta.json` was always `undefined` and the event never fired — no error, nothing in console). Now only requires `xml`. See `MEMORY.md`. |
+| 2026-09-03 | Fixed `onRTSPOverWebSocketMeta` silently dropping every metadata frame: it required both `meta.json` and `meta.xml` before dispatching the `'meta'` DOM event, but `.json` is explicitly optional (only populated if the consuming page loads the optional `external-lib/fast-xml-parser` CDN script, per `MetaDataParser.ts`'s own documented graceful-degradation contract). Reported directly by the user (`wisenet-camera-discovery` never loads that script, so `meta.json` was always `undefined` and the event never fired — no error, nothing in console). Changed the guard's `&&` to `||` per the user's explicit follow-up request — dispatches whenever either field is present. See `MEMORY.md`. |
+| 2026-09-04 | Added the ONVIF metadata overlay wiring: `onRTSPOverWebSocketMeta` now also drives a mounted `OnvifOverlay` (bounding boxes/labels colored by event type), gated on a new "ONVIF Event" context-menu toggle (`createSwitch()`, hidden until the first `VideoAnalytics` frame parses). Requested directly by the user. See `10-onvif-metadata-overlay.md` (new file) and `DESIGN.md` §2.7. |
+| 2026-09-04 | Reported by the user: memory usage climbs past 1GB during a long session and doesn't drop back down after `stop()`, requiring the video tag to be reinitialized manually. Added `resetPlayerElement()`, called from `stop()`, which physically removes and recreates the `<video>`/`<canvas>` DOM node (same attribute-preserving swap `onRTSPOverWebSocketVideoMode()` already uses for a Renderer Type switch) — a browser's internal MSE/decoder/GPU-backed memory for a `<video>` element isn't reliably reclaimed just by clearing `src`/`srcObject`, only by the node itself leaving the DOM. Also hardened `VideoTagPlayer.close()` (see `05-video-player-rendering.md`'s History) to drop its own queued-sample arrays and `mediaSource` reference immediately rather than waiting on GC. Not yet verified against a real device. See `MEMORY.md`. |
 
 ---
 
@@ -134,8 +137,12 @@ their exact location rather than fixed silently (file header comment,
   native `EventTarget` listener list.
 - Constructor also wires `oncontextmenu`/`onmousemove`/`onclick`/`ondblclick`/(non-standard)
   `onmousewheel` directly as element properties (`:280-289`), and registers
-  `fullscreenchange`/`keyup` listeners on `window.document` (`:291-307`) for the Esc/F11
-  fullscreen-toggle behavior.
+  `fullscreenchange`/`keyup` listeners on `window.document` for the Esc/F11 fullscreen-toggle
+  behavior, via `boundExitHandler`/`boundDocumentKeyupHandler` — bound-once fields rather than
+  inline `.bind(this)`/arrow functions specifically so `disconnectedCallback()` can remove them
+  with the same reference later (fixed 2026-09-04, see the History entry above — this was a real
+  leak before). `contextmenuDiv()`'s lazy click-to-hide-menu listener on `window`
+  (`boundWindowClickHideMenuHandler`) follows the same pattern for the same reason.
 
 ### Method Analysis
 
@@ -182,7 +189,14 @@ their exact location rather than fixed silently (file header comment,
   guarded the same way the `src`-attribute reconnect path already guards its own `stop()` call
   (`stop()` throws if nothing was ever playing); wrapped in try/catch + `console.error`, matching
   `connectedCallback`'s own pattern for the same reason (a lifecycle callback the browser invokes
-  directly shouldn't throw uncaught).
+  directly shouldn't throw uncaught). **Also removes the constructor's/`contextmenuDiv()`'s
+  `window`/`window.document` listeners** (`boundExitHandler`/`boundDocumentKeyupHandler`/
+  `boundWindowClickHideMenuHandler`, in a second try/catch), fixed 2026-09-04 — those three were
+  registered against page-lifetime `EventTarget`s and, until this fix, never removed, leaking
+  every instance for the rest of the page's life once its constructor had run, independent of
+  `stop()` tearing down its actual session. `removeEventListener` on a listener that was never
+  added (e.g. `boundWindowClickHideMenuHandler` when the context menu was never opened) or already
+  removed is a silent no-op, so this is safe to run unconditionally and more than once.
 - `updateRendering()` (private, `:2231-2338`) — builds the `.video-container` overlay (rewind/
   forward tap-notification DOM + styles) if not already built, appends `this.video` into the
   shared wrapper, and — if `autoplay` plus a resolved profile/device are present — calls `play()`.
@@ -549,9 +563,26 @@ their exact location rather than fixed silently (file header comment,
   new StreamPlayer(...)` if absent, and finally calls `player.control(this.info)`. **No longer
   throws up front for missing username/password** (see the 401-handling section below) — a long
   comment at `:4078-4090` explains the redesign explicitly.
-- `stop()` (`:4594-4625`) — regenerates the URL if needed, sets `cmd:'close'`, resets `playSpeed`
+- `stop()` (`:5472-5504`) — regenerates the URL if needed, sets `cmd:'close'`, resets `playSpeed`
   to 1x for playback sessions (unless this is an error-triggered stop, tracked via
-  `_withErrorStop`), calls `player.control(info)`, sets `_readyState = STOPPED`.
+  `_withErrorStop`), calls `player.control(info)`, sets `_readyState = STOPPED`, then calls the new
+  `resetPlayerElement()` (`:5429-5470`) — reported live: memory kept climbing past 1GB during a long
+  session and never dropped back down after `stop()`, even though `VideoTagPlayer.close()`'s own
+  cleanup (revoke object URL, clear `src`/`srcObject`, `removeSourceBuffer`/`endOfStream`) was
+  running correctly. Browsers don't reliably reclaim a `<video>` element's internal MSE/decoder/
+  GPU-backed memory from clearing `src` alone — the node itself has to actually leave the DOM.
+  `resetPlayerElement()` removes the current `<video>`/`<canvas>` node and replaces it with a fresh
+  one carrying the same id/`rtsp-channel-id`/`rtsp-channel-mapped-id`/style/class/controls — the
+  same swap `onRTSPOverWebSocketVideoMode()` already does for a canvas↔video Renderer Type switch,
+  just keyed off `this.video` directly rather than a `document.getElementById()` lookup. Safe to run
+  synchronously immediately after `player.control(info)`, before its async TEARDOWN/close chain
+  finishes: `VideoTagPlayer.close()` operates on its own captured element reference (set once at
+  `play()` time, never re-queried from the DOM), so it still tears down the old, now-detached node
+  correctly regardless of this swap; the next `play()` re-queries the DOM by the preserved
+  attributes (`MediaRouter.selectVideoElement()`) and picks up the new node. Also hardened
+  `VideoTagPlayer.close()` itself (`05-video-player-rendering.md`'s History) to drop its own large
+  queued-sample arrays and `mediaSource` reference rather than leaving them until the instance is
+  GC'd. Not yet verified against a real device for actual memory-usage impact. See `MEMORY.md`.
 - `pause()` / `resume()` (`:4627-4778`) — device/GMT-aware `rangeClock` recomputation (nvr playback
   mode only — camera is a documented no-op here, see the `generateRTSPURL()` fix note above),
   state-consistency checks (throws `0x1004` if already in the target state), `player.control(info)`.
@@ -836,8 +867,25 @@ their exact location rather than fixed silently (file header comment,
   callback unconditionally once `.xml` is set, regardless of `.json`. A consumer that never loads
   that optional script (confirmed live: `wisenet-camera-discovery`'s `window.html` doesn't) got
   `json` always `undefined`, so this guard silently dropped every metadata frame — no dispatch,
-  no error, nothing in the console. Now only requires `xml`; `json` still rides along when
-  present. See this repo's `MEMORY.md`.
+  no error, nothing in the console. Fixed by changing the guard's `&&` to `||` (per explicit user
+  follow-up request) — dispatches whenever *either* field is present. A second follow-up added a
+  `meta !== undefined && meta !== null` guard ahead of it, since the call site passes its argument
+  through unchecked. See this repo's `MEMORY.md`.
+  **ONVIF metadata overlay (2026-09-04, new)**: `onRTSPOverWebSocketMeta` gained one more side
+  effect alongside the existing `dispatch('meta', ...)` call (unchanged) — `meta.json` is also
+  passed to `parseOnvifVideoAnalyticsFrame()` (`util/onvifMetadata.ts`), and a successfully-parsed
+  frame is forwarded to a mounted `OnvifOverlay` instance's `render()`, but *only* while the new
+  "ONVIF Event" context-menu toggle (`onvifOverlaySwitch`, a `createSwitch()` controller — see
+  `10-onvif-metadata-overlay.md`) is On. The toggle row itself is built (and appended to the
+  context menu, alongside the Audio group) the first time a `VideoAnalytics` frame is successfully
+  parsed — mirroring the Audio group's existing "only show controls for data that's actually
+  present" convention — and stays hidden entirely on a stream that never sends ONVIF metadata.
+  `OnvifOverlay` is constructed once, alongside the video/canvas rendering element, in the same
+  place `elementSetting()`/`updateRendering()` set those up; its mounted `<svg>` is resized on the
+  same `onRTSPOverWebSocketResize()` path that already tracks `videoWidth`/`videoHeight` for the
+  statistics overlay, and torn down from the same per-instance cleanup `close()`/disconnect path
+  uses for everything else. See `10-onvif-metadata-overlay.md` for the full class reference and
+  `DESIGN.md` §2.7 for the coordinate-mapping algorithm.
 
 **Event plumbing (non-standard `EventTarget` override)**
 

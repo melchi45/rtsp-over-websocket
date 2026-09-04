@@ -12,6 +12,7 @@
 | 2026-08-04 | Harden the YouTube demo pipeline (yt-dlp staleness, graceful shutdown, keyframe gating) and add project docs (initial version) |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header; added "Future milestones" section |
 | 2026-08-26 | Add `deno`/`bgutil-ytdlp-pot-provider` to the Dependencies table (`e9a7e70`) |
+| 2026-09-04 | Add P-13 (ONVIF metadata overlay) to §1.3 |
 
 ---
 
@@ -49,6 +50,7 @@ dependency.
 | P-10 | Surface a live statistics overlay (`statistics` attribute) — bitrate, frame rate, drop count, RTP receive counters, latency — when enabled. |
 | P-11 | Support optional SUNAPI (device REST API) integration via an attached `sunapiClient`, independent of the RTSP-over-WebSocket stream itself, for device capability/profile queries. |
 | P-12 | Preserve every confirmed legacy behavioral quirk that a real call site depends on (documented inline at the point of preservation), rather than silently "fixing" it. |
+| P-13 | Render an optional overlay of ONVIF `VideoAnalytics` metadata (bounding boxes, per-object labels colored by event type) on top of the video, independent of rendering backend (`canvas`/`video`), toggleable from the context menu and hidden by default. |
 
 ### 1.4 Non-functional requirements
 

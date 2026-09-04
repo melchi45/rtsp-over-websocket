@@ -12,6 +12,8 @@ test cases.*
 | 2026-08-04 | Harden the YouTube demo pipeline (yt-dlp staleness, graceful shutdown, keyframe gating) and add project docs (initial version) |
 | 2026-08-04 | Add a React wrapper (Player.tsx) and demo panel, rename `custom/` to `elements/` |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-09-04 | Added §4.10 (ONVIF metadata overlay) — REQ-PLY-110 through REQ-PLY-116 |
+| 2026-09-04 | Corrected REQ-PLY-112 — real device data proved `Transformation` must NOT be applied to `Shape` coordinates, reversing the requirement's original direction |
 
 ---
 
@@ -142,6 +144,42 @@ events (`changehostname`, `changechannel`, `changeprofile`, `changeprofilenumber
   attribute case always throwing when set via markup because `attributeChangedCallback`'s `newValue` is always a
   string, never the real `boolean` the legacy check expects), this port MUST reproduce the bug rather than fix it,
   with the behavior documented inline at its exact location.
+
+### 4.10 ONVIF metadata overlay
+
+The player already parses ONVIF `MetadataStream` XML (delivered over the RTP `application` media
+line, see §4.6's `meta` event and `docs/player/03-mediaSession-core-video.md`'s `MetaDataParser`
+section) into `{ xml, json }` and dispatches it as the public `meta` event. This section covers
+*visualizing* that data on top of the video — an optional overlay layer, independent of `tagMode`
+(`canvas` or `video`).
+
+- **REQ-PLY-110**: The library MUST render, for each `tt:Object` in the most recently received
+  ONVIF `VideoAnalytics` `Frame`, a label showing at minimum its `ObjectId`, class/event type, and
+  `Likelihood` (when a `ClassCandidate` is present), positioned and scaled to match the video's
+  actual rendered box (accounting for `object-fit: contain` letterboxing/pillarboxing).
+- **REQ-PLY-111**: If a `tt:Object` carries a `tt:Shape/tt:BoundingBox`, the library MUST draw a
+  bounding box outline scaled/positioned to match the video's actual rendered box, using the same
+  coordinate mapping as REQ-PLY-110.
+- **REQ-PLY-112**: `BoundingBox`/`CenterOfGravity` coordinates MUST be read as intrinsic pixel space
+  directly, without applying `tt:Frame/tt:Transformation` (`Translate`/`Scale`) to them — a real
+  Wisenet/Samsung device capture (2048x1536) proved that device's `Shape` coordinates are already
+  pixel space, and its `Transformation` block is instead a pixel-to-normalized ONVIF-compliance
+  recipe unrelated to this rendering path; applying it corrupted otherwise-correct coordinates (see
+  `docs/DESIGN.md` §2.7 and `MEMORY.md` for the full incident writeup). An earlier version of this
+  requirement mandated the opposite (apply `Transformation` before rendering) based on an untested
+  assumption; this text was corrected once real device data disproved it.
+- **REQ-PLY-113**: The label required by REQ-PLY-110 MUST be positioned at the top edge of the
+  bounding box drawn for REQ-PLY-111, when a bounding box is present.
+- **REQ-PLY-114**: The bounding box's color MUST vary by class/event type (e.g. `Human`, `Vehicle`,
+  `Fire`, ...), from a built-in palette with a defined fallback color for a type not in the
+  palette.
+- **REQ-PLY-115**: The context menu MUST expose a show/hide toggle for this overlay, hidden until
+  at least one `meta` event carrying `VideoAnalytics` data has actually been received (matching the
+  existing convention for the Audio group — see `docs/player/01-elements-interface-exceptions.md`).
+  The overlay MUST default to hidden.
+- **REQ-PLY-116**: The toggle control itself MUST be implemented as a standalone, reusable
+  component under `src/player/components/ui/`, not inline markup construction — see
+  `docs/player/10-onvif-metadata-overlay.md` for its API.
 
 ## 5. Server requirements (`src/server`)
 

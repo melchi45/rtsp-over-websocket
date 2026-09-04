@@ -11,6 +11,9 @@ import { StreamPlayer } from '../interface/StreamPlayer';
 import type { StreamPlayerInfo } from '../interface/StreamPlayer';
 import { RTSPOverWebSocketPlayType, RTSPOverWebSocketPlayState, RTSPOverWebSocketBestshotFilter, RTSPOverWebSocketPlaySpeed, type RTSPOverWebSocketPlaySpeedEntry } from './RTSPOverWebSocketTypes';
 import * as panelStyles from './panelStyles';
+import { parseOnvifVideoAnalyticsFrame, type OnvifVideoAnalyticsFrame } from '../util/onvifMetadata';
+import { OnvifOverlay } from '../components/ui/onvifOverlay/OnvifOverlay';
+import { createSwitch, type SwitchController } from '../components/ui/switch/Switch';
 
 /**
  * Re-punctuates a `YYYYMMDDHHMMSS` compact timestamp (the digit-only shape
@@ -273,6 +276,21 @@ export class RTSPOverWebSocket extends HTMLElement {
   audioVolumeRowElement?: HTMLElement | null;
   audioVolumeButtons?: HTMLElement[] | null;
 
+  // ONVIF metadata overlay -- see docs/player/10-onvif-metadata-overlay.md.
+  onvifOverlay?: OnvifOverlay | null;
+  onvifOverlaySwitch?: SwitchController | null;
+  onvifOverlayRowElement?: HTMLElement | null;
+  hasReceivedOnvifMetadata?: boolean;
+  onvifVideoIntrinsicSize?: { width: number; height: number } | null;
+  /** The most recently parsed frame, cached regardless of whether it was
+   *  actually drawable at the time (see `renderOnvifOverlay()`'s own
+   *  comment) -- re-rendered from this cache whenever something that could
+   *  make it drawable changes (intrinsic size newly known, toggle switched
+   *  on), instead of only ever drawing on the next metadata frame to
+   *  arrive, which real ONVIF analytics streams don't send at a
+   *  predictable/frequent rate. */
+  onvifLastFrame?: OnvifVideoAnalyticsFrame | null;
+
   rewindElement?: HTMLElement;
   forwardElement?: HTMLElement;
   rewindSpanElement?: HTMLElement;
@@ -286,6 +304,21 @@ export class RTSPOverWebSocket extends HTMLElement {
   size?: { w: number | string; h: number | string };
   pos?: { x: number; y: number };
   scale?: number;
+
+  /** Bound refs for the `window.document`/`window`-level listeners the
+   *  constructor and (lazily) `contextmenuDiv()` register — see
+   *  `disconnectedCallback()`. These target page-lifetime `EventTarget`s,
+   *  not this element itself, so unlike a child DOM node's own listeners
+   *  (reclaimed together with the node once it's detached and unreferenced)
+   *  these keep the closure -- and everything reachable from `this` through
+   *  it -- alive for the rest of the page's life unless explicitly removed.
+   *  Stored so `removeEventListener` can be called with the exact same
+   *  function reference `addEventListener` used (an inline `.bind()`/arrow
+   *  function at each call site would produce a new, unremovable reference
+   *  every time). */
+  private readonly boundExitHandler = this.exitHandler.bind(this);
+  private boundDocumentKeyupHandler: ((evt: KeyboardEvent) => void) | null = null;
+  private boundWindowClickHideMenuHandler: (() => void) | null = null;
 
   constructor() {
     super();
@@ -363,21 +396,18 @@ export class RTSPOverWebSocket extends HTMLElement {
     (this as unknown as { onmousewheel: ((ev: Event) => void) | null }).onmousewheel = this.handleMouseWheel.bind(this) as unknown as (ev: Event) => void;
 
     if (typeof window !== 'undefined' && window.document.addEventListener) {
-      window.document.addEventListener('webkitfullscreenchange', this.exitHandler.bind(this), false);
-      window.document.addEventListener('mozfullscreenchange', this.exitHandler.bind(this), false);
-      window.document.addEventListener('fullscreenchange', this.exitHandler.bind(this), false);
-      window.document.addEventListener('MSFullscreenChange', this.exitHandler.bind(this), false);
-      window.document.addEventListener(
-        'keyup',
-        (evt: KeyboardEvent) => {
-          if (evt.keyCode === 27) {
-            this.toggleFullScreen(this);
-          } else if (evt.keyCode === 122) {
-            this.toggleFullScreen(this);
-          }
-        },
-        false
-      );
+      window.document.addEventListener('webkitfullscreenchange', this.boundExitHandler, false);
+      window.document.addEventListener('mozfullscreenchange', this.boundExitHandler, false);
+      window.document.addEventListener('fullscreenchange', this.boundExitHandler, false);
+      window.document.addEventListener('MSFullscreenChange', this.boundExitHandler, false);
+      this.boundDocumentKeyupHandler = (evt: KeyboardEvent) => {
+        if (evt.keyCode === 27) {
+          this.toggleFullScreen(this);
+        } else if (evt.keyCode === 122) {
+          this.toggleFullScreen(this);
+        }
+      };
+      window.document.addEventListener('keyup', this.boundDocumentKeyupHandler, false);
     }
   }
 
@@ -960,6 +990,20 @@ export class RTSPOverWebSocket extends HTMLElement {
    * used for the analogous case in the `src`-attribute reconnect path
    * above (`stop()` only when there's actually a player to stop; errors
    * caught rather than thrown out of a browser-invoked lifecycle callback).
+   *
+   * Also removes the `window`/`window.document`-level listeners the
+   * constructor and `contextmenuDiv()` register (`boundExitHandler`/
+   * `boundDocumentKeyupHandler`/`boundWindowClickHideMenuHandler`) — a
+   * second, previously-unfixed leak of the same shape as the one above:
+   * those listeners target page-lifetime `EventTarget`s, not this element,
+   * so without this they keep this instance (and everything reachable from
+   * it — `mediaRouter`, players, buffers) alive for the rest of the page's
+   * life even after `stop()` above tears down its actual session, in any
+   * app that creates/destroys `<rtsp-over-websocket>` instances repeatedly
+   * (e.g. switching a multi-camera dashboard's layout). Safe to call even
+   * if `connectedCallback` never ran (`removeEventListener` on a listener
+   * that was never added, or already removed, is a silent no-op) and safe
+   * to call more than once for the same reason.
    */
   disconnectedCallback(): void {
     try {
@@ -968,6 +1012,23 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
     } catch (error) {
       console.error('RTSPOverWebSocket: failed to clean up on disconnectedCallback', error);
+    }
+
+    try {
+      if (typeof window !== 'undefined' && window.document.removeEventListener) {
+        window.document.removeEventListener('webkitfullscreenchange', this.boundExitHandler, false);
+        window.document.removeEventListener('mozfullscreenchange', this.boundExitHandler, false);
+        window.document.removeEventListener('fullscreenchange', this.boundExitHandler, false);
+        window.document.removeEventListener('MSFullscreenChange', this.boundExitHandler, false);
+        if (this.boundDocumentKeyupHandler !== null) {
+          window.document.removeEventListener('keyup', this.boundDocumentKeyupHandler, false);
+        }
+        if (this.boundWindowClickHideMenuHandler !== null) {
+          window.removeEventListener('click', this.boundWindowClickHideMenuHandler);
+        }
+      }
+    } catch (error) {
+      console.error('RTSPOverWebSocket: failed to remove window/document listeners on disconnectedCallback', error);
     }
   }
 
@@ -2535,6 +2596,17 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.scale = 1;
     }
 
+    // ONVIF metadata overlay -- mounted once as a further sibling in the
+    // same wrapper `.video-container`/`this.video` already use, with the
+    // same `position: absolute; width/height: 100%` pattern
+    // `VIDEO_CONTAINER_STYLE` already establishes (see
+    // docs/player/10-onvif-metadata-overlay.md), so it overlays the video
+    // identically regardless of tagMode. Idempotent: `updateRendering()`
+    // can run more than once per instance (e.g. a renderer-type change).
+    if (this.onvifOverlay === undefined || this.onvifOverlay === null) {
+      this.onvifOverlay = new OnvifOverlay(rtspOverWebSocketWrapperElement);
+    }
+
     // Legacy bug preserved: mixes the public `profile_number` getter with the
     // raw `_profile_number` field in the same condition (should have used
     // the getter consistently), and both duplicate the same well-formed
@@ -3046,6 +3118,22 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
+  /** REQ-PLY-115: the "ONVIF Event" toggle row stays hidden until at least
+   *  one `VideoAnalytics` frame has actually been received (matching the
+   *  Audio group's own "only show controls for data that's actually
+   *  present" convention above, though that group dims/disables rather
+   *  than hides -- there's no meaningful "disabled but visible" state for a
+   *  stream that has never sent any ONVIF metadata at all). Called both
+   *  from `onRTSPOverWebSocketMeta()` (metadata may arrive before the
+   *  context menu is ever built -- see `contextmenuDiv()`'s lazy,
+   *  built-on-first-right-click construction) and once from
+   *  `contextmenuDiv()` itself right after building the row, to cover
+   *  metadata that arrived first. */
+  private applyOnvifOverlayMenuState(): void {
+    if (this.onvifOverlayRowElement === undefined || this.onvifOverlayRowElement === null) return;
+    this.onvifOverlayRowElement.style.display = this.hasReceivedOnvifMetadata === true ? 'flex' : 'none';
+  }
+
   /** Generic rolling-history line-chart renderer, normalized against the
    * history's own local min/max (not against 0) so it reads as an actual
    * "intensity" chart — subtle relative variation stays visible — rather
@@ -3175,6 +3263,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.appendStyle(panelStyles.CONTEXT_MENU_OPTION_HOVER_STYLE);
       this.appendStyle(panelStyles.CONTEXT_MENU_BUTTON_STYLE);
       this.appendStyle(panelStyles.CONTEXT_MENU_AUDIO_STYLE);
+      this.appendStyle(panelStyles.UI_SWITCH_STYLE);
     }
 
     const toggleMenu = (command: 'show' | 'hide'): void => {
@@ -3259,12 +3348,55 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.audioVolumeRowElement = audioVolumeRowElement;
       this.audioVolumeButtons = audioVolumeButtons;
 
+      // ONVIF Event overlay toggle (REQ-PLY-115/116) -- hidden by default
+      // (both `display: none` here and `createSwitch`'s own `initialValue:
+      // false`) until applyOnvifOverlayMenuState() reveals it, and built via
+      // the standalone createSwitch() component rather than inline markup
+      // (docs/player/10-onvif-metadata-overlay.md).
+      const onvifOverlayRowElement = document.createElement('div');
+      onvifOverlayRowElement.setAttribute('class', 'menu-option onvif-overlay-row');
+      onvifOverlayRowElement.style.display = 'none';
+      const onvifOverlayLabelElement = document.createElement('span');
+      onvifOverlayLabelElement.setAttribute('class', 'onvif-overlay-label');
+      onvifOverlayLabelElement.innerText = 'ONVIF Event';
+      const onvifOverlaySwitch = createSwitch({
+        initialValue: false,
+        ariaLabel: 'Toggle ONVIF event overlay',
+        onChange: (value) => {
+          this.onvifOverlay?.setVisible(value);
+          // See renderOnvifOverlay()'s own comment -- turning the overlay on
+          // is one of the three triggers it needs, in case a frame arrived
+          // before intrinsic size was known and no later frame has come in
+          // since to retroactively fix it on its own.
+          if (value) {
+            this.renderOnvifOverlay();
+          }
+        }
+      });
+      onvifOverlayRowElement.appendChild(onvifOverlayLabelElement);
+      onvifOverlayRowElement.appendChild(onvifOverlaySwitch.element);
+      this.menuOptionElement.appendChild(onvifOverlayRowElement);
+
+      this.onvifOverlaySwitch = onvifOverlaySwitch;
+      this.onvifOverlayRowElement = onvifOverlayRowElement;
+      // Covers metadata that arrived before the menu was ever built (this
+      // whole block only runs once, on the first right-click) -- see this
+      // method's own doc comment.
+      this.applyOnvifOverlayMenuState();
+
       this.contextmenuElement.appendChild(this.menuOptionElement);
       this.ensureRTSPOverWebSocketWrapper().appendChild(this.contextmenuElement);
 
-      window.addEventListener('click', () => {
+      // Stored on `this` (rather than an inline arrow function, which
+      // `disconnectedCallback()` could never remove -- see
+      // `boundWindowClickHideMenuHandler`'s own field comment) since this
+      // targets `window`, a page-lifetime `EventTarget` that would otherwise
+      // keep this closure -- and `this` -- alive past this element's own
+      // removal from the DOM.
+      this.boundWindowClickHideMenuHandler = () => {
         if (this.menuVisible) toggleMenu('hide');
-      });
+      };
+      window.addEventListener('click', this.boundWindowClickHideMenuHandler);
 
       this.menuOptionElement.addEventListener('click', (ev: Event) => {
         const target = ev.target as HTMLElement;
@@ -3879,6 +4011,19 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.resolutionElement.textContent = event.width + ' x ' + event.height;
     }
 
+    // ONVIF overlay coordinate mapping (docs/DESIGN.md §2.7) needs the
+    // video's own intrinsic pixel resolution -- cached here, read back in
+    // onRTSPOverWebSocketMeta() at render time (container size is measured
+    // fresh there instead of cached, since it can change independent of any
+    // resize event this class gets told about).
+    if (typeof event.width === 'number' && typeof event.height === 'number' && event.width > 0 && event.height > 0) {
+      this.onvifVideoIntrinsicSize = { width: event.width, height: event.height };
+      // See renderOnvifOverlay()'s own comment -- a metadata frame that
+      // arrived before intrinsic size was known drew nothing at the time;
+      // this retroactively draws it now that sizing is available.
+      this.renderOnvifOverlay();
+    }
+
     const videoElement = getElementByAttributeValue(event.tagmode, 'rtsp-channel-mapped-id', event.elementId);
 
     if (videoElement !== undefined) {
@@ -3910,7 +4055,7 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   onRTSPOverWebSocketMeta(meta: RTSPOverWebSocketMetaEvent): void {
     // Real bug, found live: this used to require *both* `json` and `xml` to
-    // be defined before ever dispatching the 'meta' DOM event -- but
+    // be defined (`&&`) before ever dispatching the 'meta' DOM event -- but
     // MetaDataParser.ts's own `.json` enrichment is explicitly optional
     // (only populated when the consuming page happens to load the
     // `external-lib/fast-xml-parser` CDN script and set `window.parser`;
@@ -3919,13 +4064,65 @@ export class RTSPOverWebSocket extends HTMLElement {
     // script -- confirmed live: wisenet-camera-discovery's window.html
     // doesn't -- got `json` always `undefined`, so this guard silently
     // dropped every single metadata frame, dispatching nothing at all, no
-    // error either. Now only requires `xml` (the field MetaDataParser.ts
-    // itself always populates before calling back), matching that
-    // documented graceful-degradation contract; `json` still rides along
-    // when it happens to be present.
-    if (typeof meta.xml !== 'undefined') {
+    // error either. Changed `&&` to `||` per explicit user request: dispatch
+    // whenever *either* field is present, rather than narrowing the
+    // condition to `xml` alone. Also guards `meta` itself (per explicit user
+    // follow-up) -- the call site (`info.callback.meta`, above) passes
+    // `args[0]` straight through unchecked, so a caller invoking this with
+    // no argument at all would otherwise throw reading `.json`/`.xml` off
+    // `undefined`/`null`.
+    if (meta !== undefined && meta !== null && (typeof meta.json !== 'undefined' || typeof meta.xml !== 'undefined')) {
       this.dispatch('meta', { json: meta.json, xml: meta.xml });
+
+      // ONVIF metadata overlay (REQ-PLY-110..116, docs/player/10-onvif-metadata-overlay.md)
+      // -- a pure addition alongside the public 'meta' event above, not a
+      // replacement for it.
+      if (typeof meta.json === 'string') {
+        const frame = parseOnvifVideoAnalyticsFrame(meta.json);
+        if (frame !== null) {
+          this.onvifLastFrame = frame;
+          if (this.hasReceivedOnvifMetadata !== true) {
+            this.hasReceivedOnvifMetadata = true;
+            this.applyOnvifOverlayMenuState();
+          }
+          this.renderOnvifOverlay();
+        }
+      }
     }
+  }
+
+  /** Draws `this.onvifLastFrame` (if any) at the current
+   *  `this.onvifVideoIntrinsicSize`/container size. Real bug, found live:
+   *  the first version of this only ever rendered from
+   *  `onRTSPOverWebSocketMeta()` itself, at the moment a frame arrived --
+   *  but `onvifVideoIntrinsicSize` (set from `onRTSPOverWebSocketResize()`,
+   *  first fired on the video's own first keyframe) has no ordering
+   *  guarantee relative to the metadata RTP track, which is a logically
+   *  independent stream. A metadata frame arriving before the first video
+   *  keyframe rendered nothing at all (see `OnvifOverlay.render()`'s own
+   *  early-return guard on a zero intrinsic size) -- and since real ONVIF
+   *  analytics streams aren't guaranteed to send a steady stream of frames
+   *  (event-triggered, can go quiet for a while), there was no guarantee
+   *  a *later* frame would ever arrive to retroactively fix it: reported
+   *  live as "turned the toggle on, no bounding box ever shows up." Now
+   *  factored out and also called from `onRTSPOverWebSocketResize()` (once
+   *  intrinsic size becomes newly known) and the toggle's own `onChange`
+   *  (turning the overlay on), so whichever of "a frame arrives" / "sizing
+   *  becomes known" / "the user actually looks at it" happens last is what
+   *  triggers the draw, instead of requiring metadata specifically to be
+   *  the *last* of the three. */
+  private renderOnvifOverlay(): void {
+    if (this.onvifOverlay === undefined || this.onvifOverlay === null) return;
+    if (this.onvifLastFrame === undefined || this.onvifLastFrame === null) return;
+    const container = this.rtspOverWebSocketWrapperElement;
+    this.onvifOverlay.render({
+      frame: this.onvifLastFrame,
+      videoIntrinsicSize: this.onvifVideoIntrinsicSize ?? { width: 0, height: 0 },
+      containerSize: {
+        width: container?.clientWidth ?? 0,
+        height: container?.clientHeight ?? 0
+      }
+    });
   }
 
   onRTSPOverWebSocketMetaImage(event: RTSPOverWebSocketMetaImageEvent): void {
@@ -5291,6 +5488,12 @@ export class RTSPOverWebSocket extends HTMLElement {
 
     this.player.control(this.info);
     this._readyState = RTSPOverWebSocketPlayState.STOPPED;
+    // Hide any ONVIF overlay left over from the just-stopped session --
+    // `this.onvifLastFrame` isn't cleared, so without this a stale bounding
+    // box would keep showing (or instantly reappear if the "ONVIF Event"
+    // toggle is flipped) even though nothing is playing anymore. Requested
+    // directly by the user.
+    this.onvifOverlay?.setVisible(false);
   }
 
   pause(): void {

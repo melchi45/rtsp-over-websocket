@@ -38,6 +38,7 @@
     "dependencies": {
         "crypto-js": "^4.1.1",
         "express": "^4.22.2",
+        "fast-xml-parser": "^5.11.1",
         "file-saver": "^2.0.5",
         "moment-timezone": "^0.5.43",
         "three": "0.84.0",

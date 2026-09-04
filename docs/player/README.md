@@ -1,6 +1,6 @@
 # `src/player` — Per-Class Reference Documentation
 
-*Index and reading guide for the 8-file, per-class reference doc set covering every subsystem under `src/player`
+*Index and reading guide for the 10-file, per-class reference doc set covering every subsystem under `src/player`
 — structure, method analysis, call stacks, RFC/standard references, and relations/data flow, one file per
 subsystem.*
 
@@ -14,6 +14,8 @@ subsystem.*
 | 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-08-26 | Add file 09 (MP4 container generation) to the index, RFC map, and discrepancies list |
+| 2026-09-04 | Add file 10 (ONVIF metadata overlay) to the index; correct the abstract's stale file count (8 -> 10) |
+| 2026-09-04 | Remove the W3C SVG standards-map row — `OnvifOverlay` was switched from SVG to plain `<div>`s, so it no longer uses a standards-defined graphics API |
 
 ---
 
@@ -31,7 +33,7 @@ It complements two existing documents rather than replacing them:
 
 ## How the set is organized
 
-The library is documented in 9 files, split by subsystem so each stays a manageable read. Files
+The library is documented in 10 files, split by subsystem so each stays a manageable read. Files
 cross-reference each other by class name only — a class documented in file *N* that collaborates
 with a class in file *M* is named, not re-explained.
 
@@ -46,6 +48,7 @@ with a class in file *M* is named, not re-explained.
 | [07-talk-backup-worker.md](07-talk-backup-worker.md) | Two-way audio, client-side backup, Web Workers | `Talk`, `G711AudioEncoder`, `BackupProvider`, `FileMaker`, `AssemblyDecoder`, `AssemblyTranscoder`, `MjpegDepacketizer`, `SunapiRequestTask`, `AviFormatWriter`/`AviFileWriter`, `BackupSession` |
 | [08-util.md](08-util.md) | Stand-alone utilities | `BufferList`, `CircularTypedArrayQueue`, `Mean`/`Median`, `IntervalTimer`, `Fisheye3D`/`Fisheye3DMulti`, misc. helpers |
 | [09-mp4-container-generation.md](09-mp4-container-generation.md) | Box-level fMP4/ISOBMFF generation (vendored, not a class) | `vendor/mp4Generator.js` — `ftyp`/`moov`/`moof`/`mdat` box tree, per-codec `stsd` entries |
+| [10-onvif-metadata-overlay.md](10-onvif-metadata-overlay.md) | ONVIF `VideoAnalytics` bounding-box overlay + reusable toggle | `parseOnvifVideoAnalyticsFrame` (`util/onvifMetadata.ts`), `OnvifOverlay`, `onvifEventColors`, `createSwitch` (`components/ui/`) |
 
 ## End-to-end flow across the documents
 
@@ -119,6 +122,7 @@ sections; this is a quick index of which standard governs which part of the wire
 | Microsoft RIFF/AVI (no IETF/ITU standard) | `AviFormatWriter`/`AviFileWriter` local recording | 07 |
 | PKWARE .ZIP spec (no IETF/ITU standard) | `zipWorker` local export | 07 |
 | No standard — vendor/SUNAPI-specific | `MetaSession`/`MetaDataParser` metadata channel | 03, 04 |
+| ONVIF Streaming Spec / `onvif.xsd` (`tt:` namespace, not an IETF/ITU standard) | `tt:MetadataStream`/`VideoAnalytics`/`Frame`/`Object`/`Shape`/`ClassDescriptor` shapes `onvifMetadata.ts` parses out of `MetaDataParser`'s JSON | 10 |
 
 ## Notable discrepancies found while writing this set
 

@@ -611,6 +611,50 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   'box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);\r\n' +
   '}';
 
+// `createSwitch()`'s (`components/ui/switch/Switch.ts`) reusable toggle
+// styling -- see docs/player/10-onvif-metadata-overlay.md. Deliberately
+// matches `wisenet-camera-discovery`'s `mountSwitch({variant: 'slider'})`
+// dark-theme appearance (40x20 track, 14px accent-colored thumb via a
+// bordered track + solid-colored thumb, not this file's own differently
+// sized/colored `.audio-toggle-*` classes above) -- a requested external
+// visual-parity target, not derived from the pre-existing Audio toggle.
+export const UI_SWITCH_STYLE =
+  '.ui-switch{\r\n' +
+  'display: inline-flex;\r\n' +
+  'align-items: center;\r\n' +
+  'cursor: pointer;\r\n' +
+  '}\r\n' +
+  '.ui-switch-track{\r\n' +
+  'position: relative;\r\n' +
+  'width: 40px;\r\n' +
+  'height: 20px;\r\n' +
+  'border-radius: 34px;\r\n' +
+  'background: #191B20;\r\n' +
+  'border: 1px solid #3A4049;\r\n' +
+  'transition: background-color 0.2s ease-out;\r\n' +
+  'box-sizing: border-box;\r\n' +
+  '}\r\n' +
+  '.ui-switch-thumb{\r\n' +
+  'position: absolute;\r\n' +
+  'top: 2px;\r\n' +
+  'left: 2px;\r\n' +
+  'width: 14px;\r\n' +
+  'height: 14px;\r\n' +
+  'border-radius: 50%;\r\n' +
+  'background: #3B82F6;\r\n' +
+  'transition: transform 0.2s ease-out;\r\n' +
+  '}\r\n' +
+  '.ui-switch.on .ui-switch-track{ background: #1C2C4A; }\r\n' +
+  '.ui-switch.on .ui-switch-thumb{ transform: translateX(20px); }\r\n' +
+  '.menu .menu-options .onvif-overlay-row{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: center;\r\n' +
+  'justify-content: space-between;\r\n' +
+  '}\r\n' +
+  '.menu .onvif-overlay-label{\r\n' +
+  'color: #E8E8EA;\r\n' +
+  '}';
+
 export const VIDEO_CONTAINER_STYLE = '.video-container {\r\n' + 'position: absolute;\r\n' + 'overflow: hidden;\r\n' + 'width: 100%;\r\n' + 'height: 100%;\r\n' + '}';
 
 export const VIDEO_FORWARD_NOTIFY_STYLE =
