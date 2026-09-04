@@ -12,6 +12,7 @@ subsystem's documentation — data structures, timing, and math utilities.*
 | 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-09-03 | Added `avcConfigParser.ts` (`parseAvcConfigurationRecord`/`buildAvc1CodecString`) — feeds MJPEG's new `WebCodecsVideoEncoder`-based real-MSE tier. See `05-video-player-rendering.md`, `07-talk-backup-worker.md` §3b, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
+| 2026-09-04 | Added `debugLog.ts` (`DebugConfig`/`DebugTarget`, `parseDebugAttribute`, `validateDebugConfig`, `isDebugEnabled`, `createDebugLogger`) — backs the new `debug` attribute on `RTSPOverWebSocket` (`01-elements-interface-exceptions.md`), consumed by every subsystem's own `debug` setter/`setDebugConfig()` (`02` through `07`). |
 
 ---
 
@@ -40,6 +41,7 @@ Everything here is exported from the `util/` barrel, [`src/player/util/index.ts`
   [`getElementByAttributeValue`](#getelementbyattributevalue-utilgetelementbyattributevaluets),
   [`hex.ts`](#hexts-utilhexts), [`indexOfMulti`](#indexofmulti-utilindexofmultits)
 - MSE codec strings: [`avcConfigParser.ts`](#avcconfigparserts-utilavcconfigparserts) (new, 2026-09-03)
+- Diagnostics: [`debugLog.ts`](#debuglogts-utildebuglogts) (new, 2026-09-04)
 
 All of these are ported from the legacy player's `Util/util` grab-bag module (or, for the fisheye files, from
 `Util/fishEye3D` / `Util/fishEye3D_multi`), per each file's own header comment. None of them import from elsewhere
@@ -1018,3 +1020,67 @@ Added 2026-09-03, alongside MJPEG's new `WebCodecsVideoEncoder`-based real-MSE t
 - **Relations & Data Flow** — Consumed only by `VideoTagPlayer.ts` (`video/player/video/`,
   documented in `05-video-player-rendering.md`); produces data for `vendor/mp4Generator`'s
   `Mp4VideoTrackInfo` shape (`09-mp4-container-generation.md`) but never calls into it directly.
+
+---
+
+### `debugLog.ts` (`util/debugLog.ts`)
+
+*New, 2026-09-04. Backs the `debug` attribute/property on `RTSPOverWebSocket.ts` — see
+`01-elements-interface-exceptions.md`'s History entry for the attribute itself, and
+`02`/`03`/`04`/`05`/`06`/`07`'s own History entries for how each subsystem wires it in.*
+
+- **Structure**
+  - `DebugSubsystem = 'mediaSession' | 'network' | 'listen' | 'video' | 'backup'` — the five
+    groupings a component can belong to, matching this doc set's own file split (`02` = network,
+    `03`/`04` = mediaSession, `05` = video, `06` = listen, `07` = backup). `vendor/` is
+    deliberately excluded: it has no real runtime classes to gate (plain functions/minified
+    Emscripten glue, confirmed by inspection).
+  - `DebugTarget = boolean | string[]` — `true` enables every component in a subsystem; a string
+    array enables only the named ones (exact match against a literal component name — see below).
+  - `DebugConfig` — `{[K in DebugSubsystem]?: DebugTarget} & {'*'?: boolean}`, the parsed shape of
+    the `debug` attribute's JSON value. `'*': true` is a shortcut that overrides every individual
+    subsystem key.
+
+- **Method Analysis**
+  - `parseDebugAttribute(raw: string): DebugConfig` — `JSON.parse`s the attribute string, then
+    delegates to `validateDebugConfig`. Throws a plain `Error` (not `RTSPOverWebSocketError`) on
+    malformed JSON or an invalid shape — `RTSPOverWebSocket.ts`'s `attributeChangedCallback`
+    `case 'debug'` catches this and re-throws as `RTSPOverWebSocketError` (`0x0414`, the same
+    generic invalid-attribute-value code every other malformed attribute case already uses).
+  - `validateDebugConfig(value: unknown): DebugConfig` — shared by `parseDebugAttribute` and the
+    `debug` property setter (which also accepts an already-parsed object directly, not just a JSON
+    string). Rejects a non-object top level, an unrecognized key (anything other than the five
+    subsystem names or `'*'`), or a subsystem value that isn't a boolean or string array.
+  - `isDebugEnabled(config, subsystem, componentName): boolean` — resolves whether one component
+    should log: `false` for a `null`/`undefined` config (the default, attribute never set), `true`
+    if `config['*']`, else the subsystem's own boolean-or-array resolution.
+  - `createDebugLogger(config, subsystem, componentName): (...args: unknown[]) => void` — returns
+    either a no-op or a `console.log`-backed function prefixed `[componentName]`. This is the
+    **only** function in the whole feature that touches `console.log` directly (one
+    `eslint-disable-next-line no-console`) — every consuming class across `02`–`07` just calls the
+    function this returns, so none of them need their own lint exception.
+
+- **Design notes** (why this shape, not something else — see `MEMORY.md` for the full narrative)
+  - **Setters, not constructor parameters.** Every class this feature touches already takes only
+    optional, defaulted constructor params (worker/context factories); the established idiom for
+    "configure an already-constructed instance" elsewhere in this codebase is a post-construction
+    setter (`MediaRouter`'s `deviceType`/`boxsize` get/set pairs; `RtpClient`'s
+    `new H264Session()` → `.init()` → `.setFramerate(...)` sequence). A `debug`/`setDebugConfig()`
+    setter follows that same pattern instead of touching ~15 constructor signatures and their
+    test call sites.
+  - **No `constructor.name` reflection.** `build:player` ships minified (`build:player:dev`
+    doesn't); matching user-supplied class-name strings against runtime reflection would silently
+    break if a minifier ever renamed classes. Every component instead hardcodes its own literal
+    name at the exact point it builds its logger (`createDebugLogger(config, 'video',
+    'VideoTagPlayer')`, not `this.constructor.name`) — the same principle the pre-existing
+    `[RtspClient]`/`[VideoTagPlayer]` log prefixes already used before this feature existed.
+  - **Base-class sharing where one exists.** `Session` (all `*Session` classes), `AudioPlayer`,
+    `AudioDecoder`, and `VideoPlayer` each get the gate added once at the base rather than
+    duplicated per concrete subclass — cutting the real edit count from ~40 files to ~20.
+
+- **Relations & Data Flow** — `RTSPOverWebSocket.ts` → `StreamPlayerInfo.debug`
+  (`interface/StreamPlayer.ts`) → `StreamPlayer`'s constructor, which applies it to `mediaRouter`/
+  `rtspClient` immediately and to `rtpClient` once `startStreaming()` constructs it →
+  `MediaRouter`/`RtpClient` forward it onward to every video/audio/talk/backup/metadata-parser/
+  session instance they construct. See `01-elements-interface-exceptions.md`'s `StreamPlayer`
+  constructor bullet for the exact propagation hops.

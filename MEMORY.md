@@ -4065,3 +4065,77 @@ to never notice in manual testing of a single long-lived instance). This class's
 listeners (`dataToggleElement`/`dotElement`/`menuOptionElement`, etc.) don't need this — they're
 reclaimed together with their node once it's detached and unreferenced, same as any other DOM
 subtree torn down with its parent.
+
+## New `debug` attribute: per-component `console.log` tracing (`util/debugLog.ts`)
+
+Requested directly by the user, prompted by a smaller, immediate irritation: `VideoTagPlayer.ts`'s
+`checkBufferSize`/`updateend` trace `console.log`s (added 2026-09-04 as temporary memory-investigation
+diagnostics, see `05-video-player-rendering.md`'s History) were firing constantly in normal use and had
+to be manually commented out. Rather than just deleting them, the user asked for a general mechanism:
+a JSON `debug` attribute on `<rtsp-over-websocket>` naming which internal component groups
+(`mediaSession`/`network`/`listen`/`video`/`backup`, `vendor` excluded — no real runtime classes there)
+should log, propagated from the element through `StreamPlayer` down into every session/player class.
+
+**Design decisions, and why** (see `docs/player/08-util.md`'s `debugLog.ts` entry for the fuller
+version):
+
+1. **Post-construction setters, not constructor parameters.** Every touched class already takes only
+   optional, defaulted constructor params (worker/context factories) — adding a required `debug` arg
+   to ~15 constructors would have meant updating every call site and test double. This codebase already
+   has an established idiom for "configure an already-built instance" (`MediaRouter`'s `deviceType`/
+   `boxsize` get/set pairs; `RtpClient`'s `new H264Session()` → `.init()` → `.setFramerate(...)`
+   sequence) — a `debug`/`setDebugConfig()` setter follows that pattern instead.
+2. **No `constructor.name` reflection.** `build:player` ships minified; matching a user-supplied class
+   name string against runtime reflection would silently break if a minifier ever renamed classes.
+   Every component instead hardcodes its own literal name at the exact point it builds its logger —
+   the same principle the pre-existing `[RtspClient]`/`[VideoTagPlayer]` log prefixes already used.
+   Where a *dispatcher* class already knows exactly which concrete subclass it just built
+   (`RtpClient` picking `H264Session` vs `VP9Session` vs ... from SDP `codecName`;
+   `AudioPlayerGxx.audioInit()` picking a decoder from `codecType`; `MediaRouter.selectVideoPlayer()`
+   picking `VideoTagPlayer` vs `CanvasTagPlayer` from its own `tagMode`), that dispatcher passes the
+   precise literal name in (`session.setDebugConfig(config, 'H264Session')`). Where it doesn't
+   (`MediaRouter`'s `createAudioPlayer()` factory call site has no branching to hang a name off of,
+   since `StreamPlayer`'s default factories always return `AudioPlayerGxx` and the factory abstraction
+   itself doesn't distinguish it from `AudioPlayerAAC`), the shared base class just logs a fixed name
+   (`'AudioPlayer'`) — an accepted precision trade-off, documented at the call site.
+3. **Base-class sharing where one already exists.** `Session` (all 13 `*Session` classes extend it,
+   directly or via `RtpSession`), `AudioPlayer` (`AudioPlayerGxx`/`AudioPlayerAAC`), `AudioDecoder`
+   (AAC/G711/G726x/OPUS decoders), and `VideoPlayer` (`CanvasTagPlayer`/`VideoTagPlayer`) each got the
+   gate added once at the base — cutting the real per-file edit count from ~40 to ~20, and meaning
+   `04-mediaSession-audio-text.md`'s four codec-session classes needed **zero** file changes at all.
+4. **`XmlParser.ts` and `AACAudioDecoder.ts`'s existing `console.log`s were deliberately left alone.**
+   `XmlParser` is documented as pure, stateless parsing helpers — adding mutable debug state would
+   fight that design. `AACAudioDecoder`'s two logs ('Construct AAC Codec'/'AAC Decoder init') are
+   explicitly documented in that file's own header comment as preserved-faithfully legacy behavior,
+   always-on by design — not something this feature should silence.
+5. **Read once at `play()` time, not live-reactive.** Matches how most other attributes on this
+   element already behave (`grunt`, etc.) — setting `debug` mid-stream only takes effect on the next
+   `play()`/reconnect, not the currently-running session. Simpler, and matches the actual use case
+   (turn tracing on before reproducing an issue, not toggle it live mid-stream).
+
+**A real bug found and fixed during this work, via the exact same lesson as an earlier session's
+`RTSPOverWebSocket.ts` leak-fix verification**: an early Playwright-based end-to-end check (setting
+`el.debug` on a real element, clicking Play against a deliberately-unroutable test address, and
+checking for the resulting `[Transport]`/`[RtspClient]` console lines) initially reported the gate as
+*not* actually gating — a "without `debug` set" control run showed the exact same log lines as the
+"with `debug` set" run. Root cause: the control run manually removed the first run's element via
+`document.getElementById('player-host').removeChild(el)` directly (bypassing the demo page's own
+`disconnect()` helper), leaving that helper's closure-scoped `playerEl` variable stale; the next
+`#btn-connect` click's internal `disconnect()` call then threw `NotFoundError` trying to remove an
+already-detached node, aborting that click handler *before* it reached `document.createElement(...)`
+— so the "control" run's Play click actually re-invoked `.play()` on the **first** (debug-enabled)
+element, not a fresh one. Fixed the test by using a full `page.goto()` reload between runs instead of
+a manual `removeChild`. Once fixed, the comparison showed exactly what was expected: 4 gated log lines
+with `debug` set, 0 without. **How to apply**: this is a second, independent confirmation of the same
+methodology trap — never manually detach a DOM node this demo page's own inline script also tracks in
+a closure variable; either drive the page's own buttons for the whole lifecycle, or fully reload
+between isolated runs.
+
+Also fixed along the way, found only by actually running the above end-to-end check rather than just
+`tsc -b`: `StreamPlayer.ts`'s constructor forwarded `debugConfig` to `mediaRouter` immediately and
+(later, in `startStreaming()`) to `rtpClient`, but never to `rtspClient` — and `RtspClient.Connect()`
+never forwarded it to the `Transport` it constructs internally either. Both were silent gaps (nothing
+threw, nothing failed a type check) that a live check was the only way to actually catch — worth
+re-checking whenever a new dispatcher/factory call site is added to this propagation chain in the
+future, since "compiles clean" alone doesn't prove a `debug` setter is actually being called anywhere
+along the real path.

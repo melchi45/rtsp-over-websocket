@@ -2,6 +2,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { fromHex } from '../util/hex';
 import { fastJsonStringfy } from '../util/fastJsonStringfy';
 import { RTSPOverWebSocketError } from '../exceptions/RTSPOverWebSocketError';
+import { createDebugLogger, type DebugConfig } from '../util/debugLog';
 
 export interface ParsedMetaData {
   channelId: number;
@@ -69,6 +70,12 @@ export class MetaDataParser {
     this.deviceTypeValue = v;
   }
 
+  /** See util/debugLog.ts. */
+  private debugLog: (...args: unknown[]) => void = () => {};
+  set debug(config: DebugConfig | null) {
+    this.debugLog = createDebugLogger(config, 'mediaSession', 'MetaDataParser');
+  }
+
   // NOTE: legacy memoizes converted characters by codepoint (`charCache`) to
   // avoid repeated String.fromCodePoint calls — a pure perf optimization
   // with no effect on the output string, dropped here for simplicity.
@@ -121,6 +128,7 @@ export class MetaDataParser {
       const json = xmlParser.parse(metaData.xml);
       metaData.json = fastJsonStringfy(json);
 
+      this.debugLog('parse() ->', metaData.json);
       this.callback(metaData);
     } catch (error) {
       throw new RTSPOverWebSocketError({

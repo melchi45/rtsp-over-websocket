@@ -1,6 +1,7 @@
 import { Size } from '../../../../util/Size';
 import { browserDetect } from '../../../../util/BrowserDetect';
 import { Shader, Program, Texture, createShaderScript, glError, type ShaderScript } from './GLPrimitives';
+import { createDebugLogger, type DebugConfig } from '../../../../util/debugLog';
 
 function undefinedGlobalError(name: string): ReferenceError {
   return new ReferenceError(`${name} is not defined`);
@@ -69,6 +70,12 @@ export class WebGLCanvas {
   protected framebufferTexture: Texture | null = null;
   protected renderbuffer: WebGLRenderbuffer | null = null;
   private mvMatrix: Float32Array = IDENTITY_MATRIX_4X4;
+  /** See util/debugLog.ts. `componentName` is the concrete subclass's own literal name (only
+   *  `YUVWebGLCanvas` exists today) -- same reasoning as `Session.setDebugConfig()`. */
+  protected debugLog: (...args: unknown[]) => void = () => {};
+  setDebugConfig(config: DebugConfig | null, componentName: string): void {
+    this.debugLog = createDebugLogger(config, 'video', componentName);
+  }
 
   constructor(canvas: HTMLCanvasElement, gl: WebGLRenderingContext, size: Size, useFrameBuffer?: boolean) {
     this.canvas = canvas;

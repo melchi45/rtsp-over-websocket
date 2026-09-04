@@ -3,6 +3,7 @@ import { IntervalTimer } from '../../util/IntervalTimer';
 import { uint8ArrayToString, stringToUint8Array } from '../../util/binaryString';
 import { indexOfMulti } from '../../util/indexOfMulti';
 import { WebsocketStatusCode } from '../WebsocketStatusCode';
+import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
 
 const MAGIC_NUMBER = 0x24;
 const CR = 0x0d;
@@ -83,6 +84,12 @@ export class Transport {
   private statisticsTimer: IntervalTimer | null = null;
   private fragmentedData: Uint8Array | null = null;
   private readonly listeners = new Map<(event: TransportEvent) => void, { type: TransportEventType; listener: (event: TransportEvent) => void }>();
+
+  /** See util/debugLog.ts. */
+  private debugLog: (...args: unknown[]) => void = () => {};
+  set debug(config: DebugConfig | null) {
+    this.debugLog = createDebugLogger(config, 'network', 'Transport');
+  }
 
   constructor(private readonly serverAddr: string) {}
 
@@ -344,6 +351,7 @@ export class Transport {
   }
 
   Connect(): void {
+    this.debugLog('Connect() ->', this.serverAddr);
     try {
       if (this.websock === null) {
         this.websock = this.createWebSocket(this.serverAddr);
@@ -363,6 +371,7 @@ export class Transport {
   }
 
   Disconnect(): void {
+    this.debugLog('Disconnect() -> readyState:', this.readyState);
     try {
       if (this.websock !== null) {
         this.websock.close();

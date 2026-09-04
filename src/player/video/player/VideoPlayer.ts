@@ -2,6 +2,7 @@ import { CircularTypedArrayQueue } from '../../util/CircularTypedArrayQueue';
 import { Median } from '../../util/Median';
 import { fromHex } from '../../util/hex';
 import type { VideoStreamData, VideoInfo, AudioStreamData, AudioInfo, WaitingEvent } from '../../mediaSession';
+import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
 
 export interface NetworkStateErrorEvent {
   channelId: number;
@@ -58,6 +59,17 @@ export abstract class VideoPlayer {
   minTimerInterval = 1;
   maxdelay = 0.3;
   currentdelay = this.maxdelay;
+
+  /** See util/debugLog.ts. `componentName` is the concrete subclass's own literal name
+   *  (`'VideoTagPlayer'`/`'CanvasTagPlayer'`) -- `MediaRouter.selectVideoPlayer()` always knows
+   *  which one it just built (from its own `tagMode` decision), same reasoning as
+   *  `Session.setDebugConfig()`. */
+  protected debugLog: (...args: unknown[]) => void = () => {};
+  protected debugConfig: DebugConfig | null = null;
+  setDebugConfig(config: DebugConfig | null, componentName: string): void {
+    this.debugConfig = config;
+    this.debugLog = createDebugLogger(config, 'video', componentName);
+  }
 
   // No default: legacy never assigns this until setErrorCallback() is
   // called, so `this.errorCallback(...)` (e.g. from the rfps setter below)

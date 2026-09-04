@@ -1,4 +1,5 @@
 import type { VideoStreamData, VideoInfo } from '../../../mediaSession';
+import { createDebugLogger, type DebugConfig } from '../../../util/debugLog';
 
 export interface StepBufferNode {
   playMode: string;
@@ -35,6 +36,12 @@ export class StepBufferList {
   private listLength = 0;
   private curIndex = 0;
   private stepList: StepBufferNode[] = [];
+  /** See util/debugLog.ts. This gate is what the "Temporary diagnostic (2026-09-02)" comment
+   *  below should have been from the start -- now opt-in instead of always-on. */
+  private debugLog: (...args: unknown[]) => void = () => {};
+  set debug(config: DebugConfig | null) {
+    this.debugLog = createDebugLogger(config, 'video', 'StepBufferList');
+  }
 
   private clear(): void {
     this.stepList = [];
@@ -62,7 +69,7 @@ export class StepBufferList {
     // Temporary diagnostic (2026-09-02): see MediaRouter.ts's matching log
     // -- investigating a live report of forward()/backward() getting stuck
     // forever (step never completes, buttons never re-enable).
-    console.log('[StepBufferList] push:', { length: this.stepList.length, bufferingLength: this.bufferingLength, framerate: videoInfo.framerate });
+    this.debugLog('push:', { length: this.stepList.length, bufferingLength: this.bufferingLength, framerate: videoInfo.framerate });
     return this.stepList.length >= this.bufferingLength ? false : true;
   }
 

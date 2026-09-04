@@ -3,6 +3,7 @@ import { Size } from '../../../util/Size';
 import { fromHex } from '../../../util/hex';
 import { RTSPOverWebSocketError } from '../../../exceptions/RTSPOverWebSocketError';
 import { YUVWebGLCanvas } from './webgl/YUVWebGLCanvas';
+import { createDebugLogger, type DebugConfig } from '../../../util/debugLog';
 
 type CanvasWithUpdatedFlag = HTMLCanvasElement & { updatedCanvas?: boolean };
 
@@ -45,6 +46,10 @@ class Image2DCanvas {
   }
 
   destroy(): void {}
+
+  /** See util/debugLog.ts. No-op (`Image2DCanvas` has nothing worth tracing today) -- exists
+   *  purely so `CanvasRenderer` can call it unconditionally on either half of the `Drawer` union. */
+  setDebugConfig(_config: DebugConfig | null, _componentName: string): void {}
 }
 
 type Drawer = YUVWebGLCanvas | Image2DCanvas;
@@ -80,6 +85,13 @@ export class CanvasRenderer {
   private fileName: string | null = null;
   private size: Size | null = null;
   private minimapInfo: { isUpdate: boolean; element: CanvasWithUpdatedFlag | null } = { isUpdate: false, element: null };
+  private debugConfig: DebugConfig | null = null;
+  /** See util/debugLog.ts. */
+  private debugLog: (...args: unknown[]) => void = () => {};
+  set debug(config: DebugConfig | null) {
+    this.debugConfig = config;
+    this.debugLog = createDebugLogger(config, 'video', 'CanvasRenderer');
+  }
 
   // Injectable, matching this codebase's established pattern for
   // browser-dependent APIs (audioContextFactory, XhrFactory, etc.) — defaults
@@ -135,6 +147,7 @@ export class CanvasRenderer {
   }
 
   init(element?: CanvasWithUpdatedFlag): void {
+    this.debugLog('init()');
     if (element === undefined) {
       throw new RTSPOverWebSocketError({
         channelId: this.channelId,
@@ -173,6 +186,7 @@ export class CanvasRenderer {
         default:
           break;
       }
+      this.drawer?.setDebugConfig(this.debugConfig, this.codecType === 'MJPEG' ? 'Image2DCanvas' : 'YUVWebGLCanvas');
     }
   }
 
@@ -258,6 +272,7 @@ export class CanvasRenderer {
             this.mapDrawer = new Image2DCanvas(this.minimapInfo.element, this.minimapInfo.element.getContext('2d') as CanvasRenderingContext2D, mapSize);
             break;
         }
+        this.mapDrawer?.setDebugConfig(this.debugConfig, this.codecType === 'MJPEG' ? 'Image2DCanvas' : 'YUVWebGLCanvas');
       }
     }
     if (command === 'draw') {

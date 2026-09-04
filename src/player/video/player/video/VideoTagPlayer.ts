@@ -483,7 +483,7 @@ export class VideoTagPlayer extends VideoPlayer {
         // internally for the rest of its behavior).
         this.traceUpdateEndCount++;
         // eslint-disable-next-line no-console
-        // console.log(`[VideoTagPlayer][trace] updateend #${this.traceUpdateEndCount} (playbackFlag=${this.playbackFlag}, durationchangeCount=${this.traceDurationChangeCount})`);
+        this.debugLog(`[trace] updateend #${this.traceUpdateEndCount} (playbackFlag=${this.playbackFlag}, durationchangeCount=${this.traceDurationChangeCount})`);
         this.videoUpdating();
         break;
       }
@@ -1274,8 +1274,7 @@ export class VideoTagPlayer extends VideoPlayer {
 
   private onDurationChange(): void {
     this.traceDurationChangeCount++;
-    // eslint-disable-next-line no-console
-    console.log(`[VideoTagPlayer][trace] durationchange #${this.traceDurationChangeCount} (playbackFlag=${this.playbackFlag}, updateEndCount=${this.traceUpdateEndCount})`);
+    this.debugLog(`[trace] durationchange #${this.traceDurationChangeCount} (playbackFlag=${this.playbackFlag}, updateEndCount=${this.traceUpdateEndCount})`);
     this.videoUpdating();
   }
 
@@ -2247,13 +2246,13 @@ export class VideoTagPlayer extends VideoPlayer {
           if (this.boxsize !== 1) {
             const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime());
             // eslint-disable-next-line no-console
-            // console.log(`[VideoTagPlayer][trace] checkBufferSize trimming: buffered=${(endTime - startTime).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
+            this.debugLog(`[trace] checkBufferSize trimming: buffered=${(endTime - startTime).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
             sourceBuffer.remove(0, removeEnd);
           } else {
             const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime()) - 60;
             if (removeEnd > 0) {
               // eslint-disable-next-line no-console
-              // console.log(`[VideoTagPlayer][trace] checkBufferSize trimming: buffered=${(endTime - startTime).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
+              this.debugLog(`[trace] checkBufferSize trimming: buffered=${(endTime - startTime).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
               sourceBuffer.remove(0, removeEnd);
             }
           }
@@ -2676,10 +2675,9 @@ export class VideoTagPlayer extends VideoPlayer {
   override stop(): void {}
 
   override close(): void {
-    console.log('[VideoTagPlayer] close() called');
-    // eslint-disable-next-line no-console
-    console.log(
-      `[VideoTagPlayer][trace] close() queue sizes before clearing: segmentArray=${this.segmentArray.length}, videoSamples=${this.videoSamples.length}, audioSamples=${this.audioSamples.length}, boxStartTime=${this.boxStartTime.length}, mjpegPendingFrames=${this.mjpegPendingFrames.length}`
+    this.debugLog('close() called');
+    this.debugLog(
+      `[trace] close() queue sizes before clearing: segmentArray=${this.segmentArray.length}, videoSamples=${this.videoSamples.length}, audioSamples=${this.audioSamples.length}, boxStartTime=${this.boxStartTime.length}, mjpegPendingFrames=${this.mjpegPendingFrames.length}`
     );
     this.videoPause();
     this.stopTimestampCuePolling();
@@ -2770,7 +2768,7 @@ export class VideoTagPlayer extends VideoPlayer {
       // reference is dropped rather than dangling until this instance is
       // GC'd, without skipping that cleanup.
       this.mediaSource = null;
-      console.log('[VideoTagPlayer] close() finished cleanup successfully');
+      this.debugLog('close() finished cleanup successfully');
     } catch (error) {
       console.error('[VideoTagPlayer] close() cleanup threw:', error);
     }

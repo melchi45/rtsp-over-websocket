@@ -13,6 +13,7 @@ import { OPUSSession } from './audioSession/OPUSSession';
 import { AACSession } from './audioSession/AACSession';
 import { MetaSession } from './textSession/MetaSession';
 import type { SdpInfoEntry } from '../network/rtspOverWebsocket';
+import { createDebugLogger, type DebugConfig } from '../util/debugLog';
 
 export type MediaRouterMessageType = 'close' | 'backup' | 'stepPlay' | 'bufferFree' | 'audioBackup';
 
@@ -67,10 +68,25 @@ export class RtpClient {
   channelId: number;
   /** Never assigned anywhere in legacy rtpClient itself — only ever set (if at all) by an external caller directly on the instance. Preserved as a plain public field for that same escape hatch. */
   rtpWaitingTimeout?: number;
+  private _debugConfig: DebugConfig | null = null;
+  /** See util/debugLog.ts -- the modernized, opt-in replacement for the always-on legacy
+   *  debug/info logger calls this class's own doc comment above notes were dropped during the
+   *  TS port. */
+  private debugLog: (...args: unknown[]) => void = () => {};
 
   constructor(private readonly mediaRouter: MediaRouterLike) {
     this.channelId = mediaRouter.channelId;
     mediaRouter.addListener('rtpClient', (msgType, data) => this.mediaRouterMessage(msgType, data));
+  }
+
+  /** See util/debugLog.ts. Applied to every session this class constructs from here on (session-
+   *  construction happens in `sendSdpInfo()`, always after `debug` would already be set). */
+  set debug(config: DebugConfig | null) {
+    this._debugConfig = config;
+    this.debugLog = createDebugLogger(config, 'mediaSession', 'RtpClient');
+  }
+  get debug(): DebugConfig | null {
+    return this._debugConfig;
   }
 
   private mediaRouterMessage(msgType: MediaRouterMessageType, _data: unknown): void {
@@ -114,6 +130,10 @@ export class RtpClient {
   }
 
   sendSdpInfo(sdpInfo: SdpInfoEntry[]): void {
+    this.debugLog(
+      'sendSdpInfo()',
+      sdpInfo.map((e) => e.codecName)
+    );
     for (let sdpIndex = 0; sdpIndex < sdpInfo.length; sdpIndex++) {
       let rtpSession: RtpSession | null = null;
       const entry = sdpInfo[sdpIndex];
@@ -123,6 +143,7 @@ export class RtpClient {
           const session = new H264Session();
           session.init();
           session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
+          session.setDebugConfig(this._debugConfig, 'H264Session');
           rtpSession = session;
           break;
         }
@@ -130,6 +151,7 @@ export class RtpClient {
           const session = new H265Session();
           session.init();
           session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
+          session.setDebugConfig(this._debugConfig, 'H265Session');
           rtpSession = session;
           break;
         }
@@ -137,6 +159,7 @@ export class RtpClient {
           const session = new VP8Session();
           session.init();
           session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
+          session.setDebugConfig(this._debugConfig, 'VP8Session');
           rtpSession = session;
           break;
         }
@@ -144,6 +167,7 @@ export class RtpClient {
           const session = new VP9Session();
           session.init();
           session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
+          session.setDebugConfig(this._debugConfig, 'VP9Session');
           rtpSession = session;
           break;
         }
@@ -151,12 +175,14 @@ export class RtpClient {
           const session = new AV1Session();
           session.init();
           session.setFramerate(typeof entry.Framerate === 'undefined' ? 0 : entry.Framerate);
+          session.setDebugConfig(this._debugConfig, 'AV1Session');
           rtpSession = session;
           break;
         }
         case 'JPEG': {
           const session = new MjpegSession();
           session.init();
+          session.setDebugConfig(this._debugConfig, 'MjpegSession');
           rtpSession = session;
           break;
         }
@@ -165,10 +191,12 @@ export class RtpClient {
             const session = new G711Session();
             session.init({ clockFreq: Number(entry.ClockFreq), bitrate: entry.Bitrate || 64 });
             session.mime = entry.codecMime ?? '';
+            session.setDebugConfig(this._debugConfig, 'G711Session');
             rtpSession = session;
             this.mediaRouter.setAudioCodecHint('G711');
           } else {
             this.audioTalkSession = new AudioTalkSession(entry.RtpInterlevedID!);
+            this.audioTalkSession.setDebugConfig(this._debugConfig, 'AudioTalkSession');
             this.mediaRouter
               .startAudioTalk((stream) => this.sendAudioTalkData(stream))
               .then((sampleRate) => this.setSampleRate(sampleRate))
@@ -187,6 +215,7 @@ export class RtpClient {
               bitrate: entry.Bitrate ? entry.Bitrate : parseInt(entry.codecName!.substr(6, 2), 10)
             });
             session.mime = entry.codecMime ?? '';
+            session.setDebugConfig(this._debugConfig, 'G726Session');
             rtpSession = session;
             this.mediaRouter.setAudioCodecHint('G726');
           }
@@ -200,6 +229,7 @@ export class RtpClient {
               bitrate: entry.Bitrate || 0
             });
             session.mime = entry.codecMime ?? '';
+            session.setDebugConfig(this._debugConfig, 'OPUSSession');
             rtpSession = session;
             this.mediaRouter.setAudioCodecHint('OPUS');
           }
@@ -217,6 +247,7 @@ export class RtpClient {
               indexDeltaLength: entry.IndexDeltaLength ? Number(entry.IndexDeltaLength) : undefined
             });
             session.mime = entry.codecMime ?? '';
+            session.setDebugConfig(this._debugConfig, 'AACSession');
             rtpSession = session;
             this.mediaRouter.setAudioCodecHint('AAC');
           }
@@ -225,6 +256,7 @@ export class RtpClient {
         case 'MetaData': {
           const session = new MetaSession();
           session.init();
+          session.setDebugConfig(this._debugConfig, 'MetaSession');
           rtpSession = session;
           break;
         }
@@ -234,6 +266,7 @@ export class RtpClient {
 
       if (rtpSession !== null) {
         const rtcpSession = new RTCPSession();
+        rtcpSession.setDebugConfig(this._debugConfig, 'RTCPSession');
         rtcpSession.interleavedId = entry.RtcpInterlevedID!;
         rtcpSession.deviceType = this.mediaRouter.deviceType;
         rtcpSession.channelId = this.channelId;

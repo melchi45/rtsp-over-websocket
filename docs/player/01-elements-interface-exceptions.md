@@ -47,6 +47,7 @@
 | 2026-09-03 | Fixed `onRTSPOverWebSocketMeta` silently dropping every metadata frame: it required both `meta.json` and `meta.xml` before dispatching the `'meta'` DOM event, but `.json` is explicitly optional (only populated if the consuming page loads the optional `external-lib/fast-xml-parser` CDN script, per `MetaDataParser.ts`'s own documented graceful-degradation contract). Reported directly by the user (`wisenet-camera-discovery` never loads that script, so `meta.json` was always `undefined` and the event never fired — no error, nothing in console). Changed the guard's `&&` to `||` per the user's explicit follow-up request — dispatches whenever either field is present. See `MEMORY.md`. |
 | 2026-09-04 | Added the ONVIF metadata overlay wiring: `onRTSPOverWebSocketMeta` now also drives a mounted `OnvifOverlay` (bounding boxes/labels colored by event type), gated on a new "ONVIF Event" context-menu toggle (`createSwitch()`, hidden until the first `VideoAnalytics` frame parses). Requested directly by the user. See `10-onvif-metadata-overlay.md` (new file) and `DESIGN.md` §2.7. |
 | 2026-09-04 | Reported by the user: memory usage climbs past 1GB during a long session and doesn't drop back down after `stop()`, requiring the video tag to be reinitialized manually. Added `resetPlayerElement()`, called from `stop()`, which physically removes and recreates the `<video>`/`<canvas>` DOM node (same attribute-preserving swap `onRTSPOverWebSocketVideoMode()` already uses for a Renderer Type switch) — a browser's internal MSE/decoder/GPU-backed memory for a `<video>` element isn't reliably reclaimed just by clearing `src`/`srcObject`, only by the node itself leaving the DOM. Also hardened `VideoTagPlayer.close()` (see `05-video-player-rendering.md`'s History) to drop its own queued-sample arrays and `mediaSource` reference immediately rather than waiting on GC. Not yet verified against a real device. See `MEMORY.md`. |
+| 2026-09-04 | Added a `debug` attribute/property: a JSON object naming which internal components (grouped by subsystem — `mediaSession`/`network`/`listen`/`video`/`backup`, matching `docs/player/02` through `07`'s own groupings, `vendor` excluded) should emit gated `console.log` tracing. `attributeChangedCallback`'s new `'debug'` case parses+validates the JSON (`util/debugLog.ts`'s `parseDebugAttribute()`), throwing `RTSPOverWebSocketError` (`0x0414`, the same generic invalid-attribute code every other malformed case uses) on bad shape; the `debug` property setter additionally accepts a pre-parsed object directly. Stored on `info.debug` (new `StreamPlayerInfo` field, see below) — read once by `StreamPlayer`'s constructor at `play()` time, not re-read afterward (matches most other attributes' "set before play" semantics). Requested directly by the user. See `03-mediaSession-core-video.md`, `05-video-player-rendering.md`, `06-listen-audio.md`, `07-talk-backup-worker.md`, and `08-util.md`'s new `debugLog.ts` entry for the full propagation chain and per-subsystem detail. |
 
 ---
 
@@ -1201,7 +1202,11 @@ one `control()`/`controlWorker()` command surface.
   framedrop from `configInfo.media`), and creates `RtspClient` immediately (optionally with a
   custom `transportFactory` — the DI seam parity/unit tests use), wiring
   `rtspClient.channelId` and `rtspClient.SetSunapiClient(sunapiClient)`. **`RtpClient` is *not*
-  created here** — see `startStreaming()` below.
+  created here** — see `startStreaming()` below. Also reads `configInfo.debug` (2026-09-04, see
+  util/debugLog.ts) into a `readonly debugConfig` field, applied immediately to `mediaRouter` and
+  `rtspClient` (`.debug = this.debugConfig`) and later to `rtpClient` once `startStreaming()`
+  constructs it — the one config value threading through every subsystem's own `debug`
+  setter/`setDebugConfig()`.
   `defaultMediaRouterFactories()` (`:105-119`) is the real, browser-backed factory set: creates
   `CanvasTagPlayer`/`VideoTagPlayer`/`AudioPlayerGxx`/`Talk`/`MetaDataParser`/`BackupProvider` on
   demand — this is the concrete injection `MediaRouter` itself never imports directly (dependency

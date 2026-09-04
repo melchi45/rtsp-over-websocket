@@ -14,6 +14,7 @@ import * as panelStyles from './panelStyles';
 import { parseOnvifVideoAnalyticsFrame, type OnvifVideoAnalyticsFrame } from '../util/onvifMetadata';
 import { OnvifOverlay } from '../components/ui/onvifOverlay/OnvifOverlay';
 import { createSwitch, type SwitchController } from '../components/ui/switch/Switch';
+import { parseDebugAttribute, validateDebugConfig, type DebugConfig } from '../util/debugLog';
 
 /**
  * Re-punctuates a `YYYYMMDDHHMMSS` compact timestamp (the digit-only shape
@@ -193,6 +194,11 @@ export class RTSPOverWebSocket extends HTMLElement {
   private _limitWidth: number | null = null;
   private _limitHeight: number | null = null;
   private _android = false;
+  // Per-component console.log tracing config -- see util/debugLog.ts and
+  // docs/player/01-elements-interface-exceptions.md. Read once at play()
+  // time via `info.debug` (mirrors most other attributes' "set before
+  // play" semantics); live mid-stream toggling isn't supported.
+  private _debug: DebugConfig | null = null;
 
   // `_useGrunt` is a confirmed real bug: the `grunt` getter below reads it,
   // but no constructor (or anywhere else in the legacy file) ever assigns it
@@ -448,7 +454,8 @@ export class RTSPOverWebSocket extends HTMLElement {
       'codec',
       'limitwidth',
       'limitheight',
-      'android'
+      'android',
+      'debug'
     ];
   }
 
@@ -776,6 +783,25 @@ export class RTSPOverWebSocket extends HTMLElement {
         } else {
           this._android = newValue;
         }
+        break;
+      }
+      case 'debug': {
+        if (newValue === null || typeof newValue === 'undefined') {
+          this._debug = null;
+          break;
+        }
+        try {
+          this._debug = parseDebugAttribute(newValue);
+        } catch (error) {
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:debug',
+            message: (error as Error).message
+          });
+        }
+        this.info.debug = this._debug;
         break;
       }
       default:
@@ -2335,6 +2361,33 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
 
     if (this._android) this.setAttribute('channel', null as unknown as string);
+  }
+
+  /** See util/debugLog.ts. Accepts either a pre-parsed `DebugConfig` object (property assignment,
+   *  e.g. `el.debug = {video: true}`) or a JSON string (matching the `debug` attribute's own
+   *  shape) -- unlike most other properties here, which only ever accept one shape, since a raw
+   *  config object is the more natural form to pass programmatically while the attribute can only
+   *  ever be a string. */
+  get debug(): DebugConfig | null {
+    return this._debug;
+  }
+  set debug(v: DebugConfig | string | null | undefined) {
+    if (v === null || typeof v === 'undefined') {
+      this._debug = null;
+    } else {
+      try {
+        this._debug = typeof v === 'string' ? parseDebugAttribute(v) : validateDebugConfig(v);
+      } catch (error) {
+        throw new RTSPOverWebSocketError({
+          channelId: this.channel,
+          elementId: this.getAttribute('id') ?? undefined,
+          errorCode: fromHex('0x0414'),
+          place: 'RTSPOverWebSocket.ts:debug',
+          message: (error as Error).message
+        });
+      }
+    }
+    this.info.debug = this._debug;
   }
 
   // ================= internal update / DOM-builder methods =================

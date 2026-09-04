@@ -1,4 +1,5 @@
 import { MediaRouter, type MediaRouterFactories } from '../mediaSession/MediaRouter';
+import type { DebugConfig } from '../util/debugLog';
 import { MetaDataParser, type ParsedMetaData } from '../mediaSession/MetaDataParser';
 import { RtpClient, type MediaRouterLike } from '../mediaSession/RtpClient';
 import {
@@ -94,6 +95,9 @@ export interface StreamPlayerInfo {
   device: StreamPlayerDeviceInfo;
   media: StreamPlayerMediaInfo;
   callback: StreamPlayerCallbacks;
+  /** Per-component console.log tracing config -- see util/debugLog.ts. Read once here at
+   *  construction time and forwarded to `mediaRouter`/`rtpClient`; not re-read afterward. */
+  debug?: DebugConfig | null;
 }
 
 export interface StreamPlayerControlData {
@@ -133,6 +137,10 @@ export class StreamPlayer {
   private readonly mediaRouter: MediaRouter;
   private readonly rtspClient: RtspClient;
   private rtpClient: RtpClient | null = null;
+  /** Stashed from `configInfo.debug` at construction time -- `mediaRouter` gets it immediately
+   *  (constructor, below), `rtpClient` only once it exists (constructed lazily in
+   *  `startStreaming()`, not here). See util/debugLog.ts. */
+  private readonly debugConfig: DebugConfig | null = null;
   private isValidBackupCheck: boolean | null = null;
 
   private readonly connectionInfo: { protocol: string; hostname: string; port: number | string; proxy: string; ClientIPAddress?: string } = {
@@ -219,9 +227,11 @@ export class StreamPlayer {
     transportFactory?: TransportFactory
   ) {
     this.channelId = configInfo.device.channelId ?? 0;
+    this.debugConfig = configInfo.debug ?? null;
 
     this.mediaRouter = new MediaRouter(mediaRouterFactories);
     this.mediaRouter.channelId = this.channelId;
+    this.mediaRouter.debug = this.debugConfig;
     if (typeof configInfo.device.deviceType !== 'undefined' && typeof configInfo.device.deviceType === 'string' && configInfo.device.deviceType.toLowerCase() !== 'camera') {
       this.mediaRouter.deviceType = configInfo.device.deviceType;
     }
@@ -241,6 +251,7 @@ export class StreamPlayer {
 
     this.rtspClient = typeof transportFactory === 'undefined' ? new RtspClient() : new RtspClient(transportFactory);
     this.rtspClient.channelId = this.mediaRouter.channelId;
+    this.rtspClient.debug = this.debugConfig;
     this.rtspClient.SetSunapiClient(sunapiClient);
   }
 
@@ -509,6 +520,7 @@ export class StreamPlayer {
     // exactly the args the matching specific handler expects, so this is a
     // safe duck-typing boundary, not a real mismatch.
     this.rtpClient = new RtpClient(this.mediaRouter as unknown as MediaRouterLike);
+    this.rtpClient.debug = this.debugConfig;
     this.mediaRouter.rtpClient = this.rtpClient;
     // RtpSession.type is only optional structurally (inherited from the
     // shared Session base, which many non-RTP session kinds also extend);

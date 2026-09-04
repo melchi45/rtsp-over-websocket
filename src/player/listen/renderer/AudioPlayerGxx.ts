@@ -5,6 +5,7 @@ import { AACAudioDecoder } from '../decoder/AACAudioDecoder';
 import { OPUSAudioDecoder } from '../decoder/OPUSAudioDecoder';
 import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError';
 import { fromHex } from '../../util/hex';
+import type { DebugConfig } from '../../util/debugLog';
 
 /** Minimal shared shape across G711/G726x/AAC decoders, matching what this player actually calls. */
 export interface AudioDecoderLike {
@@ -12,6 +13,8 @@ export interface AudioDecoderLike {
   mime?: string;
   decode(buffer: ArrayLike<number>): Float32Array;
   close?(): void;
+  /** See util/debugLog.ts. */
+  setDebugConfig?(config: DebugConfig | null, componentName: string): void;
 }
 
 export type AACAudioDecoderFactory = () => AudioDecoderLike;
@@ -155,23 +158,30 @@ export class AudioPlayerGxx extends AudioPlayer {
   }
 
   override audioInit(codecType: string, codecMime: string | undefined, bitrate: number | undefined, volume: number): boolean {
+    this.debugLog('audioInit()', { codecType, codecMime, bitrate, volume });
     this.nextStartTime = 0;
 
     this.audioDecoder = null;
     this.codecInfo.samplingRate = 8000;
+    let debugComponentName = '';
     if (codecType === 'G711') {
       const decoder = new G711AudioDecoder();
       decoder.mime = codecMime as G711Mime;
       this.audioDecoder = decoder;
+      debugComponentName = 'G711AudioDecoder';
     } else if (codecType === 'AAC') {
       this.audioDecoder = this.aacAudioDecoderFactory();
       this.codecInfo.samplingRate = 16000;
+      debugComponentName = 'AACAudioDecoder';
     } else if (codecType === 'OPUS') {
       this.audioDecoder = new OPUSAudioDecoder();
       this.codecInfo.samplingRate = 48000;
+      debugComponentName = 'OPUSAudioDecoder';
     } else {
       this.audioDecoder = new G726xAudioDecoder(Number(bitrate) as 16 | 24 | 32 | 40) as unknown as AudioDecoderLike;
+      debugComponentName = `G726_${bitrate}_AudioDecoder`;
     }
+    this.audioDecoder.setDebugConfig?.(this.debugConfig, debugComponentName);
 
     // NOTE: write-only for the G.726x path — G726xAudioDecoder has no
     // `channelId` field (confirmed: audioDecoderG726x never references

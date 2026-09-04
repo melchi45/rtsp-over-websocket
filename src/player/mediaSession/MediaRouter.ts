@@ -8,6 +8,7 @@ import { getElementByAttributeValue } from '../util/getElementByAttributeValue';
 import { browserDetect } from '../util/BrowserDetect';
 import { RTSPOverWebSocketError } from '../exceptions/RTSPOverWebSocketError';
 import { fromHex } from '../util/hex';
+import { createDebugLogger, type DebugConfig } from '../util/debugLog';
 import type { WaitingEvent, RtpStatistics } from './RtpSession';
 
 /**
@@ -209,6 +210,12 @@ export interface VideoPlayerLike {
   setDefaultDelay(d: number): void;
   setMaxInstantPlaybackTime(t: number): void;
   setBufferClearInterval(i: number): void;
+  /** See util/debugLog.ts. `componentName` lets `selectVideoPlayer()` supply the precise concrete
+   *  name (`'VideoTagPlayer'`/`'CanvasTagPlayer'`) since it already knows which factory it called
+   *  (`this.tagMode`) even though the factory itself is test-injectable -- same reasoning as
+   *  `RtpClient`/`Session.setDebugConfig()`. Optional so pre-existing test doubles compile
+   *  unchanged. */
+  setDebugConfig?(config: DebugConfig | null, componentName: string): void;
 }
 
 export interface AudioPlayerLike {
@@ -222,6 +229,7 @@ export interface AudioPlayerLike {
   BufferAudio(frameData: Uint8Array, rtpTimestamp: unknown): void;
   setBufferingFlag(rtpTimestamp: unknown, mode: string): void;
   ControlVolume(value: unknown): void;
+  debug?: DebugConfig | null;
 }
 
 export interface TalkLike {
@@ -231,12 +239,14 @@ export interface TalkLike {
   setSendAudioTalkBufferCallback(cb: (data: Float32Array) => void): void;
   initAudioOut(): Promise<number>;
   terminate(): void;
+  debug?: DebugConfig | null;
 }
 
 export interface MetaDataParserLike {
   channelId: number;
   deviceType?: string;
   parse(frameData: Uint8Array): void;
+  debug?: DebugConfig | null;
 }
 
 export interface BackupProviderLike {
@@ -246,6 +256,7 @@ export interface BackupProviderLike {
   closeStream(): void;
   onVideoData(streamData: VideoStreamData, videoInfo: VideoInfo): void;
   receiveAudioData(streamData: AudioStreamData, audioInfo: AudioInfo): void;
+  debug?: DebugConfig | null;
 }
 
 export type VideoPlayerFactory = () => VideoPlayerLike;
@@ -444,6 +455,9 @@ export class MediaRouter {
   private _drop = false;
   private _rtpclient: unknown;
   private _audioshift = 0;
+  private _debugConfig: DebugConfig | null = null;
+  /** See util/debugLog.ts. Re-created every time `debug` is set. */
+  private debugLog: (...args: unknown[]) => void = () => {};
 
   private audioVolume = 0;
   private minRemainTime = 20;
@@ -503,6 +517,19 @@ export class MediaRouter {
   }
   set deviceType(v: string) {
     this._deviceType = v;
+  }
+
+  /** Per-component console.log tracing config, forwarded from `StreamPlayer`'s constructor -- see
+   *  util/debugLog.ts. Also applied to every video/audio/talk/backup/metadata-parser instance this
+   *  class hands out via `factories.createXxx()` (see those call sites below), since this class
+   *  doesn't otherwise know their concrete class -- each instance's own `set debug()` supplies its
+   *  own literal component name to `createDebugLogger()`. */
+  get debug(): DebugConfig | null {
+    return this._debugConfig;
+  }
+  set debug(config: DebugConfig | null) {
+    this._debugConfig = config;
+    this.debugLog = createDebugLogger(config, 'mediaSession', 'MediaRouter');
   }
 
   get supportCovertAndOff(): boolean {
@@ -1067,6 +1094,7 @@ export class MediaRouter {
     if (this.audioPlayer === null) {
       this.audioPlayer = this.factories.createAudioPlayer();
       this.audioPlayer.channelId = this.channelId;
+      this.audioPlayer.debug = this._debugConfig;
       if (this.getAudioVolume() !== 0) {
         this.audioPlayer.ControlVolume(this.getAudioVolume());
       }
@@ -1088,6 +1116,7 @@ export class MediaRouter {
     return new Promise<number>((resolve, reject) => {
       self.audioTalker = self.factories.createTalk();
       self.audioTalker.channelId = self.channelId;
+      self.audioTalker.debug = self._debugConfig;
 
       if (self.audioTalker.init()) {
         self.audioTalker.setSendAudioTalkBufferCallback(sendAudioTalkBuffer);
@@ -1157,6 +1186,7 @@ export class MediaRouter {
   }
 
   sendCommandData(type: MediaRouterCommandType, data: unknown): boolean | void {
+    this.debugLog('sendCommandData()', type);
     switch (type) {
       case 'capture':
         if (this.player !== null) {
@@ -1171,6 +1201,7 @@ export class MediaRouter {
           this.backupProvider = this.factories.createBackupProvider(backupData.callback);
           this.backupProvider.channelId = this.channelId;
           this.backupProvider.deviceType = this.deviceType;
+          this.backupProvider.debug = this._debugConfig;
           this.backupProvider.init(backupData);
         } else if (this.backupProvider !== null && backupData.command === 'stop') {
           this.isBackup = false;
@@ -1311,6 +1342,7 @@ export class MediaRouter {
         this.metaDataParser = this.factories.createMetaDataParser(func);
         this.metaDataParser.channelId = this.channelId;
         this.metaDataParser.deviceType = this.deviceType;
+        this.metaDataParser.debug = this._debugConfig;
         break;
       case 'metaImageEvent':
         this.metaImageCallback = func;
@@ -1470,6 +1502,7 @@ export class MediaRouter {
   }
 
   selectVideoPlayer(channelid: number, playMode: string, codecType: string, size: number, framerate: number | undefined): VideoPlayerLike | null {
+    this.debugLog('selectVideoPlayer()', { playMode, codecType, size, framerate });
     if (this.player !== null) {
       this.player.close();
       this.player = null;
@@ -1479,7 +1512,9 @@ export class MediaRouter {
 
     this.tagMode = 'canvas';
     if (this.stepFlag === true) {
-      return this.factories.createCanvasPlayer();
+      const stepPlayer = this.factories.createCanvasPlayer();
+      stepPlayer.setDebugConfig?.(this._debugConfig, 'CanvasTagPlayer');
+      return stepPlayer;
     }
     if (playMode === 'Playback') {
       this.checkValidSpeed(codecType, size);
@@ -1614,6 +1649,7 @@ export class MediaRouter {
     } else {
       player = this.factories.createCanvasPlayer();
     }
+    player.setDebugConfig?.(this._debugConfig, this.tagMode === 'video' ? 'VideoTagPlayer' : 'CanvasTagPlayer');
 
     if (this.deviceType === 'nvr') {
       player.setDefaultDelay(1.0);
@@ -1629,6 +1665,7 @@ export class MediaRouter {
     player.setBufferClearInterval(this.getBufferClearInterval());
     player.boxsize = this.boxsize;
 
+    this.debugLog('selectVideoPlayer() -> tagMode:', this.tagMode);
     return player;
   }
 

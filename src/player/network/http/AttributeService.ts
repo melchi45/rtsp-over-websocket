@@ -2,6 +2,7 @@ import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError'
 import { fromHex } from '../../util/hex';
 import { ProfileConfig } from './ProfileConfig';
 import { XmlParser, type AttributeValue, type CgiParameterValue, type ParseCgiSectionOptions } from './XmlParser';
+import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
 
 /**
  * Ported from the legacy player's sunapi/AttributeService — a capability-flags
@@ -149,11 +150,17 @@ export class AttributeService {
   private isPhone = false;
   private readonly TIMEOUT = 500;
   private readonly RETRY_COUNT = 999;
+  /** See util/debugLog.ts. */
+  private debugLog: (...args: unknown[]) => void = () => {};
 
   constructor(sunapiClient: SunapiClientLike, options: AttributeServiceOptions = {}) {
     this.sunapiClient = sunapiClient;
     this.isAdminCheck = options.isAdmin ?? (() => true);
     this.setDefaultAttributes();
+  }
+
+  set debug(config: DebugConfig | null) {
+    this.debugLog = createDebugLogger(config, 'network', 'AttributeService');
   }
 
   /** The full capability-flags bag — legacy's `mAttributes`. */
@@ -338,6 +345,7 @@ export class AttributeService {
   private getDeviceInfo(): Promise<string> {
     const mAttributes = this.mAttributes;
     const SunapiClient = this.sunapiClient;
+    const debugLog = this.debugLog.bind(this);
     return new Promise((resolve, reject) => {
       SunapiClient.get(
         '/stw-cgi/system.cgi?msubmenu=deviceinfo&action=view',
@@ -380,7 +388,7 @@ export class AttributeService {
               mAttributes.AIModelDetectionVersion = response.data.AIModelDetectionVersion;
             }
 
-            console.log('Device Info Ready');
+            debugLog('Device Info Ready');
 
             // Temp
             const modelName = response.data.Model;
@@ -491,6 +499,7 @@ export class AttributeService {
   private getEventSourceOptions(): Promise<string> {
     const mAttributes = this.mAttributes;
     const SunapiClient = this.sunapiClient;
+    const debugLog = this.debugLog.bind(this);
     return new Promise((resolve, reject) => {
       SunapiClient.get(
         '/stw-cgi/eventsources.cgi?msubmenu=sourceoptions&action=view',
@@ -498,7 +507,7 @@ export class AttributeService {
         function (response: any) {
           try {
             mAttributes.EventSourceOptions = response.data.EventSources;
-            console.log('EventSourceOptions Ready');
+            debugLog('EventSourceOptions Ready');
             mAttributes.EventSourceOptionsReady = true;
             resolve('getEventSourceOptions');
           } catch (error) {
@@ -514,7 +523,7 @@ export class AttributeService {
           if (mAttributes.DeviceType === 'NWC') {
             if (!(error.Code === 609 || error.Code === 'Not Authorized')) {
               mAttributes.GetFail = true;
-              console.log('EventSourceOptions : ', error.message);
+              debugLog('EventSourceOptions : ', error.message);
             }
           } else {
             mAttributes.EventSourceOptionsReady = false;
@@ -543,6 +552,7 @@ export class AttributeService {
     const notZero = AttributeService.notZero;
     const isAdmin = this.isAdminCheck;
     const SunapiClient = this.sunapiClient;
+    const debugLog = this.debugLog.bind(this);
     return new Promise((resolve, reject) => {
       SunapiClient.get(
         '/stw-cgi/attributes.cgi/attributes',
@@ -1995,7 +2005,7 @@ export class AttributeService {
               mAttributes.NotSupportMultiview = true;
             }
 
-            console.log('Attributes Section Ready');
+            this.debugLog('Attributes Section Ready');
             mAttributes.AttributeSectionReady = true;
             resolve('getAttributeSection');
           } catch (error) {
@@ -2009,7 +2019,7 @@ export class AttributeService {
         },
         function (error: any) {
           mAttributes.GetFail = true;
-          console.log('Attributes Section : ', error);
+          debugLog('Attributes Section : ', error);
           reject(error);
         },
         '',
@@ -2021,6 +2031,7 @@ export class AttributeService {
   private getCgiSection(): Promise<string> {
     const mAttributes = this.mAttributes;
     const SunapiClient = this.sunapiClient;
+    const debugLog = this.debugLog.bind(this);
     mAttributes.systemCgiAttrReady = false;
     mAttributes.mediaCgiAttrReady = false;
     mAttributes.networkCgiAttrReady = false;
@@ -2046,7 +2057,7 @@ export class AttributeService {
           try {
             mAttributes.cgiSection = typeof response.data !== 'undefined' ? response.data : response;
             mAttributes.CgiSectionReady = true;
-            console.log('Cgi Section Ready');
+            debugLog('Cgi Section Ready');
             resolve('getCgiSection');
           } catch (error) {
             console.error(error);
@@ -2059,7 +2070,7 @@ export class AttributeService {
         },
         function (error: any) {
           mAttributes.GetFail = true;
-          console.log('Cgi Section : ', error);
+          debugLog('Cgi Section : ', error);
           reject(error);
         },
         '',
@@ -2071,6 +2082,7 @@ export class AttributeService {
   private cameraView(): Promise<string> {
     const mAttributes = this.mAttributes;
     const SunapiClient = this.sunapiClient;
+    const debugLog = this.debugLog.bind(this);
     return new Promise((resolve, reject) => {
       SunapiClient.get(
         '/stw-cgi/image.cgi?msubmenu=camera&action=view',
@@ -2083,7 +2095,7 @@ export class AttributeService {
             }
             resolve('cameraView');
           } catch (error) {
-            console.log(error);
+            debugLog(error);
             throw new RTSPOverWebSocketError({
               errorCode: fromHex('0x1200'),
               place: 'AttributeService.ts:cameraView',
@@ -2092,7 +2104,7 @@ export class AttributeService {
           }
         },
         function (error: any) {
-          console.log('Attributes Section : ', error);
+          debugLog('Attributes Section : ', error);
           reject(error);
         },
         '',
@@ -2104,6 +2116,7 @@ export class AttributeService {
   private openAppView(): Promise<string> {
     const mAttributes = this.mAttributes;
     const SunapiClient = this.sunapiClient;
+    const debugLog = this.debugLog.bind(this);
     mAttributes.isInstalledWiseAI = false;
     return new Promise((resolve, reject) => {
       SunapiClient.get(
@@ -2119,7 +2132,7 @@ export class AttributeService {
             }
             resolve('openAppView');
           } catch (error) {
-            console.log(error);
+            debugLog(error);
             throw new RTSPOverWebSocketError({
               errorCode: fromHex('0x1200'),
               place: 'AttributeService.ts:openAppView',
@@ -5120,6 +5133,7 @@ export class AttributeService {
     void appId;
     const mAttributes = this.mAttributes;
     const SunapiClient = this.sunapiClient;
+    const debugLog = this.debugLog.bind(this);
     const appIDEncode = encodeURIComponent('WiseAI');
     return new Promise((resolve, reject) => {
       SunapiClient.get(
@@ -5144,7 +5158,7 @@ export class AttributeService {
           }
         },
         function (error: any) {
-          console.log(error);
+          debugLog(error);
           reject(error);
         },
         '',
@@ -5156,6 +5170,7 @@ export class AttributeService {
   getViewModes(): Promise<void> {
     const mAttributes = this.mAttributes;
     const SunapiClient = this.sunapiClient;
+    const debugLog = this.debugLog.bind(this);
     return new Promise((resolve, reject) => {
       SunapiClient.get(
         '/stw-cgi/image.cgi?msubmenu=viewmodes&action=view',
@@ -5177,7 +5192,7 @@ export class AttributeService {
           }
         },
         function (error: any) {
-          console.log(error);
+          debugLog(error);
           reject(error);
         },
         '',
@@ -5225,7 +5240,7 @@ export class AttributeService {
         mAttributes.AIModelDetectionVersion = deviceInfo.AIModelDetectionVersion;
       }
 
-      console.log('Device Info Ready');
+      this.debugLog('Device Info Ready');
 
       // Temp
       const modelName = deviceInfo.Model;
@@ -5314,7 +5329,7 @@ export class AttributeService {
     try {
       return Promise.all(functionList);
     } catch (error) {
-      console.log((error as Error).message);
+      this.debugLog((error as Error).message);
       return undefined;
     }
   }
@@ -5323,14 +5338,14 @@ export class AttributeService {
   fetchData(): void {
     const mAttributes = this.mAttributes;
     const isAdmin = this.isAdminCheck;
-    console.log('Complte function list on Attributes::fetchData:');
+    this.debugLog('Complte function list on Attributes::fetchData:');
     mAttributes.retryCount = 0;
     const wait = (): void => {
       if (!mAttributes.Ready && !mAttributes.GetFail) {
         setTimeout(() => {
           if (mAttributes.DeviceInfoReady && mAttributes.CgiSectionReady && mAttributes.AttributeSectionReady) {
             if (isAdmin() && mAttributes.EventSourceOptionsReady === false) {
-              console.log('event sources Waiting ..', mAttributes.retryCount);
+              this.debugLog('event sources Waiting ..', mAttributes.retryCount);
               mAttributes.retryCount++;
               if (mAttributes.retryCount >= this.RETRY_COUNT) {
                 mAttributes.GetFail = true;
@@ -5340,7 +5355,7 @@ export class AttributeService {
               this.runHookReadyStatus();
             }
           } else {
-            console.log('Waiting ..', mAttributes.retryCount);
+            this.debugLog('Waiting ..', mAttributes.retryCount);
             mAttributes.retryCount++;
             if (mAttributes.retryCount >= this.RETRY_COUNT) {
               mAttributes.GetFail = true;

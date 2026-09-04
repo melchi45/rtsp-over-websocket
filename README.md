@@ -99,6 +99,17 @@ toggle switch (styled to match `wisenet-camera-discovery`'s SUNAPI On/Off toggle
 [docs/player/10-onvif-metadata-overlay.md](docs/player/10-onvif-metadata-overlay.md) for the full design (including
 the coordinate-mapping math) and [docs/SRS.md](docs/SRS.md) §4.10 for the requirements.
 
+## Debug logging
+
+`<rtsp-over-websocket>` has a `debug` attribute/property for per-component `console.log` tracing — silent by
+default. Pass a JSON object naming which internal component groups should log, e.g.
+`debug='{"network":["RtspClient"],"video":true}'` logs only `RtspClient`, plus every component under `video/`
+(`VideoTagPlayer`/`CanvasTagPlayer`/etc). Recognized top-level keys are `mediaSession`, `network`, `listen`,
+`video`, `backup` (each `true` for everything in that group, or an array of specific class names), plus a `"*":
+true` shortcut for everything. See [docs/player/08-util.md](docs/player/08-util.md)'s `debugLog.ts` entry for the
+full schema and [docs/player/01-elements-interface-exceptions.md](docs/player/01-elements-interface-exceptions.md)
+for the attribute itself.
+
 ## Further documentation
 
 | Doc | Covers |

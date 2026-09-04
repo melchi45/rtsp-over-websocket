@@ -309,11 +309,14 @@ export class CanvasTagPlayer extends VideoPlayer {
     this.canvasElement = element.cloneNode(true) as HTMLCanvasElement;
     (element.parentNode as ParentNode).replaceChild(this.canvasElement, element);
 
+    this.debugLog('init()');
     this.renderer = new CanvasRenderer();
     this.renderer.channelId = this.channelId;
+    this.renderer.debug = this.debugConfig;
     this.renderer.addEventListener('capture', this.eventCaptureCallback as (data: unknown) => void);
     this.renderer.init(this.canvasElement);
     this.stepVideoList = new StepBufferList();
+    this.stepVideoList.debug = this.debugConfig;
     this.canvasElement.addEventListener('webglcontextlost', this.onHandleContextLost, false);
 
     this.mediaTimer = setInterval(this.onMediaTimer, 1000);

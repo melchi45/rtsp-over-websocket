@@ -100,6 +100,7 @@ export class AudioPlayerAAC extends AudioPlayer {
   private sourceAbortCallback = (): void => {};
 
   override audioInit(_codecType: string, _codecMime: string | undefined, _bitrate: number | undefined, volume: number): boolean {
+    this.debugLog('audioInit()', { volume });
     this.createAudio();
     const availablePlay = this.createMediaSource();
     if (availablePlay && this.audio !== null) {

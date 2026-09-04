@@ -1,3 +1,5 @@
+import { createDebugLogger, type DebugConfig } from '../util/debugLog';
+
 export interface TimeData {
   timestamp: number | null;
   timestamp_usec: number | null;
@@ -25,6 +27,16 @@ export class Session {
   eventStatisticsCallback?: SessionEventCallback | null;
   eventWaitingCallback?: SessionEventCallback;
   eventWaitingTimeout?: number;
+
+  /** See util/debugLog.ts. `componentName` is the concrete subclass's own literal name (e.g.
+   *  `'H264Session'`) -- `RtpClient.ts` always knows exactly which class it just constructed at
+   *  each call site, so it supplies this directly rather than this base class trying to derive it
+   *  via `constructor.name` (unsafe under a minified production build, see that file's comment
+   *  for the full reasoning). One implementation here covers every `*Session` subclass. */
+  protected debugLog: (...args: unknown[]) => void = () => {};
+  setDebugConfig(config: DebugConfig | null, componentName: string): void {
+    this.debugLog = createDebugLogger(config, 'mediaSession', componentName);
+  }
 
   // Optional/untyped `info` so codec subclasses (AACSession, G711Session, ...)
   // can override with their own required codec-info parameter — the legacy

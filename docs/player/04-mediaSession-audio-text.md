@@ -11,6 +11,7 @@ receive-side audio codecs plus the talk-back send session) and the text/meta ses
 | --- | --- |
 | 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
+| 2026-09-04 | Every class here gained `debug`-gated `console.log` tracing "for free": they all extend `RtpSession`/`Session`, which gained one generic `setDebugConfig(config, componentName)` (see `03-mediaSession-core-video.md`'s History) — no changes to any file in this directory were needed. `RtpClient.sendSdpInfo()` calls it right after constructing each one, passing its own literal class name. See `01-elements-interface-exceptions.md`'s new `debug` attribute and `08-util.md`'s `debugLog.ts`. |
 
 ---
 

@@ -1,5 +1,6 @@
 import { FileMaker } from './FileMaker';
 import type { VideoStreamData, VideoInfo, AudioStreamData, AudioInfo } from '../mediaSession';
+import { createDebugLogger, type DebugConfig } from '../util/debugLog';
 
 export type BackupWorkerFactory = () => Worker;
 
@@ -43,6 +44,16 @@ export class BackupProvider {
   private backupWorker: Worker | null = null;
   private callback: ((data: unknown) => void) | null = null;
   private timestampCallback: ((data: unknown) => void) | null = null;
+  private debugConfig: DebugConfig | null = null;
+  /** See util/debugLog.ts. Also applied to `sharedFileMaker` on every `init()` -- that instance is
+   *  a module-level singleton shared across every channel's `BackupProvider` (see its own comment
+   *  above), so whichever channel initializes a backup most recently wins for its logging too;
+   *  an accepted, pre-existing sharing caveat, not new to this feature. */
+  private debugLog: (...args: unknown[]) => void = () => {};
+  set debug(config: DebugConfig | null) {
+    this.debugConfig = config;
+    this.debugLog = createDebugLogger(config, 'backup', 'BackupProvider');
+  }
 
   constructor(
     private readonly backupWorkerFactory: BackupWorkerFactory = () => new Worker(new URL('../worker/backup/backupWorker.ts', import.meta.url))
@@ -57,6 +68,7 @@ export class BackupProvider {
   };
 
   init(data: BackupInitData): void {
+    this.debugLog('init()');
     this.backupStatus = BACKUP_STATUS.WAIT;
     this.backupWorker = this.backupWorkerFactory();
     this.backupWorker.onmessage = (event: MessageEvent) => this.backupWorkerMessage(event);
@@ -65,6 +77,7 @@ export class BackupProvider {
     if (sharedFileMaker === null) {
       sharedFileMaker = new FileMaker();
     }
+    sharedFileMaker.debug = this.debugConfig;
     sharedFileMaker.setPassword(data.password ?? null);
     sharedFileMaker.setCompressCallback(this.compressCallback);
 

@@ -1,5 +1,6 @@
 import { saveAs } from 'file-saver';
 import { fromHex } from '../util/hex';
+import { createDebugLogger, type DebugConfig } from '../util/debugLog';
 
 export type ZipWorkerFactory = () => Worker;
 
@@ -16,6 +17,11 @@ export class FileMaker {
   private blob: Blob | null = null;
   private zipPassword: string | null = null;
   private compressCallback: ((errorCode: number) => void) | null = null;
+  /** See util/debugLog.ts. */
+  private debugLog: (...args: unknown[]) => void = () => {};
+  set debug(config: DebugConfig | null) {
+    this.debugLog = createDebugLogger(config, 'backup', 'FileMaker');
+  }
 
   constructor(
     private readonly zipWorkerFactory: ZipWorkerFactory = () => new Worker(new URL('../worker/backup/zipWorker.ts', import.meta.url))
@@ -89,6 +95,7 @@ export class FileMaker {
   }
 
   processMessage(target: string, data: unknown): void {
+    this.debugLog('processMessage()', target);
     if (target === 'body') {
       this.addBody(data);
     } else if (target === 'mainHeader') {

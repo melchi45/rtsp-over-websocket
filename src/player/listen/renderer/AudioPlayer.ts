@@ -1,3 +1,5 @@
+import { createDebugLogger, type DebugConfig } from '../../util/debugLog';
+
 export type AudioPlayerErrorCallback = (...args: unknown[]) => void;
 
 /**
@@ -9,6 +11,18 @@ export type AudioPlayerErrorCallback = (...args: unknown[]) => void;
 export class AudioPlayer {
   channelId = 0;
   protected errorCallbackFunc?: AudioPlayerErrorCallback;
+  /** See util/debugLog.ts. Logged as `'AudioPlayer'` regardless of whether the concrete instance
+   *  is `AudioPlayerGxx`/`AudioPlayerAAC` -- `MediaRouter`'s `createAudioPlayer()` factory call
+   *  site is generic and doesn't know which concrete subclass it got back (unlike
+   *  `RtpClient`'s per-codec `*Session` construction, which always knows and passes its own
+   *  literal name -- see `Session.ts`'s `setDebugConfig()`). One shared logger here covers both
+   *  subclasses; `debug["listen"]: ["AudioPlayer"]` is the matching filter name. */
+  protected debugLog: (...args: unknown[]) => void = () => {};
+  protected debugConfig: DebugConfig | null = null;
+  set debug(config: DebugConfig | null) {
+    this.debugConfig = config;
+    this.debugLog = createDebugLogger(config, 'listen', 'AudioPlayer');
+  }
 
   addEventListener(event: 'error', callbackFunc?: AudioPlayerErrorCallback): void {
     switch (event) {

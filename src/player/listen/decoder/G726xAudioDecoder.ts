@@ -2,6 +2,7 @@ import { G726_16_AudioDecoder } from './G726_16_AudioDecoder';
 import { G726_24_AudioDecoder } from './G726_24_AudioDecoder';
 import { G726_32_AudioDecoder } from './G726_32_AudioDecoder';
 import { G726_40_AudioDecoder } from './G726_40_AudioDecoder';
+import type { DebugConfig } from '../../util/debugLog';
 
 type G726Bits = 16 | 24 | 32 | 40;
 type G726Decoder = G726_16_AudioDecoder | G726_24_AudioDecoder | G726_32_AudioDecoder | G726_40_AudioDecoder;
@@ -27,6 +28,12 @@ export class G726xAudioDecoder {
         console.log('wrong bits');
         break;
     }
+  }
+
+  /** See util/debugLog.ts. Forwards to whichever concrete `G726_XX_AudioDecoder` the constructor
+   *  picked -- `this.decoder` is itself an `AudioDecoder` subclass instance. */
+  setDebugConfig(config: DebugConfig | null, componentName: string): void {
+    this.decoder?.setDebugConfig(config, componentName);
   }
 
   decode(data: ArrayLike<number>): Float32Array {
