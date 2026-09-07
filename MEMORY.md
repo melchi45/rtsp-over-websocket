@@ -4783,3 +4783,94 @@ cheaper, already-available subset of the data can stand in — degrade one field
 apparent correctness. No headless-browser tooling was set up in this environment; `jsdom` (already
 a `devDependencies` entry, used for `vitest`'s DOM environment) plus a hand-mocked `window.fetch`
 was enough to drive the real page script and catch this without needing one.
+
+## MJPEG transcode sessions reached `status: "live"` and played fine on a real camera, but showed nothing from this repo's own demo server — ffmpeg's MJPEG encoder needed three RTP/JPEG-specific flags
+
+User report: selecting MJPEG as the Video codec in the Server panel and connecting from the Player
+tab shows nothing — a real camera's own MJPEG stream plays fine, only this repo's own YouTube-
+transcode demo path is affected.
+
+**How it was found**: this environment has no browser-automation package installed, but (as in a
+prior session's OPUS investigation, see this file's own entry above) a cached Playwright Chromium
+binary was present at `~/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`, driven with a
+hand-rolled CDP client over the `ws` package already in `node_modules` (~50 lines, `Page.navigate`/
+`Runtime.evaluate`/`Network.enable`+`webSocketFrame{Sent,Received}`/`Page.captureScreenshot`). No
+new dependency added.
+
+1. Started `src/server` for real (it was already running from earlier in this session), created a
+   fresh no-auth MJPEG session directly via `POST /api/sessions` (sidestepping the Server panel's
+   own probe/Start UI flow — irrelevant to what's actually broken) at 480p to keep ffmpeg's encode
+   load light, confirmed it reached `status: "live"`.
+2. Drove the real demo page's Player tab through the actual `<rtsp-over-websocket>` element (fill
+   `f-hostname`/`f-port`/`f-channel`/`f-profile`(`MJPEG`)/`f-device`(`nvr`), click `btn-connect`
+   then `btn-play`) and inspected the mounted element after a few seconds: `state: PLAYING`, no
+   error event fired, but the rendered `<video>`/`<canvas>` (whichever the renderer picked) stayed
+   completely black — a `getImageData()` scan found zero non-black pixels. Same silent-failure
+   shape as the OPUS bug this file documents above (`state` and the absence of an `error` event are
+   not proof anything actually rendered).
+3. Set `playerEl.debug = {'*': true, level: 'debug'}` before Play and re-ran: the full internal log
+   showed `[RtpClient]`/`[OPUSSession]`/`[MediaRouter] handleAudioData()` firing continuously for
+   the audio track (`interleavedId=2`) — but *zero* log lines anywhere for video (`interleavedId=0`)
+   or `MjpegSession` at all. Not a depacketizer bug — video RTP data was never even arriving
+   client-side.
+4. Captured the raw WebSocket frames via CDP's `Network.webSocketFrameSent`/`webSocketFrameReceived`
+   (binary opcode, `$`-prefixed interleaved RTP frames after base64-decoding) and confirmed the
+   RTSP handshake itself was flawless: DESCRIBE's SDP had a normal `a=rtpmap:26 JPEG/90000` line
+   (ruling out an earlier hypothesis — that MediaMTX might omit the `rtpmap` line since payload
+   type 26 is a static/well-known RFC 3551 type and technically doesn't require one; it doesn't
+   omit it), both SETUP requests (trackID=0 video, trackID=1 audio) got clean `200 OK` with correct
+   `interleaved=0-1`/`interleaved=2-3` transport assignments, PLAY succeeded for both tracks — yet
+   over ~3s of `$`-frame capture, every single one was channel 2 (audio); channel 0 (video) frame
+   count was exactly zero.
+5. To rule out this repo's own `rtspOverWebSocket/server.ts` bridge (a byte-for-byte relay whose
+   only conditional drop path, `keyframeGate.ts`, explicitly disables itself for any codec that
+   isn't H.264/H.265 — confirmed by reading it, MJPEG takes the always-forward path), connected a
+   second raw RTSP client *directly* to MediaMTX on port 8554 (bypassing the bridge entirely) and
+   replayed the identical DESCRIBE/SETUP/PLAY sequence: **identical result** — channel 0 empty,
+   channel 2 flowing. This exonerated every line of this repo's own server code; the bug was
+   upstream, between ffmpeg (the publisher) and MediaMTX.
+6. Reproduced with a synthetic, YouTube-independent `ffmpeg -f lavfi -i testsrc=... -f lavfi -i
+   sine=... -c:v mjpeg -q:v 5 -vf scale=-2:480 ... -f rtsp rtsp://127.0.0.1:8554/<test-path>` (no
+   yt-dlp/network dependency, fast iteration) with full `-loglevel info` stderr visible directly —
+   and there it was, once per frame: `[rtp @ ...] Only 1x1 chroma blocks are supported. Aborted!`.
+   `-stats`' `frame=` counter kept climbing the whole time (encoding itself was succeeding) — the
+   *packetizer* (ffmpeg's RTP/JPEG muxer) was silently discarding every single video frame instead
+   of ever writing it to the wire, which is exactly consistent with steps 3-5's total silence.
+
+**Root cause**: RFC 2435 (JPEG-over-RTP) only supports 4:2:0/4:2:2 chroma subsampling — no 4:4:4,
+no arbitrary layouts. `videoEncoderArgs()`'s MJPEG branch in `transcodeSession.ts` was the *only*
+video-codec branch with no explicit `-pix_fmt` (H264/H265/AV1/VP8/VP9 all force `yuv420p`) — without
+one, ffmpeg's format auto-negotiation for the `mjpeg` encoder, fed from this pipeline's decoded
+YouTube source, can land on a chroma layout RFC 2435 can't represent at all, and the muxer aborts
+every frame rather than guess. Adding `-pix_fmt yuvj420p` alone traded that failure for an equally
+total, equally silent second one: `RFC 2435 requires standard Huffman tables for jpeg` — the `mjpeg`
+encoder's own default (`-huffman optimal`, a custom per-frame Huffman table, confirmed via `ffmpeg
+-h encoder=mjpeg`) has nowhere to go in the RTP/JPEG payload format at all (it only carries
+quantization tables, never Huffman tables — receivers are assumed to already have the standard
+ITU-T81 ones), so `-huffman default` is required too. A third, this time non-fatal, warning (`RFC
+2435 suggests two quantization tables, 1 provided`) remained until `-force_duplicated_matrix true`
+was added — confirmed via the same `ffmpeg -h encoder=mjpeg` listing, whose own description reads
+"Always write luma and chroma matrix for mjpeg, useful for rtp streaming."
+
+Fix: `videoEncoderArgs()`'s `'MJPEG'` branch now passes all three flags together. Verified via the
+synthetic-source raw-RTSP-to-MediaMTX test from step 6 that video packet count went from 0 to ~790
+over 12s once all three were present (0/0/793 progression as each flag was added one at a time —
+first fixed the abort, which surfaced the Huffman error, which surfaced the quant-table warning).
+Then verified end-to-end for real: rebuilt (`npm run build:server`), restarted `src/server`,
+created a fresh real YouTube-sourced MJPEG session, replayed the exact CDP Player-tab repro from
+steps 1-2 — statistics panel now shows real `Frames: 120 recv, 1 dropped` / `Rate: 673 Kbps avg` /
+`24 fps`, `<video>` element `readyState: 4` with `currentTime` visibly advancing, and a screenshot
+shows an actual decoded Big Buck Bunny frame rendering.
+
+**How to apply**: "the connection succeeds and reports `PLAYING`/`live` with no error" proves
+*nothing* about whether frames are actually flowing for a given codec — this is now the *second*
+codec-specific silent-black-screen bug found this way (see the OPUS entry above), and both needed
+an actual byte-level trace (WebSocket frame capture / raw RTP client) rather than trusting
+higher-level state to catch. When a demo-server-generated stream misbehaves but a real camera
+doesn't, suspect the *encoder's own output flags* before suspecting this repo's relay/bridge code —
+bisecting the pipeline stage-by-stage (client ← bridge ← MediaMTX ← ffmpeg), each confirmed innocent
+before moving on, found the real layer in a few steps instead of guessing. `ffmpeg -h encoder=<name>`
+listing an encoder's own `AVOptions` (here: `-huffman`, `-force_duplicated_matrix`) is worth checking
+whenever a codec-specific muxer/RTP error mentions something the general `videoEncoderArgs()`
+flags (`-pix_fmt`, `-preset`, etc.) don't already cover — several of this codebase's other codec
+branches (AV1/VP9's `-strict experimental`, H.264/H.265's `repeat-headers`) were found the same way.

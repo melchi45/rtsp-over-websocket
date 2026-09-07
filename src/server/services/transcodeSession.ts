@@ -33,7 +33,23 @@ function videoEncoderArgs(codec: VideoCodec, encoder: string, height: number, bF
   const bFramesArg = bFrames ? '' : ':bframes=0';
   switch (codec) {
     case 'MJPEG':
-      return ['-c:v', encoder, '-q:v', '5', ...scale];
+      // -pix_fmt yuvj420p: without an explicit pix_fmt (every other codec branch below sets one),
+      // ffmpeg's format auto-negotiation for this source can land the mjpeg encoder on a chroma
+      // layout ffmpeg's own RTP/JPEG muxer can't represent at all — confirmed live: "[rtp] Only 1x1
+      // chroma blocks are supported. Aborted!" on *every* frame, silently producing zero video RTP
+      // packets for the whole session (MediaMTX and this bridge both relay fine; ffmpeg itself never
+      // wrote a single video packet — encoding was happening, per -stats' ticking frame= count, only
+      // packetization was failing). RFC 2435 (JPEG-over-RTP) only supports 4:2:0/4:2:2, so this must
+      // be pinned regardless of what the source negotiates to.
+      // -huffman default: the encoder's own default ('optimal', a custom per-frame Huffman table)
+      // also fails every frame once the chroma issue above is fixed — "RFC 2435 requires standard
+      // Huffman tables for jpeg" — RFC 2435 has no field to transmit custom tables at all, only
+      // quantization tables, so the receiver is assumed to already have the standard ITU-T81 ones.
+      // -force_duplicated_matrix true: without it, every frame logs "RFC 2435 suggests two
+      // quantization tables, 1 provided" (non-fatal, but this option's own AVOption description is
+      // literally "useful for rtp streaming" — silences it by writing separate luma/chroma matrices
+      // instead of implying chroma reuses luma's).
+      return ['-c:v', encoder, '-q:v', '5', '-pix_fmt', 'yuvj420p', '-huffman', 'default', '-force_duplicated_matrix', 'true', ...scale];
     case 'H264':
       // repeat-headers makes libx264 embed SPS/PPS in-band before every keyframe (confirmed empirically — the
       // `dump_extra` bitstream filter was tried first but only fires once at stream start, not per keyframe, so a

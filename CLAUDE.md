@@ -73,6 +73,25 @@ build shipped with no sourcemaps" entry for why this wasn't already the case.
   `status: "live"` and publishes real AV1 frames to MediaMTX. See `README.md`'s "External tools" section for the
   full investigation history (including two earlier wrong guesses — that ffmpeg 6.0+ would fix it, then that no
   ffmpeg version could).
+- **MJPEG *output* sessions need `-pix_fmt yuvj420p -huffman default -force_duplicated_matrix true` on ffmpeg's
+  `mjpeg` encoder — without them, the session reaches `status: "live"` and MediaMTX shows 2 tracks published, but
+  the video track silently carries zero RTP packets forever (audio keeps flowing fine), so the player connects,
+  reports `PLAYING`, and shows nothing.** Confirmed live: `ffmpeg`'s own `-stats` `frame=` counter keeps ticking
+  (encoding *is* happening) while its RTP muxer logs `[rtp] Only 1x1 chroma blocks are supported. Aborted!` on
+  every single frame — RFC 2435 (JPEG-over-RTP) only supports 4:2:0/4:2:2 chroma, and without an explicit
+  `-pix_fmt`, this source's format auto-negotiation for the `mjpeg` encoder can land on a layout (e.g. 4:4:4) that
+  RFC 2435 can't represent at all — every other codec branch in `videoEncoderArgs()` already pins a `-pix_fmt` for
+  exactly this reason, MJPEG's just hadn't been. Fixing only that then hit a second, equally silent failure:
+  `RFC 2435 requires standard Huffman tables for jpeg` on every frame — the `mjpeg` encoder's own default
+  (`-huffman optimal`, a custom per-frame table) has no way to be transmitted over RTP/JPEG (the payload format has
+  no field for it at all, only for quantization tables), so `-huffman default` is required too. A third, non-fatal
+  warning (`RFC 2435 suggests two quantization tables, 1 provided`) is silenced by `-force_duplicated_matrix true`
+  (its own ffmpeg AVOption description: "useful for rtp streaming"). All three confirmed necessary together via a
+  raw RTSP client connected directly to MediaMTX (bypassing this repo's own bridge entirely, to rule it out) —
+  video RTP packet count went from 0 to hundreds only once all three were present. `transcodeSession.ts`'s
+  `videoEncoderArgs` MJPEG branch passes all three; confirm they're still there if MJPEG sessions go silently
+  black again. See `MEMORY.md` for the full investigation, including the CDP-driven headless-Chromium reproduction
+  that first caught the black screen.
 - **Most modern YouTube videos need a JS runtime AND a PO Token provider to actually download (not just probe)
   without a `403` — neither alone is enough, and this repo now sets both up automatically.** Symptom when either
   is missing: session reaches `starting` then `failed` with `ffmpeg exited with code 183: ... Invalid data found
