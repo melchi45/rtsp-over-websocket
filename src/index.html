@@ -2380,6 +2380,36 @@
           }
         }
 
+        // ---- session password, remembered client-side only ----
+        // The server never returns the plaintext password in a session's
+        // `request` (see PublicSession in src/server/types.ts — it's
+        // Omit<CreateSessionRequest, 'password'> on purpose, since Digest
+        // auth means the server has no business retaining it), so it can't
+        // be reflected the same way the rest of reflectRunningSessionSettings()
+        // works below. sessionStorage (not localStorage) is a same-tab,
+        // reload-surviving stand-in: it repopulates the field after an F5 in
+        // the tab that actually started the session, without turning this
+        // demo page into a place that keeps passwords around indefinitely or
+        // shares them across tabs/devices.
+        var SESSION_PASSWORD_STORAGE_KEY = 'rtsp-demo:server-panel-session-password';
+        function rememberSessionPassword(sessionId, password) {
+          try {
+            sessionStorage.setItem(SESSION_PASSWORD_STORAGE_KEY, JSON.stringify({ sessionId: sessionId, password: password }));
+          } catch (err) {
+            console.warn('[server-panel] could not remember session password:', err.message);
+          }
+        }
+        function recallSessionPassword(sessionId) {
+          try {
+            var raw = sessionStorage.getItem(SESSION_PASSWORD_STORAGE_KEY);
+            if (!raw) return null;
+            var entry = JSON.parse(raw);
+            return entry && entry.sessionId === sessionId ? entry.password : null;
+          } catch (err) {
+            return null;
+          }
+        }
+
         // Populates the Video/Audio/Connection Info fields with the
         // *running* session's actual settings, once per session id (not on
         // every poll tick — pollSession() re-runs renderSessionStatus()
@@ -2404,6 +2434,17 @@
           updateAuthFieldsAvailability();
           ytUsernameInput.value = s.request.username;
           form.username.value = s.request.username;
+          // Only overwrites the (disabled, until "Use" is on) password field
+          // when this exact session id's password was remembered client-side
+          // — see rememberSessionPassword()/recallSessionPassword() above.
+          // No match (session started from another tab, or sessionStorage
+          // was cleared) leaves whatever's already typed there alone, same
+          // as before this could ever be restored at all.
+          var rememberedPassword = recallSessionPassword(s.id);
+          if (rememberedPassword !== null) {
+            ytPasswordInput.value = rememberedPassword;
+            form.password.value = s.request.username ? rememberedPassword : '';
+          }
           videoCodecSelect.value = s.request.videoCodec;
           updateBFramesAvailability();
           bFramesCheckbox.checked = s.request.bFrames !== false;
@@ -2411,7 +2452,35 @@
           updateAudioBitrateOptions();
           audioBitrateSelect.value = String(s.request.audioBitrateKbps);
 
-          probeResultEl.textContent = "Loading the running session's resolution options...";
+          // Resolution is populated in two steps. Step 1 (synchronous, right
+          // here): build a one-entry dropdown from data the session response
+          // already carries (s.request.resolutionHeight, s.probe.*) so the
+          // field — and the fieldset's enabled state, via lastProbe below —
+          // reflect correctly even if step 2 is slow or fails outright. Step
+          // 2 (below): re-probe the session's own URL to recover the *full*
+          // resolution ladder, same as a manual Probe click, so the field
+          // stays editable for preparing a differently-sized next session.
+          // Without step 1, a slow/failed re-probe (see CLAUDE.md's YouTube
+          // 403/PO-Token notes — this is a real yt-dlp network call, not a
+          // cheap lookup) left Resolution blank and the whole fieldset stuck
+          // disabled after every page reload, even though every other field
+          // above was already correctly reflected.
+          resolutionSelect.innerHTML = '';
+          var knownResolutionOpt = document.createElement('option');
+          knownResolutionOpt.value = String(s.request.resolutionHeight);
+          knownResolutionOpt.textContent = s.request.resolutionHeight + 'p';
+          resolutionSelect.appendChild(knownResolutionOpt);
+          resolutionSelect.value = String(s.request.resolutionHeight);
+          lastProbe = {
+            title: s.probe.title,
+            durationSec: s.probe.durationSec,
+            maxHeight: s.probe.maxHeight,
+            availableResolutions: [{ height: s.request.resolutionHeight, width: null, label: s.request.resolutionHeight + 'p' }]
+          };
+          probeResultEl.textContent =
+            '"' + s.probe.title + '" · duration ' + formatDuration(s.probe.durationSec) + ' · max resolution ' + s.probe.maxHeight + 'p (loading full resolution list...)';
+          updateTranscodingSettingsAvailability();
+
           apiFetch('/api/youtube/probe?url=' + encodeURIComponent(s.request.youtubeUrl))
             .then(function (probe) {
               lastProbe = probe;
@@ -2427,7 +2496,11 @@
               updateTranscodingSettingsAvailability();
             })
             .catch(function (err) {
-              console.warn('[server-panel] failed to reflect running session settings:', err.message);
+              // Step 1 above already left a correct, usable value in place —
+              // this failure only means the *rest* of the resolution ladder
+              // couldn't be recovered (the field stays a one-entry dropdown
+              // until a manual Probe click).
+              console.warn('[server-panel] failed to load full resolution list for running session:', err.message);
             });
         }
 
@@ -2563,6 +2636,7 @@
           })
             .then(function (session) {
               currentSession = session;
+              rememberSessionPassword(session.id, body.password);
               renderSessionStatus();
               stopPolling();
               pollSession();

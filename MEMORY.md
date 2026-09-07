@@ -4731,3 +4731,55 @@ reflect "which codec is really active" (here, `opusActive` for the MIME string a
 the actual box content), seeding one from a hint and not the other is a trap that only manifests
 under a specific arrival-order race — grep for every field a "pre-seed from hint" comment doesn't
 mention before assuming the seeding is complete.
+
+## Demo page Server panel: reflected running-session settings could get stuck on F5, plus Session Password never survived a reload
+
+User reported two things about `src/index.html`'s Server panel: (1) wanted the Session Password
+field included in the already-existing "reflect a running transcode session's real settings back
+into the form" feature (`reflectRunningSessionSettings()`), and (2) F5/refresh sometimes left the
+panel not reflecting the running session at all.
+
+**(1) is a real, permanent gap, not a bug**: `PublicSession.request` in `src/server/types.ts` is
+`Omit<CreateSessionRequest, 'password'>` on purpose — the server never returns the plaintext
+password, by design (Digest auth means it has no business retaining it past session creation). So
+it can never come back from `GET /api/sessions[/:id]` the way every other field does. Fixed
+client-side only: `rememberSessionPassword()`/`recallSessionPassword()` stash `{sessionId,
+password}` in `sessionStorage` (not `localStorage`) at session-creation time, keyed by session id,
+and `reflectRunningSessionSettings()` restores it only on an exact id match. `sessionStorage` is
+the right tool here specifically because it survives an F5 in the *same tab* but not a fresh
+tab/new window/another device — matches "the tab that started this session should get its password
+back," not "remember every password forever everywhere."
+
+**(2) turned out to be real and reproducible, not a one-off**: verified with a `jsdom`-driven test
+(no real browser tool available in this environment) that loaded the actual `dist/index.html`, ran
+its real inline script with a mocked `fetch`, and simulated an F5 by constructing a fresh `JSDOM`
+instance against the same HTML (carrying `sessionStorage` over by hand, since a real F5 in one tab
+does exactly that). Root cause: `reflectRunningSessionSettings()`'s Resolution field was populated
+*only* by re-probing the session's YouTube URL over the network (`GET /api/youtube/probe`, a real
+`yt-dlp` call — see this file's YouTube 403/PO-Token entries for how flaky that path already is),
+and the whole `#transcoding-settings-fieldset` stayed disabled until that probe resolved
+(`lastProbe` gates `updateTranscodingSettingsAvailability()`). Every *other* field was set
+synchronously from the session response itself and always worked — only Resolution (and, as a side
+effect, the whole fieldset's disabled state) depended on that extra network round-trip succeeding.
+On a slow or failing re-probe, the panel looked like reflection silently didn't happen at all, even
+though 90% of it had.
+
+Fix: split resolution reflection into two steps. Step 1, synchronous, using only data the session
+response already carries (`s.request.resolutionHeight` plus `s.probe.{title,durationSec,maxHeight}`
+— `PublicSession.probe` is `Pick<YoutubeProbeResult, 'title'|'durationSec'|'maxHeight'>`, no
+`availableResolutions` ladder) — builds a one-entry `<select>`, sets a synthetic `lastProbe` so the
+fieldset unlocks immediately, and shows a real (if incomplete) probe-result line. Step 2, unchanged
+from before: the network re-probe still runs in the background to recover the *full* resolution
+ladder (needed so the user can pick a different height for the *next* session); on success it
+replaces the dropdown, on failure the field simply stays a usable one-entry dropdown instead of
+blank-and-disabled. Verified both the success and induced-failure (`502` from the mocked
+`/api/youtube/probe`) paths via the same `jsdom` harness — value/options count/fieldset-disabled/
+button-disabled state all correct in both.
+
+**How to apply**: when a "reflect current state into the form" feature depends on more than one
+async source, don't gate the *entire* feature's visible success on the slowest/flakiest one if a
+cheaper, already-available subset of the data can stand in — degrade one field's edit-ampleness
+(here: only one resolution choice until the full probe lands) rather than the whole panel's
+apparent correctness. No headless-browser tooling was set up in this environment; `jsdom` (already
+a `devDependencies` entry, used for `vitest`'s DOM environment) plus a hand-mocked `window.fetch`
+was enough to drive the real page script and catch this without needing one.
