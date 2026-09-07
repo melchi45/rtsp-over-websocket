@@ -4625,3 +4625,109 @@ report that contradicts a just-completed live verification is a signal to find t
 that differs (here: SUNAPI Manager, which the previous verification pass never exercised) rather
 than re-running the same successful test and reporting "can't reproduce" — the user's own
 comparison of what differed between their setup and mine was what actually cracked this.
+
+## Video never plays for OPUS-audio connections — a real `VideoTagPlayer` init-segment bug, not the reconnect race a prior session chased
+
+User report (new session): "video doesn't play for connections where the audio codec is OPUS" —
+no reconnect mentioned, no console errors. A prior session (see `docs/player/05-video-player-
+rendering.md`'s 2026-09-07 History entries) had chased this exact symptom against a real H.265
+camera (`.32`) through five rounds of live-tested fixes, all in `close()`/reconnect teardown code
+(`endOfStream()`'s `readyState` guard, `sourceBuffer` nulling order, then a `SourceBuffer`-
+membership check that went through `isSourceBufferAttached()` → `isSourceBufferDetached()`), ending
+on an explicit "not yet re-verified live" note. Asked the user whether this was the same issue: yes,
+and still failing silently after that fix.
+
+**The prior investigation's fixes were all real, but they were chasing a red herring for this
+report.** Root-caused instead by reproducing end-to-end against this repo's own YouTube-transcode
+demo server (`src/server`) — no real camera needed, and critically, a **fresh, non-reconnect**
+H.264+Opus session reproduced the identical black-screen/no-errors symptom, which by itself rules
+out the whole `close()`/reconnect angle: this failure happens on the very first connection.
+
+**How it was actually found** (headless Chromium via raw CDP, driven with a hand-rolled `ws`-based
+script since no browser-automation package was installed and installing one wasn't attempted):
+
+1. First reproduction attempts using the demo's REST API directly (no browser) couldn't show
+   whether video actually rendered — sessions reached `status: "live"` fine for both AAC and OPUS,
+   proving nothing about the player itself. Had to drive an actual browser.
+2. `playwright`/`puppeteer` weren't installed, but a cached Playwright Chromium binary was present
+   at `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome` (left over from earlier work in
+   this environment) — launched directly with `--headless=new --remote-debugging-port=...` and
+   driven with a ~150-line raw CDP client (`Runtime.evaluate`/`Page.navigate`/
+   `Page.captureScreenshot`/`Page.addScriptToEvaluateOnNewDocument` over the `ws` package already
+   in `node_modules`). No new dependency added to the repo itself.
+3. First attempts produced nothing (state stuck `STOPPED`, no player element at all) — turned out
+   to be test-script mistakes, not app bugs: (a) the demo's "Connect" button only mounts the
+   `<rtsp-over-websocket>` element, a separate "Play" button actually starts it — never clicked in
+   the first pass; (b) the session defaulted to the probed source's max resolution (8K), which
+   legitimately exceeds `MediaRouter.ts`'s `FHD_SIZE`/MSE-support check and fails with an unrelated
+   "Not enough decoding for current profile" error — fixed by explicitly selecting 480p.
+4. With both fixed, OPUS reproduced cleanly: `state: PLAYING`, statistics panel showing chunks
+   received and growing, but the video area stayed solid black indefinitely. A same-setup AAC run
+   (identical resolution/video codec/device type) rendered real frames immediately — isolating the
+   difference to the audio codec choice alone, nothing else.
+5. Couldn't inspect the element's internals directly at first — assumed a closed shadow root
+   (`el.shadowRoot` was `null`), but `RTSPOverWebSocket.ts` doesn't use shadow DOM at all; the
+   element's content is plain light-DOM children, so the fix was just querying `el` directly
+   instead of `el.shadowRoot`. Also monkey-patched `Element.prototype.attachShadow` (harmless
+   no-op here since it's unused) and `URL.createObjectURL` (to capture the internal `MediaSource`
+   object) via `Page.addScriptToEvaluateOnNewDocument`, in case either was needed — the
+   `createObjectURL` capture turned out to be the useful one.
+6. With direct access to `videoElement.error` (populated by the `MediaSource`/decoder pipeline, but
+   never read by anything in this codebase — see the masking bug below), the real error appeared
+   immediately: `PipelineStatus::CHUNK_DEMUXER_ERROR_APPEND_FAILED: "audio object type 0x40 does
+   not match what is specified in the mimetype"`. `MediaSource.readyState` had gone to `'closed'`.
+
+**Root cause**: `VideoTagPlayer.init()` pre-seeds `this.opusActive` from the SDP-derived
+`audioCodecHint` (a real fix from 2026-08-11, documented in `05-video-player-rendering.md`'s
+`setAudioInfo()` entry) specifically so the *first* `SourceBuffer` — created at the first video
+I-frame, which can easily arrive before the first audio RTP packet on a live stream — declares the
+right `'opus'` MIME `codecs` string instead of defaulting to AAC's `'mp4a.40.2'`. But that fix only
+covered the `SourceBuffer`'s declared MIME type. It left a second field, `this.audioInfo` — which
+controls what `createInitSegment()` actually *writes* into the init segment's audio `stsd` box
+(`mp4Generator.js`: `opusSample()`/`dOps()` for Opus vs. `audioSample()`/`esds()` for AAC) —
+unseeded, still at its class-field default (`codecType: 'AAC'`). So the *very first* init segment,
+built before any real Opus audio packet has run `setAudioInfo()`, declared `opus` in the
+`SourceBuffer`'s MIME type while its actual `stsd` box still contained an AAC `esds` (object type
+`0x40`) — an internally self-contradictory init segment. Chrome's demuxer correctly rejects this
+outright rather than guessing, closing the whole `MediaSource`. This isn't a rare race: for a live
+H264/H265 stream, the first video keyframe reaching the player before the first audio packet does
+is the *common* case, not an edge case — which is why every OPUS connection failed, not just some.
+
+Fix: seed `this.audioInfo` with provisional Opus-shaped values (mirroring what `setAudioInfo()`'s
+own Opus branch builds) alongside `opusActive` in `init()`, whenever the hint says Opus. The
+existing `opusActiveIsHintOnly` mechanism (already there for exactly this kind of provisional-value
+problem) still forces the first real Opus `setAudioInfo()` call to overwrite these with the real
+`channelCount`/`sampleRate` once known, so nothing downstream needed to change.
+
+**Second, independent bug, found by the fact that this was possible to miss for so long**: none of
+this ever produced a console error or callback, on either the prior session's real-camera
+investigation or this one's early attempts — because `mediaSourceEventListener`'s
+`'error'`/`'sourceclose'`/`'sourceended'` cases and `videoElementEventListener`'s `'error'` case
+were *all* just `default: break`. Any `<video>` element pipeline failure of any kind — this one, or
+a future unrelated one — dies completely silently, indistinguishable from the player just being
+idle. Fixed the `<video>` element side (`videoElementEventListener`'s `'error'` case now reports
+`videoElement.error` via `errorCallback`, new code `0x0908`) since `.error` is only ever set on a
+genuine failure, never during normal `close()` — no false-positive risk. Left
+`mediaSourceEventListener`'s own cases alone since `'sourceclose'` also fires during ordinary
+teardown and the `<video>` element's `'error'` event reliably fires alongside any real
+`MediaSource`-level failure anyway.
+
+Verified: rebuilt (`npm run build:player:dev`), reran the identical OPUS scenario against the fixed
+build — `video.currentTime` advancing, `readyState: 4`, `error: null`, `MediaSource.readyState:
+'open'`, buffered range growing, screenshot showing the same real decoded frame the AAC control
+case showed. `npm run test:player` still green (136 passed; the only failure is the pre-existing
+`SunapiManager.live.test.ts`, expected without a real camera — see `CLAUDE.md`).
+
+**How to apply**: when a bug report's symptom matches a past investigation's, verify the actual
+*mechanism* still applies before continuing to patch along the same path — this session almost
+kept extending the reconnect/`close()` investigation on the strength of "user says it's the same
+issue," when the fastest way to falsify that assumption (reproduce fresh, no reconnect, via the
+repo's own demo server instead of insisting on the real camera) immediately proved it wasn't. A
+`SourceBuffer`/`MediaSource` pipeline error is invisible by default in this codebase — its
+`'error'` events were never wired to anything — so any future "silently doesn't play" report should
+have the fix above (or a `debug`-gated equivalent) available to actually see what happened, instead
+of re-deriving "it fails silently" as a starting fact each time. When two fields both need to
+reflect "which codec is really active" (here, `opusActive` for the MIME string and `audioInfo` for
+the actual box content), seeding one from a hint and not the other is a trap that only manifests
+under a specific arrival-order race — grep for every field a "pre-seed from hint" comment doesn't
+mention before assuming the seeding is complete.

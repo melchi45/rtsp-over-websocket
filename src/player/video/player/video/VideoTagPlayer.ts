@@ -505,6 +505,27 @@ export class VideoTagPlayer extends VideoPlayer {
         }
         break;
       }
+      case 'error': {
+        // Real bug, found live: the <video> element's own 'error' event (e.g. a
+        // CHUNK_DEMUXER_ERROR_APPEND_FAILED from a malformed init segment — see init()'s
+        // opusActive/audioInfo seeding comment for one real cause) used to fall through to
+        // `default: break` here, same as mediaSourceEventListener's 'error'/'sourceclose'/
+        // 'sourceended' cases just above -- every MSE decode/pipeline failure died completely
+        // silently: no console output, no errorCallback, nothing to tell the caller (or anyone
+        // debugging live) that playback had died. `videoElement.error` (a MediaError) is only
+        // ever set on a genuine pipeline failure, never during a normal/intentional close(), so
+        // surfacing it here is safe from false positives on ordinary teardown.
+        const mediaError = (event.target as HTMLVideoElement | null)?.error;
+        if (mediaError) {
+          (this.errorCallback as VideoPlayerErrorCallback)({
+            errorCode: fromHex('0x0908'),
+            description: `channel: ${this.channelId}, <video> element reported a playback error (code ${mediaError.code}): ${mediaError.message}`,
+            place: 'VideoTagPlayer.ts:videoElementEventListener',
+            channelId: this.channelId
+          });
+        }
+        break;
+      }
       default:
         break;
     }
@@ -2053,8 +2074,41 @@ export class VideoTagPlayer extends VideoPlayer {
     this.appendSegmentToSourceBuffer();
   }
 
+  // Guards `appendSegmentToSourceBuffer()`/`videoUpdating()` against a `SourceBuffer` that's
+  // still non-null but no longer attached to its `MediaSource` -- reported live on an H.265
+  // camera reconnect: a queued `'updateend'` task (from `close()`'s `removeSourceBuffer()`, MSE
+  // spec) can still invoke this class's listener once close()`'s own cleanup already nulled
+  // `this.mediaSource`/detached the listener in the common case, but a residual race (e.g. two
+  // overlapping `close()`/reconnect cycles) can still leave a stale `sourceBuffer` reachable here.
+  // `typeof sourceBuffer.buffered === 'undefined'` (videoUpdating()'s own pre-existing guard)
+  // does NOT catch this: `.buffered` throws `InvalidStateError` on a detached buffer rather than
+  // returning `undefined`, so the guard itself throws instead of short-circuiting.
+  //
+  // Deliberately NOT `this.mediaSource.sourceBuffers.includes(this.sourceBuffer)` (an earlier
+  // version of this guard, via `Array.prototype.includes.call()`): `SourceBufferList` is a host
+  // object, not a real `Array`, and reported live (an Opus-audio camera, `.32`, H.265 -- unlike
+  // the G.711-audio camera this bug was first found against) to make that borrowed-array-method
+  // check always return `false` regardless of true membership, silently no-oping every future
+  // append and breaking playback outright with no error at all. `.buffered`'s own detached-throws
+  // spec behavior (see above) is the ground truth the browser itself uses, so ask it directly
+  // instead of reimplementing membership-tracking against a host object.
+  private isSourceBufferDetached(): boolean {
+    if (this.sourceBuffer === null) {
+      return true;
+    }
+    try {
+      void this.sourceBuffer.buffered;
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
   private appendSegmentToSourceBuffer(): void {
     if (this.sourceBuffer === null || this.sourceBuffer.updating) {
+      return;
+    }
+    if (this.isSourceBufferDetached()) {
       return;
     }
 
@@ -2265,7 +2319,7 @@ export class VideoTagPlayer extends VideoPlayer {
 
   private videoUpdating(): void {
     try {
-      if (this.mediaSource === null || !this.sourceBuffer || typeof this.sourceBuffer.buffered === 'undefined') {
+      if (this.mediaSource === null || !this.sourceBuffer || this.isSourceBufferDetached()) {
         return;
       }
 
@@ -2500,6 +2554,41 @@ export class VideoTagPlayer extends VideoPlayer {
     // skipped.
     this.opusActive = this.audioCodecHint === 'OPUS';
     this.opusActiveIsHintOnly = this.opusActive;
+    // Real bug, found live (reported directly by the user: video never renders — state
+    // reports "playing", chunks keep arriving, but the <video> element stays black forever,
+    // completely silently — for every connection whose audio codec is OPUS, not just on
+    // reconnect). The pre-seed above only fixed the SourceBuffer's declared MIME `codecs`
+    // string; it left `audioInfo` (which controls what actually gets written into the init
+    // segment's audio `stsd` entry — see mp4Generator.js's opusSample()/dOps() vs.
+    // audioSample()/esds()) at its class-field default, which is AAC-shaped
+    // (`codecType: 'AAC'`). If the first video I-frame — and therefore the first
+    // createInitSegment() call — arrives before the first real Opus RTP packet does (the
+    // common case: a live H264/H265 stream's first keyframe typically arrives at least as
+    // fast as the first audio packet), the init segment ends up declaring `opus` in the
+    // SourceBuffer's MIME type while its `stsd` box still contains an AAC `esds` (object type
+    // 0x40) — an internally-inconsistent init segment. Chrome's demuxer rejects the whole
+    // append (`CHUNK_DEMUXER_ERROR_APPEND_FAILED: "audio object type 0x40 does not match what
+    // is specified in the mimetype"`), closing the MediaSource — and because
+    // mediaSourceEventListener/videoElementEventListener's 'error'/'sourceclose'/'sourceended'
+    // cases are all just `break` (no propagation to any callback or console output), this
+    // fails completely silently. `opusActiveIsHintOnly` already forces the first real Opus
+    // setAudioInfo() call to rebuild the init segment with the real channelCount/sampleRate
+    // once they're known (see its own comment above), so seeding provisional Opus-shaped
+    // values here (corrected later the same way) is enough to keep every init segment
+    // internally consistent from the very first one.
+    if (this.opusActive) {
+      this.audioInfo = {
+        id: 2,
+        channelcount: 1,
+        samplesize: 8,
+        type: 'audio',
+        codecType: 'OPUS',
+        audioobjecttype: 0,
+        samplingfrequencyindex: 0,
+        samplingDuration: Math.round((OPUS_FRAME_SAMPLES / 48000) * TIME_SCALE),
+        interleavedId: 0
+      };
+    }
 
     this.elementSetting();
     this.useBridge = this.decideUseBridge(this.codec);
@@ -2692,7 +2781,15 @@ export class VideoTagPlayer extends VideoPlayer {
           this.mediaSource.removeSourceBuffer(this.mediaSource.sourceBuffers[0]);
         }
 
-        if (this.mediaSource.readyState !== 'ended') {
+        // endOfStream() throws InvalidStateError unless readyState === 'open' (MSE spec) --
+        // this used to check `!== 'ended'`, which still let 'closed' through. A 'closed'
+        // MediaSource is reachable here on reconnect: an RTSPOverWebSocketError mid-session
+        // (observed live on an H.265 camera, where a codec/negotiation hiccup during setup is
+        // more likely to fire one) drives `play()` -> `control()` -> `open()` -> this `close()`,
+        // and by then the MediaSource may have already self-transitioned to 'closed' (e.g. via
+        // a 'sourceclose'/error event) before this cleanup path ran. Same race documented at
+        // `setSourceBuffer()`'s `readyState !== 'open'` guard above.
+        if (this.mediaSource.readyState === 'open') {
           this.mediaSource.endOfStream();
         }
       }
@@ -2711,12 +2808,17 @@ export class VideoTagPlayer extends VideoPlayer {
       this.useBridge = false;
       this.closeMjpegEncoder();
       this.useMjpegEncoder = false;
-      // Previously left dangling after the removeSourceBuffer() above — a
-      // stale reference to a SourceBuffer no longer attached to any
-      // MediaSource, which throws "This SourceBuffer has been removed from
-      // the parent media source" the next time anything (e.g. a reconnect
-      // reusing this same VideoTagPlayer instance) tries to append to it.
-      this.sourceBuffer = null;
+      // Deliberately NOT nulling `this.sourceBuffer` here (it used to be, right after the
+      // removeSourceBuffer() above): `removeAllEventListener()` below needs it non-null to find
+      // the still-attached listeners and detach them (its own `this.sourceBuffer !== null` guard
+      // silently no-ops otherwise). Nulling it early left those listeners orphaned on the
+      // now-detached SourceBuffer, so a later-firing queued 'updateend' task (queued by
+      // removeSourceBuffer()'s abort-in-progress-append step above, reported live on an H.265
+      // camera reconnect) still invoked them, calling back into appendSegmentToSourceBuffer()/
+      // videoUpdating() against an already-torn-down player ("This SourceBuffer has been removed
+      // from the parent media source" / "fail to detect the video tag element"). Left to
+      // `removeAllEventListener()` (called below) to detach the listeners and null the field
+      // together, in the right order.
       this.sourceBufferAudioIsOpus = false;
       this.realAacActive = false;
       this.opusActive = false;
