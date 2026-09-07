@@ -287,6 +287,97 @@ the `@melchi45:registry` line is configured first, since without it npm
 compares the tarball's host (`npm.pkg.github.com`) against the default
 registry (`registry.npmjs.org`) instead.
 
+## Using the `<rtsp-over-websocket>` element
+
+### Declarative — plain HTML, no bundler
+
+Loading the module registers the custom element as a side effect (`customElements.define(...)`), so
+a bare import plus the tag itself is enough — this is exactly what `src/index.html`'s own demo page
+does:
+
+```html
+<script type="module">
+  import '@melchi45/rtsp-over-websocket';
+  // No bundler / npm install? Point this at the built file directly instead —
+  // e.g. import './player/rtsp-over-websocket.esm.js', or a plain
+  // <script src="./player/rtsp-over-websocket.global.js"></script> (IIFE build,
+  // no `type="module"` needed) if this page can't use ES module imports at all.
+</script>
+
+<rtsp-over-websocket
+  id="camera-1"
+  hostname="192.168.0.10"
+  port="443"
+  username="admin"
+  password="changeme"
+  channel="1"
+  profile="H.264"
+  device="camera"
+  https
+  autoplay
+></rtsp-over-websocket>
+```
+
+### Imperative — create/configure/drive it from script
+
+```js
+import '@melchi45/rtsp-over-websocket';
+
+const el = document.createElement('rtsp-over-websocket');
+el.id = 'camera-1';
+document.body.appendChild(el); // must be in the DOM before setting connection properties
+
+// Property assignment (not setAttribute) — lets non-string values (channel as
+// a number, https as a boolean) pass through without stringification quirks;
+// every property setter delegates to setAttribute() internally either way.
+el.hostname = '192.168.0.10';
+el.port = 443;
+el.username = 'admin';
+el.password = 'changeme';
+el.channel = 1;
+el.profile = 'H.264';
+el.device = 'camera';
+el.https = true;
+
+el.addEventListener('statechange', (event) => {
+  console.log('readyState:', event.detail.readyState);
+});
+el.addEventListener('error', (event) => {
+  console.error('player error:', event.detail.error, event.detail.message);
+});
+
+el.play();
+// el.pause() / el.stop() / el.seeking(...) / etc. — see docs/player/01-elements-interface-exceptions.md
+```
+
+`error`/`statechange` above are two of **33 events** the element can dispatch (`meta`, `waiting`,
+`capture`, `statistics`, every `change*` attribute-change notification, ...) — see
+[docs/player/01-elements-interface-exceptions.md](docs/player/01-elements-interface-exceptions.md)'s
+`RTSPOverWebSocket` section (`dispatch()`) for the full list and each event's `detail` shape (the
+React wrapper's `RTSPOverWebSocketEventListeners` type in that same doc's `react/Constant.ts` section
+names all 33 one-for-one, if a quick reference is easier to scan than the class doc itself).
+
+### Handling a 401 (credentials required / rejected)
+
+`play()` no longer requires `username`/`password` up front — it connects first and only asks for
+credentials if the server actually challenges for them, via the ordinary `error` event:
+`event.detail.error` is `0x0403` (no credentials on hand to answer the challenge with) or `0x0206`
+(the credentials supplied were rejected). Answer either by collecting new credentials and calling
+`el.retryAuthentication(username, password)` — re-answers the *same* still-open connection's cached
+challenge, no reconnect needed. See
+[docs/player/01-elements-interface-exceptions.md](docs/player/01-elements-interface-exceptions.md)'s
+"401 / credential-retry" section for the full design, and `src/index.html`'s "RTSP URL" tab for a
+complete reference implementation.
+
+### React
+
+A `Player` component and a `mountReactPlayer()` helper are published from this same package's
+`./react` export (`@melchi45/rtsp-over-websocket/react`) — see
+[docs/player/01-elements-interface-exceptions.md](docs/player/01-elements-interface-exceptions.md)'s
+`Player` section, specifically its **Usage Example** (a real React consumer with a ref-based
+`retryAuthentication` credentials flow, and a plain-script consumer using `mountReactPlayer()`), for
+runnable code.
+
 ## Building
 
 ```

@@ -52,6 +52,9 @@
 | 2026-09-04 | Added `setRTSPOverWebSocketDebug(config, selector?)`, exported and also attached to `window` as a module side effect (right after `customElements.define`) — a console/devtools convenience that sets `.debug` on every `<rtsp-over-websocket>` element currently matching `selector` (default: all of them) without needing a reference to a specific instance first, returning how many it updated. Accepts the same JSON-string-or-object duality the `debug` property setter itself does. Same "read once at `play()` time" semantics as `debug` itself — doesn't retroactively reconfigure an already-running session. Requested directly by the user; see README.md's "Debug logging" § "Setting it from the browser console". |
 | 2026-09-04 | The "read once at `play()` time" limitation the entry above documented turned out to be a real problem in practice: reported directly by the user, `setRTSPOverWebSocketDebug(null)` mid-stream had no visible effect — packet-level tracing kept printing. Both the `debug` attribute case and the `debug` property setter now call a new private `pushDebugConfigToRunningPlayers()`, which sets `.debug` on `this.player`/`this.backupplayer` (if either already exists) in addition to updating `this.info.debug` — `StreamPlayer.ts`'s own `set debug()` (new; `debugConfig` is no longer `readonly`) cascades that down into `mediaRouter`/`rtspClient`/`rtpClient` and everything *they* already hold, all the way down to individual `*Session`s and, for video, `CanvasRenderer`'s drawer. See `MEMORY.md` for the full per-class breakdown and `03-mediaSession-core-video.md`/`05-video-player-rendering.md`/`06-listen-audio.md`'s matching entries. |
 | 2026-09-04 | The `"level"` key's default, documented in the 2026-09-04 entry above as `"info"`, changed to `"warning"` the same day — reported directly by the user as "too many logs" after live-camera testing (`"info"` meant enabling any component immediately produced a steady per-frame stream, since every trace call in this codebase is `debug`/`info` severity and none are `warning`/`error` yet). Practical effect: enabling a component with no explicit `"level"` now shows nothing at all, not just less. See `08-util.md`'s matching History row and `04-mediaSession-audio-text.md` for a related reclassification (`G711Session`/`G726Session`/`OPUSSession`'s single per-packet trace moved from `info` to `debug`, since for those codecs one RTP packet already is one complete frame — no separate "assembled" milestone exists to promote to `info`). |
+| 2026-09-07 | `react/Player.tsx`'s `useSunapi` flow's `sunapiManager.init().then()` callback never set `playerRef.current.password` — only `sunapiClient` — despite `formDigestAuthHeader()`'s SUNAPI-delegated digest path requiring a real password to compute a matching response (see this file's `password` property entry and `02-network.md`'s `RtspClient` section); found live, reported by the user as "SUNAPI REST login (200 OK) succeeds but the stream never plays," which this exactly explains (every RTSP challenge answered against an empty-string digest, every retry re-401s). Now sets it right before attaching `sunapiClient`. Also added a consumer-side 0x0403/0x0206 `error`-event listener and a credentials-prompt form (username/password inputs, calling the element's `retryAuthentication()` on submit) to `Player.tsx` itself, requested directly by the user — mirroring `src/index.html`'s "RTSP URL" tab reference implementation (`SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE`/`WRONG_CREDENTIALS_ERROR_CODE`) described in the "401 / credential-retry" section above, so this same pattern is now available to consumers of the `<Player>` React component too, not just the vanilla-JS demo. |
+| 2026-09-07 | Follow-up, same day: the embedded credentials form above was a wrong shape per the user's direct follow-up feedback — they wanted `Player.tsx` to forward **every** `RTSPOverWebSocket.ts` dispatched event to the consumer (not just `error`, and not interpret it internally), and the SUNAPI login flow reachable through that same consumer-facing interface too ("RTSPOverWebSocket의 모든 listener를 확인하고 Player.tsx에 해당 Listener interface를 수신하겠다고 등록", "Sunapi도 interface를 통하도록 해줘"). Redesigned: `Constant.ts` gained a 33-callback `RTSPOverWebSocketEventListeners` interface (one `onXxx` per `dispatch()` call site in `RTSPOverWebSocket.ts`, with typed detail shapes) plus a `PlayerHandle { retryAuthentication(username, password) }` type and the exported `SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE`/`WRONG_CREDENTIALS_ERROR_CODE` constants; `Player.tsx` became a `forwardRef<PlayerHandle, PlayerProps>`, registers all 33 native listeners and forwards each verbatim via a `listenersRef` (kept live every render so a fresh `listeners` prop reaches the DOM listeners attached once at mount), removed `loginError` state and the embedded form entirely, and unified the SUNAPI login into one `connectSunapi(username, password, shouldPlay)` `useCallback` used by both the mount-time initial connect and the exposed `retryAuthentication` (which also handles the `useSunapi: false` case by calling the element's own `retryAuthentication()` directly). `react/index.ts`'s `mountReactPlayer()` now takes a third `listeners` parameter and returns `{ unmount, retryAuthentication }` (via an internal `React.createRef<PlayerHandle>()`) instead of a bare unmount function — a real breaking change for any existing caller destructuring its old bare-function return value. `src/index.html`'s React panel updated to match: a new `react-credentials` section/wiring, passing `listeners: {onStateChange, onError}` into `mountReactPlayer()` instead of the old direct `playerEl.addEventListener(...)` on the mounted DOM element, and calling the returned `retryAuthentication()` on submit. See `react/Constant.ts`'s and `react/Player.tsx`'s Method Analysis sections below for the full design. |
+| 2026-09-07 | Added a "Usage Example" to the `Player` section above, requested directly by the user — two runnable snippets (a real React consumer using `<Player ref>`/`listeners`/`PlayerHandle.retryAuthentication`, and a plain-script consumer using `mountReactPlayer()`) covering the redesign from the entry immediately above. |
 
 ---
 
@@ -765,7 +768,12 @@ their exact location rather than fixed silently (file header comment,
   **consumer-side** responsibility; `src/index.html`'s "RTSP URL" demo tab is the reference
   implementation (`SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE = 0x0403`,
   `WRONG_CREDENTIALS_ERROR_CODE = 0x0206`, wired to `retryAuthentication()` — see commits
-  `1338ef7`/`2931a9d`/`002138f`).
+  `1338ef7`/`2931a9d`/`002138f`). `react/Player.tsx` forwards this (and every other
+  `RTSPOverWebSocket.ts` dispatch) to a consumer via `Constant.ts`'s
+  `RTSPOverWebSocketEventListeners`/`listeners` prop rather than interpreting it itself — see
+  `react/Constant.ts`'s and `react/Player.tsx`'s Method Analysis sections below and the 2026-09-07
+  History rows above for the redesign from an earlier, now-superseded version that rendered its own
+  embedded credentials form.
 
 **Stop button not actually stopping the `<video>` element (real bug fix, found live, 2026-09-01)**
 
@@ -1384,135 +1392,209 @@ only ever sees them through the `MediaRouterFactories`/`*Like` interface types.
 
 ### `react/index.ts` (`src/player/react/index.ts`)
 
-Not a class — a small module exporting `Player` (re-exported from `Player.tsx`), the `PlayerProps`/
-`IDevice` types (re-exported from `Constant.ts`), and one helper function:
+Not a class — a small module exporting `Player` (re-exported from `Player.tsx`, now a
+`forwardRef` component — see below), the `PlayerProps`/`IDevice`/`PlayerHandle`/
+`RTSPOverWebSocketEventListeners` types and `SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE`/
+`WRONG_CREDENTIALS_ERROR_CODE` constants (all re-exported from `Constant.ts`), and one helper
+function:
 
-- `mountReactPlayer(container: HTMLElement, device: IDevice): () => void` (`:15-19`) — creates a
-  React root on `container` via `createRoot()`, renders `<Player device={device} />`, and returns
-  an unmount function (`root.unmount`). Exists so a plain-script consumer (e.g. `src/index.html`'s
-  no-bundler demo page) can use the React wrapper without importing React/ReactDOM APIs itself.
+- `mountReactPlayer(container, device, listeners?): { unmount, retryAuthentication }` (`:22-35`,
+  redesigned 2026-09-07 — previously returned a bare unmount function, no `listeners` parameter)
+  — creates a React root on `container` via `createRoot()`, an internal `React.createRef<PlayerHandle>()`,
+  and renders `<Player device={device} listeners={listeners} ref={handleRef} />`. Returns
+  `unmount` (`root.unmount`) plus `retryAuthentication`, a thin wrapper forwarding to
+  `handleRef.current.retryAuthentication` — exists so a plain-script consumer (e.g.
+  `src/index.html`'s no-bundler demo page) can reach `Player`'s imperative handle without holding a
+  real React ref of its own. `listeners` is passed straight through to `Player`'s own `listeners`
+  prop.
 
 ### `react/Constant.ts` (`src/player/react/Constant.ts`)
 
-Type-only — `IDevice` (the flat device-connection shape `Player` expects: `id`, `hostname`,
-`port`, `username`, `password`, `profile`, `channel`, `device`, `autoplay`, `statistics`,
-`https`, and optional `useSunapi?: boolean`, default `true` when omitted — see `Player`'s Method
-Analysis below) and `PlayerProps { device: IDevice }`. Adapted from `react-wisenet-player`'s
-`Constant.tsx`, keeping only the subset `Player.tsx` actually needs (the original's device-
-management-UI types and unused statistics-event payload types are not ported).
+Type-only (plus two exported numeric constants) — redesigned 2026-09-07 to carry the full
+event-forwarding contract between `Player.tsx` and its consumers, at the user's explicit request
+("RTSPOverWebSocket의 모든 listener를 확인하고 Player.tsx에 해당 Listener interface를 수신하겠다고
+등록").
+
+- `IDevice` — the flat device-connection shape `Player` expects: `id`, `hostname`, `port`,
+  `username`, `password`, `profile`, `channel`, `device`, `autoplay`, `statistics`, `https`, and
+  optional `useSunapi?: boolean` (default `true` when omitted — see `Player`'s Method Analysis
+  below). Unchanged by the 2026-09-07 redesign. Adapted from `react-wisenet-player`'s
+  `Constant.tsx`, keeping only the subset `Player.tsx` actually needs.
+- `SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE = fromHex('0x0403')` / `WRONG_CREDENTIALS_ERROR_CODE =
+  fromHex('0x0206')` — the same two RTSP-level 401 codes `src/index.html`'s "RTSP URL" tab treats as
+  reference implementation (see this file's "401 / credential-retry" section above), exported here
+  so a `<Player>`/`mountReactPlayer()` consumer's `onError` listener doesn't need to hardcode the
+  raw hex itself. `Player.tsx` also synthesizes a `SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE` `onError`
+  call for a failed *initial* SUNAPI REST login — see `Player`'s Method Analysis below.
+- Per-event detail interfaces (`RTSPOverWebSocketErrorDetail`, `RTSPOverWebSocketStateChangeDetail`,
+  `RTSPOverWebSocketWaitingDetail`, `RTSPOverWebSocketMetaDetail`, `RTSPOverWebSocketMetaImageDetail`,
+  `RTSPOverWebSocketTimestampDetail`, `RTSPOverWebSocketStatisticsDetail`,
+  `RTSPOverWebSocketCaptureDetail`, `RTSPOverWebSocketInstantPlaybackDetail`,
+  `RTSPOverWebSocketBackupStateDetail`, `RTSPOverWebSocketGeneratedUrlDetail`,
+  `RTSPOverWebSocketSunapiClientDetail`, `RTSPOverWebSocketChangeSunapiClientDetail`,
+  `RTSPOverWebSocketPlayerAvailabilityDetail`) — typed shapes for the `CustomEvent.detail` object
+  each matching `RTSPOverWebSocket.ts` `dispatch(...)` call site actually passes (cross-referenced
+  directly against every `this.dispatch(...)` call in that file, not guessed), all extending a
+  shared `RTSPOverWebSocketEventBase { channelId?, elementId? }` (the two fields `dispatch()` itself
+  always adds when available).
+- `RTSPOverWebSocketEventListeners` — one optional callback per event `RTSPOverWebSocket.ts` can
+  dispatch, **33 in total** (every `this.dispatch('name', ...)` call site in that file has exactly
+  one matching `onXxx` here: `onError`, `onMeta`, `onResize`, `onStateChange`, `onTimestamp`,
+  `onCapture`, `onStatistics`, `onBackupStateChange`, `onPlayerModeChanged`, `onInstantPlayback`,
+  `onWaiting`, `onMetaImage`, `onUsernameChanged`, `onDeviceTypeChanged`,
+  `onProfileNumberChanged`, `onProfileNameChanged`, `onChannelNumberChanged`, `onHostnameChanged`,
+  `onVolumeLevelChanged`, `onPortNumberChanged`, `onFullscreenModeChanged`,
+  `onSunapiClientChanged`, `onBestshotFilterChanged`, `onBestshot`, `onTimezoneChanged`,
+  `onClientChanged`, `onMuteChanged`, `onPasswordChanged`, `onProtocolChanged`, `onSpeedChanged`,
+  `onSunapiClient`, `onGeneratedUrl`, `onRtspMessage`, `onPlayerAvailabilityChanged`). `PlayerProps`
+  gained a `listeners?: RTSPOverWebSocketEventListeners` field carrying this.
+- `PlayerHandle { retryAuthentication(username, password): void }` — the imperative type
+  `Player`'s `forwardRef` exposes (see below) and `mountReactPlayer()`'s return value wraps.
 
 ### `Player` (`src/player/react/Player.tsx`)
 
 Referenced here (though outside this doc's assigned file list) because it — not `index.ts` — is
 where the actual "wrap the custom element for React" logic lives; documented at the depth needed
-to explain what `react/index.ts` exports.
+to explain what `react/index.ts` exports. **Redesigned 2026-09-07** (requested directly by the
+user) from a version that rendered its own embedded "credentials required" form and interpreted
+`0x0403`/`0x0206` itself — see this file's 2026-09-07 History rows above for the fix (a real bug:
+the old version never set `playerRef.current.password` on a successful SUNAPI login, so the
+SUNAPI-delegated RTSP digest path always computed a response for an empty password and every
+retry re-401'd) and this redesign in sequence.
 
-**Structure.** `Player: React.FC<PlayerProps>` (`Player.tsx:61`) — a function component, not a
-class, and **not built with `forwardRef`**: it does not expose a ref to the underlying custom
-element to its own caller. Instead it declares its own module-level JSX typing
+**Structure.** `Player = forwardRef<PlayerHandle, PlayerProps>((props, ref) => {...})`
+(`Player.tsx:74`, `Player.displayName = 'Player'` set immediately after — required for a
+`forwardRef` component to show a real name instead of `Anonymous` in DevTools/error stacks) — now
+**does** expose an imperative ref (`PlayerHandle`, `Constant.ts`), unlike the pre-2026-09-07
+version. Declares its own module-level JSX typing
 (`RTSPOverWebSocketElementAttributes extends React.HTMLAttributes<RTSPOverWebSocket>`, augmenting
-the global `JSX.IntrinsicElements` map, `:13-33`) so `<rtsp-over-websocket {...} />` type-checks
-as a real intrinsic element, then renders that tag directly with props mapped from `IDevice`
+the global `JSX.IntrinsicElements` map, `:14-34`) so `<rtsp-over-websocket {...} />` type-checks as
+a real intrinsic element, then renders that tag directly with props mapped from `IDevice`
 (`hostname`, `username`, `port` (stringified), `profile`, `channel` (stringified), `device`). Two
 of the JSX props need real typed values, not the empty-string/`undefined` "boolean HTML attribute"
-idiom `autoplay` (see below) uses: `statistics`/`https` are passed as actual `!!`-coerced
-booleans, because `RTSPOverWebSocket.ts` has real property setters for both
-(`set statistics(v: boolean)`/`set https(v: boolean)`) that React assigns to directly rather than
-via `setAttribute` — and both throw `RTSPOverWebSocketError` if the incoming value isn't strictly
-`typeof v === 'boolean'`, which an empty string is not. Internally it holds `playerRef`
-(`useRef<RTSPOverWebSocket|null>`, resolved post-mount via `document.getElementById`, not a
-React ref callback), `sunapiManagerRef` (`useRef<SunapiManager|null>`), and `playState`/
-`loginError` component state, plus a derived `useSunapi` — **not just `props.device.useSunapi`
-verbatim** (fixed 2026-08-26): `const hasCredentials = !!(props.device.username ||
-props.device.password); const useSunapi = hasCredentials && props.device.useSunapi !== false;`.
-Previously this was `props.device.useSunapi !== false` alone (SUNAPI by default unless explicitly
-opted out), which meant a connection with *no* `username`/`password` at all — a legitimate
-no-auth request, e.g. against this library's own YouTube-transcode demo server, which now supports
-sessions with no RTSP Digest auth — still attempted a SUNAPI REST login every time, which can only
-ever fail with nothing to authenticate with, and this component never fell through to the
-raw-attribute path that would otherwise have worked. Confirmed live: this reproduced even with
-`useSunapi` *explicitly* `true` (this repo's own demo page's React panel's "Connect via SUNAPI
-Manager" checkbox defaults to checked and always passes its literal boolean, never leaving
-`useSunapi` `undefined` — so a first attempt at this fix that only downgraded the *unset default*
-never actually applied on that panel; the final fix overrides *any* `useSunapi` value, not just
-the default, whenever there are no credentials). An explicit `useSunapi: true` **with** credentials
-present is unaffected — still SUNAPI, exactly as before.
+idiom `autoplay` (see below) uses: `statistics`/`https` are passed as actual `!!`-coerced booleans,
+because `RTSPOverWebSocket.ts` has real property setters for both (`set statistics(v: boolean)`/
+`set https(v: boolean)`) that React assigns to directly rather than via `setAttribute` — and both
+throw `RTSPOverWebSocketError` if the incoming value isn't strictly `typeof v === 'boolean'`, which
+an empty string is not. Internally it holds `playerRef` (`useRef<RTSPOverWebSocket|null>`,
+resolved post-mount via `document.getElementById`, not a React ref callback), `sunapiManagerRef`
+(`useRef<SunapiManager|null>`), `cancelledRef` (`useRef(false)`, new — guards any async
+`SunapiManager.init()` resolution, whether from the mount-time connect or a later
+`retryAuthentication()` call, from touching `playerRef`/state after unmount), `listenersRef`
+(`useRef(props.listeners)`, reassigned unconditionally every render — new; lets the DOM listeners
+registered once at mount, below, always reach whichever `listeners` callbacks the *latest* render
+passed in, without re-attaching `addEventListener`), and `playState` component state (drives the
+`active` CSS class). **`loginError` state and the embedded credentials-prompt form are gone** —
+both `onError` forwarding and `PlayerHandle.retryAuthentication` (below) replace them. `useSunapi`
+derivation is unchanged from the 2026-08-26 fix: `const hasCredentials = !!(props.device.username
+|| props.device.password); const useSunapi = hasCredentials && props.device.useSunapi !== false;`
+— see this file's own History for why (a no-credentials connection must never attempt a SUNAPI
+login, which can only fail with nothing to authenticate with).
 
-**Method Analysis (component behavior, not class methods).** On mount (`useEffect`, empty dep
-array, `:210-323`), branching on the derived `useSunapi` above:
+**Method Analysis (component behavior, not class methods).**
 
-- **`useSunapi` true (default when credentials are present)** — looks up the element by `id`,
-  constructs a `SunapiManager`, logs in via `sunapiManager.init(deviceInfo)` (REST + digest auth —
-  the "real device integration" flow, unlike this library's own YouTube-transcode demo server which
-  has no SUNAPI endpoint), and only on success assigns `playerRef.current.sunapiClient =
-  sunapiManager.sunapiClient` and (if `device.autoplay`) calls `player.play()` — explicitly, never
-  via an `autoplay` attribute; on failure sets `loginError` for the rendered error banner. No
-  `password`/`autoplay` attribute is ever passed to the DOM element in this mode, by design:
-  credentials go through this login flow, not a plaintext `password` attribute or the element's own
-  attribute-driven `connectedCallback` path (see the `sunapiClient`-setter note in this file's
-  `RTSPOverWebSocket` section for exactly why calling `play()` only *after* login matters, not just
-  before it).
-- **`useSunapi` false (explicit opt-out, or no credentials at all)** — skips the SUNAPI login
-  entirely; the JSX instead includes real `password`/`autoplay` attributes
-  (`password={props.device.password}`, `autoplay={props.device.autoplay ? '' : undefined}` — the
-  bare-flag idiom, since `autoplay` has no property setter and *is* read via `getAttribute`),
-  letting `RTSPOverWebSocket.ts`'s own `connectedCallback()`/`updateSunapiManager()` drive the
-  connection from those raw attributes instead. Originally existed only to reproduce/compare
-  against that raw-attribute behavior (see `src/index.html`'s React panel's "Connect via SUNAPI
-  Manager" checkbox) — as of the `useSunapi` derivation fix above, this is now also the mode a
-  no-credentials connection actually goes through regardless of the checkbox/prop, since it's the
-  only one of the two that can succeed with nothing to authenticate with. `username={''}`/
-  `password={''}` reaching the element this way is safe: `RTSPOverWebSocket.ts`'s own default
-  (`info.device.username: ''` in its `info` object literal) and `StreamPlayer.ts`'s `open()` (fixed
-  the same day to default to `''` instead of throwing for a missing username — see this file's
-  `StreamPlayer` section) both already treat an empty string as the normal no-auth state.
+- **`connectSunapi(username, password, shouldPlay)`** (`:125-186`, `useCallback`) — the single code
+  path both the mount-time initial connect *and* `PlayerHandle.retryAuthentication()` (below) go
+  through, unifying what used to be one-off `useEffect` logic with no external entry point
+  (requested directly by the user: "Sunapi도 interface를 통하도록"). Constructs a fresh
+  `SunapiManager` (detaching any previous one first), logs in via `sunapiManager.init(deviceInfo)`
+  (REST + digest auth), and on success sets `playerRef.current.password = password` **before**
+  `playerRef.current.sunapiClient = sunapiManager.sunapiClient` — the fix from this file's
+  2026-09-07 History entry: the SUNAPI-delegated RTSP digest path
+  (`RtspClient.formDigestAuthHeader()`) re-sends this password per challenge, so leaving it unset
+  makes every RTSP challenge compute a response for `''` and every retry re-401 despite a
+  successful SUNAPI REST login. Calls `player.play()` only if `shouldPlay`. On failure, synthesizes
+  an `onError` call with `error: SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE` — no native
+  `RTSPOverWebSocket` dispatch corresponds to "the standalone `SunapiManager` login this component
+  drives failed," so this folds that failure into the same `listeners.onError` channel a real
+  RTSP-level 401 uses, rather than a separate, component-local `loginError` state as before.
+- **Mount (`useEffect`, empty dep array, `:220-386`)** — looks up the element by `id`; if
+  `useSunapi`, calls `connectSunapi(props.device.username, props.device.password,
+  props.device.autoplay)` (gating the *initial* connect's `play()` on `device.autoplay`, unlike a
+  `retryAuthentication()`-triggered reconnect, which always plays — see below). If not `useSunapi`,
+  skips straight to attribute-driven connection: the JSX includes real `password`/`autoplay`
+  attributes in this mode only (`password={props.device.password}`,
+  `autoplay={props.device.autoplay ? '' : undefined}` — the bare-flag idiom, since `autoplay` has
+  no property setter and *is* read via `getAttribute`), letting `RTSPOverWebSocket.ts`'s own
+  `connectedCallback()`/`updateSunapiManager()` drive the connection instead. Then registers **one
+  native listener per event `RTSPOverWebSocket.ts` can dispatch — all 33** (`error`, `meta`,
+  `resize`, `statechange`, `timestamp`, `capture`, `statistics`, `backupstatechange`,
+  `changeplayermode`, `instantplayback`, `waiting`, `metaImage`, `changeusername`,
+  `changedevicetype`, `changeprofilenumber`, `changeprofile`, `changechannel`, `changehostname`,
+  `changevolume`, `changeport`, `changefullscreen`, `changesunapiclient`, `changebestshotfilter`,
+  `changebestshot`, `changetimezone`, `changeclient`, `changemute`, `changepassword`,
+  `changeprotocol`, `changespeed`, `sunapiclient`, `generatertspurl`, `rtsp`, `playerstatechange`)
+  — a real behavior expansion from the pre-2026-09-07 version, which only listened for ~24 of these
+  and never forwarded any of them to the consumer, just `console.log`'d most. Every handler forwards
+  `event.detail` verbatim to `listenersRef.current.onXxx?.(detail)`; a few also keep the minimum
+  bit of behavior this component needs for its own correctness or already had:
+  `onStateChanged`/`statechange` also calls `setPlayState(detail.readyState)` (drives the `active`
+  CSS class); `onChannelNumberChanged`/`changechannel` and `onHostnameChanged`/`changehostname`
+  still `stop()`+`play()` the element in response to a live channel/hostname attribute change
+  reaching it from outside React; `onResize`/`resize` still force-sets `video.style.width/height`
+  to `100%`. Registers a `beforeunload` window listener that force-`stop()`s the player before
+  unload. Cleanup (the effect's return function) sets `cancelledRef.current = true`, stops the
+  player if playing, detaches the `SunapiManager`, and removes the `beforeunload` listener.
+- **`useImperativeHandle(ref, () => ({ retryAuthentication }), [connectSunapi, useSunapi])`**
+  (`:189-204`) — the `PlayerHandle` this component now exposes. `retryAuthentication(username,
+  password)`: if `useSunapi`, calls `connectSunapi(username, password, true)` (always plays,
+  regardless of `device.autoplay` — an explicit credential retry should always attempt to start the
+  stream); otherwise calls the underlying element's own `retryAuthentication()` directly
+  (`playerRef.current?.retryAuthentication(username, password)`), re-answering the same still-open
+  connection's cached 401 challenge with no reconnect. Intended caller flow (mirrors
+  `src/index.html`'s "RTSP URL" tab's own `attemptSunapiConnect()`/`retryAuthentication()` split):
+  listen for `listeners.onError` reporting `SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE`/
+  `WRONG_CREDENTIALS_ERROR_CODE`, collect credentials however the consumer sees fit, then call the
+  ref's/handle's `retryAuthentication`. `src/index.html`'s React panel is the reference
+  implementation (`react-credentials` section + its wiring script).
 
-Both modes register the same ~20 native `CustomEvent` listeners on the element (`error`, `meta`,
-`resize`, `statechange`, `timestamp`, `capture`, `statistics`, `backupstatechange`,
-`changeplayermode`, `instantplayback`, `waiting`, `metaImage`, plus every `change*`
-attribute-change event) — mostly `console.log` observability handlers, except
-`onChannelNumberChanged`/`onHostnameChanged`, which actively `stop()`+`play()` the element in
-response to a live channel/hostname change, and `onResize`, which force-sets
-`video.style.width/height` to `100%`. Registers a `beforeunload` window listener that
-force-`stop()`s the player before unload. Cleanup (the effect's return function) stops the player
-if playing, detaches the `SunapiManager` (a no-op if `useSunapi` was false and one was never
-created), and removes the `beforeunload` listener.
-
-**Call Stack** (the default `useSunapi: true` path — see the Method Analysis above for how the
-`false` path differs).
+**Call Stack** (the default `useSunapi: true` path, including a 401-driven credential retry — see
+the Method Analysis above for how `useSunapi: false` differs).
 
 ```mermaid
 sequenceDiagram
     participant App
-    participant Player as Player.tsx (React FC)
+    participant Player as Player.tsx (forwardRef)
     participant Sunapi as SunapiManager
     participant El as &lt;rtsp-over-websocket&gt;
 
-    App->>Player: <Player device={IDevice} />
+    App->>Player: <Player ref device={IDevice} listeners={...} />
     Player->>Player: render <rtsp-over-websocket id=... hostname=... .../>
     Player->>Player: useEffect: document.getElementById(device.id)
-    Player->>Sunapi: new SunapiManager(); init(deviceInfo)
+    Player->>Sunapi: connectSunapi(): new SunapiManager(); init(deviceInfo)
     Sunapi-->>Player: resolves (login OK)
-    Player->>El: el.sunapiClient = sunapiManager.sunapiClient
+    Player->>El: el.password = password; el.sunapiClient = sunapiManager.sunapiClient
     Player->>El: el.play()  (if device.autoplay)
-    Player->>El: addEventListener('statechange' | 'error' | ..., handler)
+    Player->>El: addEventListener(all 33 dispatch names, handler)
+    El-->>Player: 'error' CustomEvent, detail.error = 0x0403/0x0206
+    Player-->>App: listeners.onError(detail)
+    App->>App: recognizes 0x0403/0x0206, collects credentials
+    App->>Player: ref.current.retryAuthentication(username, password)
+    Player->>Sunapi: connectSunapi(username, password, true)
+    Sunapi-->>Player: resolves (login OK)
+    Player->>El: el.password = password; el.sunapiClient = ...; el.play()
     Note over Player,El: unmount
     Player->>El: el.stop() (if isplay)
     Player->>Sunapi: sunapiManager.dettach()
 ```
 
-**RFC / Standard References.** No IETF/W3C standard — React function components and hooks are a
-library convention, not a formal spec. The one interop point worth noting: augmenting
-`JSX.IntrinsicElements` is the standard TypeScript/JSX mechanism for teaching JSX about a custom
-element that was registered imperatively (via `customElements.define`) rather than declared as a
-React component.
+**RFC / Standard References.** No IETF/W3C standard — React function components, hooks, and the
+`forwardRef`/`useImperativeHandle` imperative-escape-hatch pattern are library conventions, not a
+formal spec. The one interop point worth noting: augmenting `JSX.IntrinsicElements` is the
+standard TypeScript/JSX mechanism for teaching JSX about a custom element that was registered
+imperatively (via `customElements.define`) rather than declared as a React component.
 
 **Relations & Data Flow.**
 
 ```mermaid
 classDiagram
     class Player {
-        <<React.FC>>
+        <<forwardRef>>
+        +listeners: RTSPOverWebSocketEventListeners
+    }
+    class PlayerHandle {
+        <<interface>>
+        +retryAuthentication(username, password)
     }
     class RTSPOverWebSocket
     class SunapiManager
@@ -1520,9 +1602,119 @@ classDiagram
         <<function>>
     }
 
-    Player --> RTSPOverWebSocket : renders + drives (play/stop, event listeners)
-    Player --> SunapiManager : creates, logs in, assigns to element.sunapiClient
-    mountReactPlayer --> Player : renders via createRoot()
+    Player --> RTSPOverWebSocket : renders + drives (play/stop, addEventListener x33)
+    Player --> SunapiManager : connectSunapi() creates, logs in, assigns to element.sunapiClient/password
+    Player ..> PlayerHandle : exposes via useImperativeHandle
+    mountReactPlayer --> Player : renders via createRoot(), ref=handleRef
+    mountReactPlayer --> PlayerHandle : wraps handleRef.current.retryAuthentication
+```
+
+**Usage Example.** Two supported shapes, matching the two entry points `react/index.ts` exports —
+a real React tree using `<Player>` directly with a ref, and a plain-script consumer using
+`mountReactPlayer()`. Both import from this package's `./react` export
+(`dist/react/index.js`/`dist/types/react/index.d.ts` — see `package.json`'s `exports` field).
+
+*A real React consumer, handling a 401 with its own credentials UI:*
+
+```tsx
+import { useRef, useState } from 'react';
+import { Player, SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE, WRONG_CREDENTIALS_ERROR_CODE } from '@melchi45/rtsp-over-websocket/react';
+import type { PlayerHandle, RTSPOverWebSocketErrorDetail, RTSPOverWebSocketStateChangeDetail } from '@melchi45/rtsp-over-websocket/react';
+
+function CameraView() {
+  const playerHandle = useRef<PlayerHandle>(null);
+  const [needsCredentials, setNeedsCredentials] = useState(false);
+  const [readyState, setReadyState] = useState<number>(0);
+
+  const handleError = (detail: RTSPOverWebSocketErrorDetail): void => {
+    if (detail.error === SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE || detail.error === WRONG_CREDENTIALS_ERROR_CODE) {
+      // 0x0403 ("no credentials yet") or 0x0206 ("credentials rejected") —
+      // see this file's "401 / credential-retry" section above. Show
+      // whatever credentials UI this app wants; Player.tsx no longer
+      // renders one itself.
+      setNeedsCredentials(true);
+    }
+  };
+
+  const handleStateChange = (detail: RTSPOverWebSocketStateChangeDetail): void => {
+    setReadyState(detail.readyState);
+    if (detail.readyState === 1 /* PLAYING */) setNeedsCredentials(false);
+  };
+
+  const handleCredentialsSubmit = (username: string, password: string): void => {
+    // Routes through a fresh SUNAPI login or the element's own
+    // retryAuthentication(), whichever this <Player> is actually using —
+    // see PlayerHandle.retryAuthentication's doc comment on Player.tsx.
+    playerHandle.current?.retryAuthentication(username, password);
+  };
+
+  return (
+    <>
+      <Player
+        ref={playerHandle}
+        device={{
+          id: 'camera-1',
+          hostname: '192.168.0.10',
+          port: 443,
+          username: 'admin',
+          password: 'changeme',
+          profile: 'H.264',
+          channel: 1,
+          device: 'camera',
+          autoplay: true,
+          statistics: false,
+          https: true
+        }}
+        listeners={{
+          onError: handleError,
+          onStateChange: handleStateChange
+          // ...any of the other 31 RTSPOverWebSocketEventListeners callbacks
+        }}
+      />
+      {needsCredentials && <CredentialsPrompt onSubmit={handleCredentialsSubmit} />}
+    </>
+  );
+}
+```
+
+*A plain-script (no-bundler) consumer — `src/index.html`'s React panel is the real, live version
+of this:*
+
+```js
+import { mountReactPlayer, SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE, WRONG_CREDENTIALS_ERROR_CODE } from './player/rtsp-over-websocket-react.esm.js';
+
+const handle = mountReactPlayer(
+  document.getElementById('player-host'),
+  {
+    id: 'camera-1',
+    hostname: '192.168.0.10',
+    port: 443,
+    username: 'admin',
+    password: 'changeme',
+    profile: 'H.264',
+    channel: 1,
+    device: 'camera',
+    autoplay: true,
+    statistics: false,
+    https: true
+  },
+  {
+    onError(detail) {
+      if (detail.error === SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE || detail.error === WRONG_CREDENTIALS_ERROR_CODE) {
+        showCredentialsForm(); // app-defined
+      }
+    },
+    onStateChange(detail) {
+      updateStatusLabel(detail.readyState); // app-defined
+    }
+  }
+);
+
+// On the credentials form's submit:
+handle.retryAuthentication(usernameInput.value, passwordInput.value);
+
+// On teardown:
+handle.unmount();
 ```
 
 ---

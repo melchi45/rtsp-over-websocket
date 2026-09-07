@@ -713,6 +713,35 @@
               <span id="status-react-error" class="error" hidden></span>
             </section>
 
+            <!-- Demonstrates the consumer-side responsibility documented on
+                 src/player/react/Constant.ts's RTSPOverWebSocketEventListeners
+                 and PlayerHandle: mountReactPlayer()'s `listeners.onError`
+                 (wired below) receives every RTSPOverWebSocket 'error' event
+                 forwarded by Player.tsx verbatim; this page decides what a
+                 0x0403 ("no credentials")/0x0206 ("credentials rejected")
+                 code means and shows this form, then calls the handle's
+                 retryAuthentication(username, password) on submit — same
+                 shape as the RTSP URL tab's own srcurl-credentials section
+                 below, just reached through the React wrapper's listener
+                 interface instead of native DOM events on the element. -->
+            <section class="card" id="react-credentials" hidden>
+              <h2 class="card-title">Credentials required</h2>
+              <p class="hint" style="margin-top: 0">The device rejected (or never received) valid credentials. Enter them to retry.</p>
+              <div class="grid-form">
+                <label
+                  >Username
+                  <input id="react-credentials-username" value="admin" />
+                </label>
+                <label
+                  >Password
+                  <input id="react-credentials-password" type="password" />
+                </label>
+                <div class="actions">
+                  <button id="btn-react-credentials-connect" type="button">Connect</button>
+                </div>
+              </div>
+            </section>
+
             <div id="react-player-host"></div>
           </div>
 
@@ -1447,33 +1476,62 @@
         var btnDisconnect = document.getElementById('btn-react-disconnect');
         var statusState = document.getElementById('status-react-state');
         var statusError = document.getElementById('status-react-error');
+        var reactCredentials = document.getElementById('react-credentials');
+        var reactCredentialsUsername = document.getElementById('react-credentials-username');
+        var reactCredentialsPassword = document.getElementById('react-credentials-password');
+        var btnReactCredentialsConnect = document.getElementById('btn-react-credentials-connect');
 
         var ELEMENT_ID = 'rtsp-over-websocket-react-demo';
-        var unmount = null;
-        var playerEl = null;
+        // The handle mountReactPlayer() returns — `{ unmount, retryAuthentication }`,
+        // see src/player/react/index.ts. `retryAuthentication` is
+        // PlayerHandle's own method, reached here without this plain script
+        // needing a real React ref.
+        var playerHandle = null;
 
-        function handleStateChange(event) {
-          var detail = event.detail || {};
+        // Same two codes src/player/react/Constant.ts exports
+        // (SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE/WRONG_CREDENTIALS_ERROR_CODE)
+        // — imported below from the same module btnConnect's click handler
+        // already dynamic-imports, rather than redeclared as a magic number
+        // here.
+        var credentialErrorCodes = null;
+
+        var READY_STATE_PLAYING = 1;
+
+        function handleStateChange(detail) {
+          detail = detail || {};
           if (typeof detail.readyState === 'number') {
             statusState.textContent = ['STOPPED', 'PLAYING', 'PAUSED', 'STEP'][detail.readyState] || String(detail.readyState);
+            if (detail.readyState === READY_STATE_PLAYING) {
+              reactCredentials.hidden = true;
+            }
           }
         }
 
-        function handleError(event) {
-          var detail = event.detail || {};
+        // Demonstrates the consumer-side responsibility documented on
+        // Constant.ts's RTSPOverWebSocketEventListeners/PlayerHandle: this is
+        // the *only* place that interprets what an 'error' detail means —
+        // Player.tsx itself just forwards every RTSPOverWebSocket dispatch
+        // verbatim via the `listeners` option passed to mountReactPlayer()
+        // below, whether it's a real RTSP-level 401 or Player.tsx's own
+        // standalone SUNAPI login failing.
+        function handleError(detail) {
+          detail = detail || {};
           statusError.hidden = false;
           statusError.textContent = 'Error: ' + (detail.message || detail.error || 'Unknown player error');
+          if (credentialErrorCodes && detail.error === credentialErrorCodes.SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE) {
+            reactCredentials.hidden = false;
+          } else if (credentialErrorCodes && detail.error === credentialErrorCodes.WRONG_CREDENTIALS_ERROR_CODE) {
+            reactCredentialsPassword.value = '';
+            reactCredentials.hidden = false;
+            reactCredentialsPassword.focus();
+          }
         }
 
         function disconnect() {
-          if (playerEl) {
-            playerEl.removeEventListener('statechange', handleStateChange);
-            playerEl.removeEventListener('error', handleError);
-            playerEl = null;
-          }
-          if (unmount) {
-            unmount();
-            unmount = null;
+          reactCredentials.hidden = true;
+          if (playerHandle) {
+            playerHandle.unmount();
+            playerHandle = null;
           }
           btnDisconnect.disabled = true;
           btnConnect.disabled = false;
@@ -1496,34 +1554,49 @@
           btnConnect.disabled = true;
 
           import('./player/rtsp-over-websocket-react.esm.js').then(function (mod) {
-            unmount = mod.mountReactPlayer(reactPlayerHost, {
-              id: ELEMENT_ID,
-              hostname: form.hostname.value,
-              port: Number(form.port.value),
-              username: form.username.value,
-              password: form.password.value,
-              profile: form.profile.value,
-              channel: Number(form.channel.value),
-              device: form.device.value,
-              autoplay: true,
-              statistics: form.statistics.checked,
-              https: window.location.protocol === 'https:',
-              useSunapi: form.useSunapi.checked
-            });
+            credentialErrorCodes = {
+              SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE: mod.SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE,
+              WRONG_CREDENTIALS_ERROR_CODE: mod.WRONG_CREDENTIALS_ERROR_CODE
+            };
+            reactCredentialsUsername.value = form.username.value;
 
-            // React's own effect (Player.tsx's useEffect) mounts
-            // synchronously within mountReactPlayer()'s root.render() call
-            // for this simple a tree (no Suspense boundary above it), so the
-            // real element is already in the DOM by the time this callback
-            // runs — matching the timing React.useEffect itself relies on
-            // internally.
-            playerEl = document.getElementById(ELEMENT_ID);
-            if (playerEl) {
-              playerEl.addEventListener('statechange', handleStateChange);
-              playerEl.addEventListener('error', handleError);
-            }
+            playerHandle = mod.mountReactPlayer(
+              reactPlayerHost,
+              {
+                id: ELEMENT_ID,
+                hostname: form.hostname.value,
+                port: Number(form.port.value),
+                username: form.username.value,
+                password: form.password.value,
+                profile: form.profile.value,
+                channel: Number(form.channel.value),
+                device: form.device.value,
+                autoplay: true,
+                statistics: form.statistics.checked,
+                https: window.location.protocol === 'https:',
+                useSunapi: form.useSunapi.checked
+              },
+              {
+                onStateChange: handleStateChange,
+                onError: handleError
+              }
+            );
+
             btnDisconnect.disabled = false;
           });
+        });
+
+        btnReactCredentialsConnect.addEventListener('click', function () {
+          if (!playerHandle) return;
+          var username = reactCredentialsUsername.value.trim();
+          var password = reactCredentialsPassword.value;
+          if (!username || !password) return;
+          statusError.hidden = true;
+          // PlayerHandle.retryAuthentication(): routes through a fresh SUNAPI
+          // login (useSunapi mode) or the element's own retryAuthentication()
+          // (raw mode) — Player.tsx itself decides which, see its doc
+          // comment. Either way, no full disconnect() + reconnect here.
+          playerHandle.retryAuthentication(username, password);
         });
 
         btnDisconnect.addEventListener('click', disconnect);

@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { RTSPOverWebSocket } from '../elements/RTSPOverWebSocket';
 import { RTSPOverWebSocketPlayState } from '../elements/RTSPOverWebSocketTypes';
 import { RTSPOverWebSocketError } from '../exceptions';
 import { SunapiManager, type SunapiManagerDeviceInfo } from '../network/http/SunapiManager';
-import type { PlayerProps } from './Constant';
+import { SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE } from './Constant';
+import type { PlayerHandle, PlayerProps } from './Constant';
 
 // `<rtsp-over-websocket>` is registered as a real custom element by the
 // `RTSPOverWebSocket` import above (a `customElements.define(...)` side
@@ -43,10 +44,16 @@ declare global {
  * targeting this library's own `<rtsp-over-websocket>` element instead of
  * `<ump-player>`. Event names below are this element's real ones (see
  * RTSPOverWebSocket.ts's `dispatch(...)` call sites) — not a blind
- * find-replace of the `ump-player` names, which don't all carry over
- * (`close`/`networkstate`/`stream` have no equivalent here;
- * `changeclient`/`changemute`/`changepassword`/`changeprotocol`/`rtsp`/
- * `sunapiclient` exist here but weren't in the ump-player original).
+ * find-replace of the `ump-player` names, which don't all carry over.
+ *
+ * Every one of `RTSPOverWebSocket.ts`'s dispatched events is forwarded
+ * verbatim to `props.listeners` (see `Constant.ts`'s
+ * `RTSPOverWebSocketEventListeners`) — this component itself only inspects
+ * `statechange` (to drive its own `active` CSS class) and never decides on a
+ * consumer's behalf what a `waiting`/`error`/etc. event should mean (e.g. it
+ * no longer renders its own "credentials required" prompt; that is entirely
+ * the consumer's responsibility now, reached via `listeners.onError` +
+ * `PlayerHandle.retryAuthentication`, requested directly by the user).
  *
  * The original Player.tsx's own login-flow imports (SunapiManager/
  * AccountService/AttributeService/LoginDialog/NavigationBar/Controller)
@@ -64,12 +71,22 @@ declare global {
  * this library's own code imports `crypto-js`/`three` as real ES modules
  * instead of expecting those browser globals.
  */
-export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
+export const Player = forwardRef<PlayerHandle, PlayerProps>((props, ref) => {
   const [playerClassName] = useState('rtsp-over-websocket-player');
   const playerRef = useRef<RTSPOverWebSocket | null>(null);
   const sunapiManagerRef = useRef<SunapiManager | null>(null);
   const [playState, setPlayState] = useState<RTSPOverWebSocketPlayState>(RTSPOverWebSocketPlayState.STOPPED);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  // Kept live every render (not just at mount, unlike the DOM listeners
+  // themselves below) so a consumer passing a fresh `listeners` object each
+  // render still reaches the latest callbacks, without needing to
+  // re-run the mount effect / re-attach any `addEventListener`.
+  const listenersRef = useRef(props.listeners);
+  listenersRef.current = props.listeners;
+  // Guards async SunapiManager.init() callbacks (both the mount-time
+  // connect and any later retryAuthentication() call) from touching
+  // playerRef/state after unmount.
+  const cancelledRef = useRef(false);
+
   // Effective SUNAPI-vs-raw-attribute mode — not just `props.device.useSunapi`
   // verbatim. A SUNAPI REST login (`SunapiManager.init()` below) fundamentally
   // needs *something* to authenticate with; with no `username`/`password` at
@@ -91,137 +108,100 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
   const hasCredentials = !!(props.device.username || props.device.password);
   const useSunapi = hasCredentials && props.device.useSunapi !== false;
 
-  const onError = (event: Event): void => {
-    const detail = (event as CustomEvent).detail;
-    console.log('onError: ' + JSON.stringify(detail));
-  };
+  /**
+   * Logs into the device over SUNAPI (REST, digest auth) with the given
+   * credentials, then attaches the resulting `sunapiClient` (plus the raw
+   * `password` — required even with a sunapiClient attached, since the
+   * SUNAPI-delegated RTSP digest path re-sends it per challenge; see
+   * `docs/player/01-elements-interface-exceptions.md`'s 2026-09-07 History
+   * entry) and, if `shouldPlay`, calls `play()`.
+   *
+   * The single code path both the mount-time initial connect *and*
+   * `PlayerHandle.retryAuthentication()` go through — requested directly by
+   * the user ("SUNAPI도 interface를 통하도록") so a 401-driven credential
+   * retry when `useSunapi` is in effect isn't a separate, parallel
+   * implementation from the first connect attempt.
+   */
+  const connectSunapi = useCallback(
+    (username: string, password: string, shouldPlay: boolean): void => {
+      if (playerRef.current === null) return;
+      sunapiManagerRef.current?.dettach();
+      const sunapiManager = new SunapiManager();
+      sunapiManagerRef.current = sunapiManager;
+      const deviceInfo: SunapiManagerDeviceInfo = {
+        ClientIPAddress: '127.0.0.1',
+        hostname: props.device.hostname,
+        cameraIp: props.device.hostname,
+        username,
+        user: username,
+        password,
+        port: props.device.port,
+        protocol: props.device.https ? 'https' : 'http',
+        deviceType: props.device.device,
+        serverType: 'grunt',
+        timeout: 10000,
+        debug: true,
+        async: false
+      };
+      sunapiManager
+        .init(deviceInfo)
+        .then(() => {
+          if (cancelledRef.current || playerRef.current === null) return;
+          // Required even though sunapiClient is about to be attached: the
+          // SUNAPI-delegated digest path (RtspClient.ts's
+          // formDigestAuthHeader()) sends this password in a
+          // security.cgi?msubmenu=digestauth&action=view request for the
+          // device to compute HA1/the response hash itself, per RTSP
+          // challenge — it does not reuse the SunapiManager login's own
+          // session. Leaving this unset silently sends an empty password
+          // there, so every RTSP challenge gets a digest response computed
+          // for "" and every retry 401s.
+          playerRef.current.password = password;
+          // Cast needed because RTSPOverWebSocket.ts's own `sunapiClient` setter
+          // and SunapiManager.ts's `SunapiClientLike` are two nominally distinct
+          // (structurally near-identical) interfaces — RTSPOverWebSocket.ts's
+          // own internal `this.sunapiClient = v` call into its private
+          // SunapiManager does the exact same cast for the same reason.
+          playerRef.current.sunapiClient = sunapiManager.sunapiClient as unknown as RTSPOverWebSocket['sunapiClient'];
+          if (shouldPlay) {
+            playerRef.current.play();
+          }
+        })
+        .catch((error: unknown) => {
+          if (cancelledRef.current) return;
+          const message = error instanceof Error ? error.message : String(error);
+          console.error('SUNAPI login failed: ' + message);
+          // No native RTSPOverWebSocket dispatch corresponds to "the
+          // standalone SunapiManager login this component drives failed" —
+          // synthesized here so a consumer's `listeners.onError` is the one
+          // place that needs to watch for "credentials required", covering
+          // both this and a real RTSP-level 401 uniformly.
+          listenersRef.current?.onError?.({
+            error: SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE,
+            message,
+            place: 'react/Player.tsx:connectSunapi'
+          });
+        });
+    },
+    [props.device]
+  );
 
-  const onMeta = (event: Event): void => {
-    console.log('onMeta: ' + event);
-  };
-
-  const onResize = (event: Event): void => {
-    console.log('onResize: ' + event);
-    if (playerRef.current) {
-      playerRef.current.video.style.width = '100%';
-      playerRef.current.video.style.height = '100%';
-    }
-  };
-
-  const onStateChanged = (event: Event): void => {
-    const detail = (event as CustomEvent).detail;
-    console.log('onStateChanged: ' + JSON.stringify(detail));
-    setPlayState(detail.readyState);
-
-    switch (detail.readyState) {
-      case RTSPOverWebSocketPlayState.PLAYING:
-        console.log('Playing');
-        break;
-      case RTSPOverWebSocketPlayState.STOPPED:
-        console.log('Stopped');
-        break;
-      default:
-        break;
-    }
-  };
-
-  const onTimestamp = (_event: Event): void => {
-    // console.log('onTimestamp: ' + event.detail.timestamp);
-  };
-
-  const onCapture = (event: Event): void => {
-    console.log('onCapture: ' + event);
-  };
-
-  const onStatistics = (event: Event): void => {
-    console.log('onStatistics: ' + JSON.stringify((event as CustomEvent).detail));
-  };
-
-  const onBackupState = (event: Event): void => {
-    console.log('onBackupState: ' + JSON.stringify((event as CustomEvent).detail));
-  };
-
-  const onPlayerModeChanged = (event: Event): void => {
-    console.log('onPlayerModeChanged: ' + event);
-  };
-
-  const onInstantPlayback = (event: Event): void => {
-    console.log('onInstantPlayback: ' + event);
-  };
-
-  const onWaiting = (event: Event): void => {
-    console.log('onWaiting: ' + event);
-  };
-
-  const onMetaImage = (event: Event): void => {
-    console.log('onMetaImage: ' + event);
-  };
-
-  const onUsernameChanged = (event: Event): void => {
-    console.log('onUsernameChanged: ' + event);
-  };
-
-  const onDeviceTypeChanged = (event: Event): void => {
-    console.log('onDeviceTypeChanged: ' + event);
-  };
-
-  const onProfileNumberChanged = (event: Event): void => {
-    console.log('onProfileNumberChanged: ' + event);
-  };
-
-  const onProfileNameChanged = (event: Event): void => {
-    console.log('onProfileNameChanged: ' + event);
-  };
-
-  const onChannelNumberChanged = (event: Event): void => {
-    console.log('onChannelNumberChanged: ' + JSON.stringify((event as CustomEvent).detail));
-    const player = event.target as RTSPOverWebSocket;
-    if (player) {
-      if (player.isplay) {
-        player.stop();
+  useImperativeHandle(
+    ref,
+    () => ({
+      retryAuthentication: (username: string, password: string): void => {
+        if (useSunapi) {
+          connectSunapi(username, password, true);
+          return;
+        }
+        // Re-answers the same still-open connection's cached 401 challenge —
+        // no reconnect, see RTSPOverWebSocket.ts's retryAuthentication() /
+        // RtspClient.ts's retryWithCredentials().
+        playerRef.current?.retryAuthentication(username, password);
       }
-      player.play();
-    }
-  };
-
-  const onHostnameChanged = (event: Event): void => {
-    console.log('onHostnameChanged: ' + event);
-    const player = event.target as RTSPOverWebSocket;
-    if (player) {
-      if (player.isplay) {
-        player.stop();
-      }
-      player.play();
-    }
-  };
-
-  const onVolumeLevelChanged = (event: Event): void => {
-    console.log('onVolumeLevelChanged: ' + event);
-  };
-
-  const onPortNumberChanged = (event: Event): void => {
-    console.log('onPortNumberChanged: ' + event);
-  };
-
-  const onFullscreenModeChanged = (event: Event): void => {
-    console.log('onFullscreenModeChanged: ' + event);
-  };
-
-  const onSunapiClientChanged = (event: Event): void => {
-    console.log('onSunapiClientChanged: ' + event);
-  };
-
-  const onBestshotFilterChanged = (event: Event): void => {
-    console.log('onBestshotFilterChanged: ' + event);
-  };
-
-  const onBestshot = (event: Event): void => {
-    console.log('onBestshot: ' + event);
-  };
-
-  const onTimezoneChanged = (event: Event): void => {
-    console.log('onTimezoneChanged: ' + event);
-  };
+    }),
+    [connectSunapi, useSunapi]
+  );
 
   const onUnload = (event: BeforeUnloadEvent): void => {
     if (playerRef.current && playerRef.current.isplay) {
@@ -235,6 +215,7 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
 
   useEffect(() => {
     console.log('Player Component mounted!');
+    cancelledRef.current = false;
     window.addEventListener('beforeunload', onUnload);
 
     playerRef.current = document.getElementById(props.device.id) as RTSPOverWebSocket | null;
@@ -247,20 +228,8 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
     }
 
     const player = playerRef.current;
-    let cancelled = false;
 
     if (useSunapi) {
-      // Ported from react-wisenet-player's pages/App/Playground.tsx's
-      // `connectSunapi()`: log into the device over SUNAPI (REST, digest
-      // auth) first, then hand the authenticated client to the element
-      // instead of a raw password — matching how a real device integration
-      // (vs. this library's own YouTube-transcode demo server, which has no
-      // SUNAPI endpoint to log into at all) is expected to drive this
-      // element. `hostname`/`username` are duplicated onto `cameraIp`/`user`
-      // because `SunapiManager.init()` overwrites the former FROM the latter
-      // for any non-'nvr' deviceType — supplying both sidesteps needing to
-      // know which branch it'll take.
-      //
       // This is the default (and the only mode this component supported
       // before `useSunapi` existed) because the alternative — setting a raw
       // `password` attribute and letting the element's own connectedCallback
@@ -272,49 +241,144 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
       // `play()` only after it resolves removes that race. `useSunapi: false`
       // exists to reproduce/compare against the element's own raw-attribute
       // behavior (see src/index.html's React panel).
-      const sunapiManager = new SunapiManager();
-      sunapiManagerRef.current = sunapiManager;
-      const deviceInfo: SunapiManagerDeviceInfo = {
-        ClientIPAddress: '127.0.0.1',
-        hostname: props.device.hostname,
-        cameraIp: props.device.hostname,
-        username: props.device.username,
-        user: props.device.username,
-        password: props.device.password,
-        port: props.device.port,
-        protocol: props.device.https ? 'https' : 'http',
-        deviceType: props.device.device,
-        serverType: 'grunt',
-        timeout: 10000,
-        debug: true,
-        async: false
-      };
-      sunapiManager
-        .init(deviceInfo)
-        .then(() => {
-          if (cancelled || playerRef.current === null) return;
-          setLoginError(null);
-          // Cast needed because RTSPOverWebSocket.ts's own `sunapiClient` setter
-          // and SunapiManager.ts's `SunapiClientLike` are two nominally distinct
-          // (structurally near-identical) interfaces — RTSPOverWebSocket.ts's
-          // own internal `this.sunapiClient = v` call into its private
-          // SunapiManager does the exact same cast for the same reason.
-          playerRef.current.sunapiClient = sunapiManager.sunapiClient as unknown as RTSPOverWebSocket['sunapiClient'];
-          if (props.device.autoplay) {
-            playerRef.current.play();
-          }
-        })
-        .catch((error: unknown) => {
-          if (cancelled) return;
-          const message = error instanceof Error ? error.message : String(error);
-          console.error('SUNAPI login failed: ' + message);
-          setLoginError(message);
-        });
+      connectSunapi(props.device.username, props.device.password, props.device.autoplay);
     }
     // useSunapi === false: no manual login, no manual play() — the `password`
     // and `autoplay` attributes set in the JSX below (only in this mode) let
     // the element's own connectedCallback/updateSunapiManager() drive both,
     // races and all.
+
+    // One native listener per event `RTSPOverWebSocket.ts` can dispatch (see
+    // that file's full `this.dispatch(...)` call-site list) — each just
+    // forwards `event.detail` to the matching `listenersRef.current.onXxx`,
+    // via `listenersRef` so a `listeners` object passed in on a later render
+    // is still reached without re-attaching anything. A few also keep the
+    // minimum bit of behavior this component itself needs to render
+    // correctly (`statechange`'s `playState`) or that already existed here
+    // (`changechannel`/`changehostname`'s stop()+play() on an attribute
+    // change reaching the element from outside React, e.g. devtools).
+    const onError = (event: Event): void => {
+      listenersRef.current?.onError?.((event as CustomEvent).detail);
+    };
+    const onMeta = (event: Event): void => {
+      listenersRef.current?.onMeta?.((event as CustomEvent).detail);
+    };
+    const onResize = (event: Event): void => {
+      if (playerRef.current) {
+        playerRef.current.video.style.width = '100%';
+        playerRef.current.video.style.height = '100%';
+      }
+      listenersRef.current?.onResize?.((event as CustomEvent).detail);
+    };
+    const onStateChanged = (event: Event): void => {
+      const detail = (event as CustomEvent).detail;
+      setPlayState(detail.readyState);
+      listenersRef.current?.onStateChange?.(detail);
+    };
+    const onTimestamp = (event: Event): void => {
+      listenersRef.current?.onTimestamp?.((event as CustomEvent).detail);
+    };
+    const onCapture = (event: Event): void => {
+      listenersRef.current?.onCapture?.((event as CustomEvent).detail);
+    };
+    const onStatistics = (event: Event): void => {
+      listenersRef.current?.onStatistics?.((event as CustomEvent).detail);
+    };
+    const onBackupState = (event: Event): void => {
+      listenersRef.current?.onBackupStateChange?.((event as CustomEvent).detail);
+    };
+    const onPlayerModeChanged = (event: Event): void => {
+      listenersRef.current?.onPlayerModeChanged?.((event as CustomEvent).detail);
+    };
+    const onInstantPlayback = (event: Event): void => {
+      listenersRef.current?.onInstantPlayback?.((event as CustomEvent).detail);
+    };
+    const onWaiting = (event: Event): void => {
+      listenersRef.current?.onWaiting?.((event as CustomEvent).detail);
+    };
+    const onMetaImage = (event: Event): void => {
+      listenersRef.current?.onMetaImage?.((event as CustomEvent).detail);
+    };
+    const onUsernameChanged = (event: Event): void => {
+      listenersRef.current?.onUsernameChanged?.((event as CustomEvent).detail);
+    };
+    const onDeviceTypeChanged = (event: Event): void => {
+      listenersRef.current?.onDeviceTypeChanged?.((event as CustomEvent).detail);
+    };
+    const onProfileNumberChanged = (event: Event): void => {
+      listenersRef.current?.onProfileNumberChanged?.((event as CustomEvent).detail);
+    };
+    const onProfileNameChanged = (event: Event): void => {
+      listenersRef.current?.onProfileNameChanged?.((event as CustomEvent).detail);
+    };
+    const onChannelNumberChanged = (event: Event): void => {
+      const target = event.target as RTSPOverWebSocket;
+      if (target) {
+        if (target.isplay) {
+          target.stop();
+        }
+        target.play();
+      }
+      listenersRef.current?.onChannelNumberChanged?.((event as CustomEvent).detail);
+    };
+    const onHostnameChanged = (event: Event): void => {
+      const target = event.target as RTSPOverWebSocket;
+      if (target) {
+        if (target.isplay) {
+          target.stop();
+        }
+        target.play();
+      }
+      listenersRef.current?.onHostnameChanged?.((event as CustomEvent).detail);
+    };
+    const onVolumeLevelChanged = (event: Event): void => {
+      listenersRef.current?.onVolumeLevelChanged?.((event as CustomEvent).detail);
+    };
+    const onPortNumberChanged = (event: Event): void => {
+      listenersRef.current?.onPortNumberChanged?.((event as CustomEvent).detail);
+    };
+    const onFullscreenModeChanged = (event: Event): void => {
+      listenersRef.current?.onFullscreenModeChanged?.((event as CustomEvent).detail);
+    };
+    const onSunapiClientChanged = (event: Event): void => {
+      listenersRef.current?.onSunapiClientChanged?.((event as CustomEvent).detail);
+    };
+    const onBestshotFilterChanged = (event: Event): void => {
+      listenersRef.current?.onBestshotFilterChanged?.((event as CustomEvent).detail);
+    };
+    const onBestshot = (event: Event): void => {
+      listenersRef.current?.onBestshot?.((event as CustomEvent).detail);
+    };
+    const onTimezoneChanged = (event: Event): void => {
+      listenersRef.current?.onTimezoneChanged?.((event as CustomEvent).detail);
+    };
+    const onClientChanged = (event: Event): void => {
+      listenersRef.current?.onClientChanged?.((event as CustomEvent).detail);
+    };
+    const onMuteChanged = (event: Event): void => {
+      listenersRef.current?.onMuteChanged?.((event as CustomEvent).detail);
+    };
+    const onPasswordChanged = (event: Event): void => {
+      listenersRef.current?.onPasswordChanged?.((event as CustomEvent).detail);
+    };
+    const onProtocolChanged = (event: Event): void => {
+      listenersRef.current?.onProtocolChanged?.((event as CustomEvent).detail);
+    };
+    const onSpeedChanged = (event: Event): void => {
+      listenersRef.current?.onSpeedChanged?.((event as CustomEvent).detail);
+    };
+    const onSunapiClient = (event: Event): void => {
+      listenersRef.current?.onSunapiClient?.((event as CustomEvent).detail);
+    };
+    const onGeneratedUrl = (event: Event): void => {
+      listenersRef.current?.onGeneratedUrl?.((event as CustomEvent).detail);
+    };
+    const onRtspMessage = (event: Event): void => {
+      listenersRef.current?.onRtspMessage?.((event as CustomEvent).detail);
+    };
+    const onPlayerAvailabilityChanged = (event: Event): void => {
+      listenersRef.current?.onPlayerAvailabilityChanged?.((event as CustomEvent).detail);
+    };
 
     player.addEventListener('error', onError);
     player.addEventListener('meta', onMeta);
@@ -328,7 +392,6 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
     player.addEventListener('instantplayback', onInstantPlayback);
     player.addEventListener('waiting', onWaiting);
     player.addEventListener('metaImage', onMetaImage);
-
     player.addEventListener('changeusername', onUsernameChanged);
     player.addEventListener('changedevicetype', onDeviceTypeChanged);
     player.addEventListener('changeprofilenumber', onProfileNumberChanged);
@@ -342,9 +405,18 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
     player.addEventListener('changebestshotfilter', onBestshotFilterChanged);
     player.addEventListener('changebestshot', onBestshot);
     player.addEventListener('changetimezone', onTimezoneChanged);
+    player.addEventListener('changeclient', onClientChanged);
+    player.addEventListener('changemute', onMuteChanged);
+    player.addEventListener('changepassword', onPasswordChanged);
+    player.addEventListener('changeprotocol', onProtocolChanged);
+    player.addEventListener('changespeed', onSpeedChanged);
+    player.addEventListener('sunapiclient', onSunapiClient);
+    player.addEventListener('generatertspurl', onGeneratedUrl);
+    player.addEventListener('rtsp', onRtspMessage);
+    player.addEventListener('playerstatechange', onPlayerAvailabilityChanged);
 
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       console.log('Player Component unmounted!');
       if (playerRef.current === null) {
         throw new RTSPOverWebSocketError({
@@ -368,11 +440,6 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
 
   return (
     <div id={'container-' + props.device.id} className="container">
-      {loginError !== null && (
-        <div className="rtsp-over-websocket-login-error" role="alert">
-          SUNAPI login failed: {loginError}
-        </div>
-      )}
       <rtsp-over-websocket
         id={props.device.id}
         className={`${playerClassName} ${playState !== RTSPOverWebSocketPlayState.STOPPED ? 'active' : ''}`}
@@ -393,6 +460,8 @@ export const Player: React.FC<PlayerProps> = (props: PlayerProps) => {
       />
     </div>
   );
-};
+});
+
+Player.displayName = 'Player';
 
 export default Player;
