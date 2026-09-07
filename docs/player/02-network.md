@@ -21,6 +21,7 @@ client, with concrete method behavior, wire framing, and RFC citations.*
 | 2026-09-04 | `RtspClient.set debug()` now also re-applies to `this.transport` immediately if one already exists (previously only reached the *next* `Transport` `Connect()` constructs) — live-refresh, requested directly by the user after finding a mid-stream `debug` change had no visible effect. See `01`/`03`'s matching History entries and `MEMORY.md` for the full per-class breakdown across the whole propagation chain. |
 | 2026-09-04 | `DigestGenerator`/`RtspClient` RTSP Digest auth rewritten to actually follow **RFC 7616** (per RFC 7826 §19.1.1's explicit instruction), not RFC 2617: fixed four real bugs found by checking RFC 7616's text directly (including its §3.9.1 worked example) — an unquoted-vs-quoted `algorithm=` challenge-parsing mismatch that silently hid any real SHA-256 offer behind an MD5 fallback, an all-or-nothing `Qop`/`Algorithm`/`Opaque` gate where the three are actually independent fields, the qop-formula-selection gate having the same bug, and unquoted `algorithm`/`qop`/`nc` in the `Authorization` response being sent quoted. Also fixed: multi-challenge selection now follows RFC 7616 §3.7 (first-understood-challenge-in-server-order, via new `SUPPORTED_DIGEST_ALGORITHMS`/`selectSupportedQop()` in `RtspClient.ts`) instead of "last challenge line wins"; a challenge's `qop` value (a quoted comma-separated list) is now parsed into a single chosen token instead of echoed back raw. New unit tests in `DigestGenerator.test.ts` verify against RFC 7616's own worked example. Live-verified against the real Wisenet camera used elsewhere in this doc's History — same successful MD5-based connection as before (this camera's own challenge has no `algorithm=` at all, so it exercises the "default to MD5, independent Qop/Opaque handling" path, not the new SHA-256 path — see `MEMORY.md`). |
 | 2026-09-07 | Found and fixed a real regression the above `Qop`-independence fix introduced for `RtspClient.ts`'s SUNAPI-delegated digest path specifically: a device's own `digestauth` helper endpoint doesn't necessarily honor the `Qop`/`Nc`/`Cnonce` hints it's given, and two real devices were confirmed live to disagree on this (one honors them, one silently doesn't) — new `resolveDigestHashType()`/`computeDigestResponseCandidates()` exports on `DigestGenerator.ts` let `RtspClient.ts` detect, per response, which formula a given device's endpoint actually used and shape the final `Authorization` header to match, rather than assuming either universally. Also fixed, unrelated pre-existing bug found along the way: `src/index.html`'s "Connect via SUNAPI Manager" flow set `.username` but never `.password` on the player element after a successful SUNAPI login, so every RTSP-level digest retry silently used an empty password. See `MEMORY.md` for the full live-verification trace (real MD5 hashes computed by hand and compared against both real devices' actual responses). |
+| 2026-09-07 | `SunapiClient.ts` (SUNAPI REST digest auth — a separate code path from the RTSP-side rewrite two rows above) rewritten for real RFC 7616 compliance, requested directly by the user: was still genuinely RFC 2617-only, with its own independent instance of the exact "unconditional qop" bug the RTSP-side entry above already found and fixed once — hashing the literal string `"null"` in place of `qop` for any qop-less challenge, never noticed here only because no caller had hit one yet. `formulateResponse` gained an `algorithm` parameter and MD5/SHA-256 selection via `DigestGenerator.ts`'s exported `resolveDigestHashType()` (previously hardcoded MD5), and now only uses the qop-based response formula when `qop` is actually present. `buildDigestAuthHeader` now emits `algorithm=`/`opaque=` (the latter parsed into `DigestCache` all along but never actually sent — a real compliance gap independent of the qop bug) and only emits `cnonce`/`nc`/`qop` together when `qop` is present. `getAuthInfoInWwwAuthenticate`'s own hand-rolled comma-split challenge parser is replaced with a call to `DigestGenerator.ts`'s `parseWWWAuthenticate()` (the same parser `RtspClient.ts` already uses), fixing two more bugs as a side effect: `algorithm` was never parsed at all, and a challenge's `qop` value legitimately containing a comma (`qop="auth,auth-int"`, RFC 7616 §3.3, one quoted value) broke the naive `split(',')`. `DigestCache` gained an `algorithm: string | null` field. Not yet live-verified against a real device on either new branch (qop-less, SHA-256) — only the unchanged qop-based-MD5 path, already exercised by every successful SUNAPI login elsewhere in this History, is confirmed; see `01-elements-interface-exceptions.md`'s matching Player/React History if a live SUNAPI login flow is what surfaced the need for this. |
 
 ---
 
@@ -712,9 +713,16 @@ an alternate source of RTSP digest-auth response values for camera-mode devices.
   {hostname, port, protocol, rtspPort, ClientIPAddress, username, password, timeout}`, `oauth:
   {username}`.
 - `authInfo: DigestCache | null | undefined` and `authCount` — the per-instance cached digest
-  challenge (`scheme`/`realm`/`nonce`/`opaque`/`qop`/`nc`/`cnonce`) and 401-retry counter.
+  challenge (`scheme`/`realm`/`nonce`/`opaque`/`qop`/`algorithm`/`nc`/`cnonce` — `algorithm` added
+  2026-09-07, see below) and 401-retry counter.
 - `xhrFactory: XhrFactory` — injectable, defaults to `() => new XMLHttpRequest()`; the test
   seam for this class.
+- `digestGenerator: DigestGenerator` (added 2026-09-07) — an instance of `util/DigestGenerator.ts`'s
+  RFC-7616-compliant challenge parser, reused here purely for `parseWWWAuthenticate()` (see
+  `getAuthInfoInWwwAuthenticate()` below); its own `nc`/`cnonce`/response-building state is
+  untouched, since this class keeps managing those itself in `DigestCache` — they must persist
+  across `SunapiClient` instances (`SunapiManager`'s cross-`init()` cache, `seedAuthInfo()`), not
+  reset per instance the way a fresh `DigestGenerator` would.
 - Constructor validates `deviceInfo` heavily and **throws** (`RTSPOverWebSocketError` or
   `AuthError`) for a `'camera'` `serverType` missing `cameraIp`/`user`/`password`, or any
   `serverType` missing `password`. Resolves the digest config's `hostname`/`port`/`protocol` from
@@ -767,24 +775,55 @@ an alternate source of RTSP digest-auth response values for camera-mode devices.
   `wwwAuthenticate` string if given, and — if cached `authInfo.scheme === 'Digest'` — delegates to
   `setDigestHeader`.
 - `setDigestHeader(xhr, method, uri, digestCache)` — for `digest`/`xdigest` schemes, increments
-  `nc`, regenerates `cnonce`, and sets `Authorization: <scheme> username="..." realm="..." nonce="..."
-  uri="..." cnonce="..." nc=<8-hex> qop=<qop> response="<hash>"` via `buildDigestAuthHeader`. For
-  `basic`, sets `Authorization: Basic <base64(user:pass)>`. With no cache yet (first request, no
-  prior challenge), builds a fresh `{scheme:'Digest', qop:'auth', nc:null, cnonce:null, ...}` and
+  `nc`, regenerates `cnonce`, and sets an `Authorization` header via `buildDigestAuthHeader` (see
+  below for its RFC 7616-compliant field emission, rewritten 2026-09-07). For `basic`, sets
+  `Authorization: Basic <base64(user:pass)>`. With no cache yet (first request, no prior challenge),
+  builds a fresh `{scheme:'Digest', qop:'auth', algorithm:null, nc:null, cnonce:null, ...}` and
   sends that (its `nc` renders as `00000000` since it's never incremented in this branch — a
   preserved legacy quirk, since this first request is expected to 401 and get properly retried
   anyway).
-- `formulateResponse(username, password, uri, realm, method, nonce, nc, cnonce, qop)` — computes
-  `HA1 = MD5(username:realm:password)`, `HA2 = MD5(method:uri)`, `response =
-  MD5(HA1:nonce:nc(8-hex):cnonce:qop:HA2)`. **Always MD5** — unlike `DigestGenerator` (used by
-  `RtspClient`), this SUNAPI-specific implementation has no SHA-256 branch.
-- `getAuthInfoInWwwAuthenticate(wwwAuthenticate)` — parses a comma-split `WWW-Authenticate` value
-  for `realm`/`nonce`/`opaque`/`qop`, generates a fresh `cnonce`, and **initializes `nc = 0`** (not
-  `1`) — the code comment explains this was deliberately changed from a prior version that
-  pre-incremented to `1` here (making the first authenticated attempt send `nc=00000002`), because
-  at least one real Wisenet camera firmware rejects that as invalid and re-challenges instead of
-  authenticating; `setDigestHeader` increments to `1` right before building the first real request,
-  so the wire value ends up `nc=00000001` as RFC 2617 expects.
+- **`formulateResponse`/`buildDigestAuthHeader`/`getAuthInfoInWwwAuthenticate` rewritten 2026-09-07
+  for real RFC 7616 compliance** (requested directly by the user, mirroring the RTSP-side
+  `DigestGenerator`/`RtspClient` rewrite from 2026-09-04 — see this file's History): this class used
+  to be genuinely RFC 2617-only, and had its own independent instance of the exact "unconditional
+  qop" bug class the RTSP-side fix already found and fixed once (see the 2026-09-07 RTSP entry two
+  rows above) — un-noticed here only because no caller had hit a qop-less SUNAPI challenge yet.
+  - `formulateResponse(username, password, uri, realm, method, nonce, nc, cnonce, qop, algorithm)`
+    — gained an `algorithm` parameter. Resolves MD5 vs SHA-256 via `DigestGenerator.ts`'s exported
+    `resolveDigestHashType(algorithm)` (previously **always MD5**, no SHA-256 branch at all) and,
+    critically, **now only folds `nc`/`cnonce`/`qop` into the hash when `qop` is actually
+    non-empty** — computing the plain `HASH(HA1:nonce:HA2)` formula otherwise. The old code always
+    used the qop-based formula regardless, which for a qop-less challenge meant literally hashing
+    the JavaScript string `"null"` in place of `qop` (`cache.qop` was `null`, interpolated via a
+    template literal) — a response no compliant server could ever accept, silently breaking any
+    device whose SUNAPI challenge omits `qop`.
+  - `buildDigestAuthHeader` — now emits `algorithm=<value>` (unquoted, RFC 7616 §3.4.5) whenever the
+    challenge supplied one, and `opaque="<value>"` whenever the challenge supplied one — the latter
+    was parsed into `DigestCache` all along but never actually echoed back in the `Authorization`
+    header, a real compliance gap independent of the qop bug above (RFC 7616 §3.4 requires echoing
+    an `opaque` unchanged if the server sent one). `cnonce`/`nc`/`qop` are now emitted together only
+    when `qop` is present, matching the response-formula gate above instead of unconditionally.
+  - `getAuthInfoInWwwAuthenticate(wwwAuthenticate)` — the challenge-parsing loop (manual
+    `split(',')` then `split('=')` per fragment) is replaced with a call to
+    `this.digestGenerator.parseWWWAuthenticate(wwwAuthenticate)` (`util/DigestGenerator.ts`, the
+    same RFC-7616-compliant parser `RtspClient.ts` already uses), which additionally: (a) parses
+    `algorithm` at all, which the old code never did, and (b) correctly handles a `qop` value that
+    legitimately contains a comma per RFC 7616 §3.3 (`qop="auth,auth-int"` is one *quoted* value,
+    not two challenge parameters) — the old naive `split(',')` cut straight through such a value.
+    Still generates a fresh `cnonce` and **initializes `nc = 0`** (not `1`) itself, unchanged from
+    before — the code comment explains this was deliberately changed from a prior version that
+    pre-incremented to `1` here (making the first authenticated attempt send `nc=00000002`), because
+    at least one real Wisenet camera firmware rejects that as invalid and re-challenges instead of
+    authenticating; `setDigestHeader` increments to `1` right before building the first real
+    request, so the wire value ends up `nc=00000001` as RFC 7616 §3.4.1 expects.
+  - The qop-present branch's response formula is byte-for-byte unchanged from before this rewrite,
+    so it inherits this class's existing live verification (this is the exact code path
+    `SunapiManager.init()`'s `attributes.cgi` login already runs on every successful SUNAPI REST
+    login reported elsewhere in this doc's History — a plain MD5+`qop=auth` challenge). The two
+    genuinely new branches — a `qop`-less challenge (plain-formula path) and an `algorithm=SHA-256`
+    challenge — are **not yet live-verified against a real device** (this environment can't reach
+    real hardware, see `CLAUDE.md`); only `tsc`/the existing `DigestGenerator.test.ts`/`XmlParser.test.ts`
+    suites confirm this compiles and doesn't regress what's already covered.
 - `parseResponse(xhr, successFn, failFn, isText?)` — for `blob`/`arraybuffer`/XML responses or
   `isText`, resolves with the raw response. Otherwise parses JSON, or (if not valid JSON) falls
   back to `getDotEqualStrLineToObj` (NVR line-based `a.b.c=value` responses, nested by `.`-split
@@ -842,10 +881,16 @@ nonce is still accepted.
 - **HTTP/1.1 (RFC 7230-7235)** — this is a standard `XMLHttpRequest`-based REST client;
   `Accept`, `Authorization`, `WWW-Authenticate`, `Content-Type`/response parsing follow HTTP
   semantics (RFC 7231) and authentication framework (RFC 7235).
-- **HTTP Digest Authentication (RFC 2617)** — `formulateResponse`/`setDigestHeader` implement the
-  `auth` qop response formula (`response = MD5(HA1:nonce:nc:cnonce:qop:HA2)`), always MD5 (no
-  SHA-256/RFC 7616 support here, unlike `DigestGenerator`). `nc` is sent as an 8-hex-digit counter
-  per RFC 2617 §3.2.2.
+- **HTTP Digest Authentication (RFC 7616, rewritten 2026-09-07 — previously RFC 2617-only)** —
+  `formulateResponse`/`buildDigestAuthHeader`/`getAuthInfoInWwwAuthenticate` now follow RFC 7616
+  §3.4.1/§3.4.3/§3.4.5/§3.3, matching `DigestGenerator`'s already-compliant implementation instead
+  of diverging from it: MD5 (default) or SHA-256 per the challenge's `algorithm` (via
+  `resolveDigestHashType()`), the qop-based response formula
+  (`HASH(HA1:nonce:nc:cnonce:qop:HA2)`) applying if and only if the challenge actually offered a
+  `qop` (otherwise the plain `HASH(HA1:nonce:HA2)` formula), `algorithm`/`qop`/`nc` sent as
+  unquoted tokens in the `Authorization` response per §3.4.5, and `opaque` echoed back unchanged
+  whenever the challenge supplied one. `nc` is still sent as an 8-hex-digit counter (unchanged
+  requirement across RFC 2617 §3.2.2 and RFC 7616 §3.4.1).
 - **HTTP status codes**: `401` (RFC 7235 §3.1), `200` (RFC 7231 §6.3.1), `408` (RFC 7231 §6.5.7);
   `490` is a SUNAPI-specific vendor extension code (account-block), looked up via
   `HTTP_STATUS_CODES` (see that section) rather than any IETF-standard code.
@@ -857,11 +902,13 @@ classDiagram
     class SunapiManager
     class SunapiClient
     class RtspClient
+    class DigestGenerator
     class XMLHttpRequest
 
     SunapiManager --> SunapiClient : creates (init())
     RtspClient ..> SunapiClient : optional alt. digest-auth source (SetSunapiClient)
     SunapiClient --> XMLHttpRequest : creates via xhrFactory
+    SunapiClient ..> DigestGenerator : reuses parseWWWAuthenticate() for RFC 7616 challenge parsing (2026-09-07)
 ```
 
 `SunapiClient` is a parallel path to the RTSP-over-WebSocket stream: it talks directly to the

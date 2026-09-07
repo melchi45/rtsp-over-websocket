@@ -2,6 +2,7 @@ import CryptoJS from 'crypto-js';
 import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError';
 import { AuthError } from '../../exceptions/AuthError';
 import { fromHex } from '../../util/hex';
+import { DigestGenerator, resolveDigestHashType, type HashType } from '../../util/DigestGenerator';
 import { HTTP_STATUS_CODES } from './HttpStatusCode';
 import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../util/debugLog';
 
@@ -77,6 +78,11 @@ export interface DigestCache {
   nonce: string | null;
   opaque: string | null;
   qop: string | null;
+  /** RFC 7616 §3.3 challenge field — `null`/absent means MD5 (the RFC's
+   * default), any other value (commonly `SHA-256`) selects that hash
+   * instead; see `resolveDigestHashType()`. Not part of RFC 2617, which
+   * this class's digest auth used to implement. */
+  algorithm: string | null;
   nc: number | null;
   cnonce: string | null;
 }
@@ -146,6 +152,14 @@ export class SunapiClient {
 
   private authInfo: DigestCache | null | undefined = null;
   private authCount = 0;
+  /** Reused purely as an RFC 7616 `WWW-Authenticate` challenge parser
+   * (`parseWWWAuthenticate()`) — see `getAuthInfoInWwwAuthenticate()`. Its
+   * own `nc`/`cnonce`/response-building state is unused here; this class
+   * keeps managing those itself via `DigestCache`, since they must persist
+   * across `SunapiClient` instances (`SunapiManager`'s cross-`init()`
+   * digest cache, `seedAuthInfo()`/`getAuthInfo()`), not reset per instance
+   * the way a fresh `DigestGenerator` would. */
+  private readonly digestGenerator = new DigestGenerator();
   /** See util/debugLog.ts. */
   private debugLog: DebugLogger = NOOP_DEBUG_LOGGER;
   set debug(config: DebugConfig | null) {
@@ -380,6 +394,25 @@ export class SunapiClient {
     return token;
   }
 
+  private hash(type: HashType, str: string): string {
+    return type === 'MD5' ? CryptoJS.MD5(str).toString() : CryptoJS.SHA256(str).toString();
+  }
+
+  /**
+   * Per RFC 7616 §3.4.1/§3.4.3 (which RFC 7826 §19.1.1 has RTSP Digest auth
+   * follow instead of RFC 2617 — see `RtspClient.ts`'s `formDigestAuthHeader()`
+   * and `util/DigestGenerator.ts`'s `Digest()`, whose response-formula
+   * selection this mirrors): `algorithm` selects MD5 (default) vs SHA-256
+   * independently of `qop`, and the qop-based response formula applies if
+   * and only if the challenge actually offered a `qop` — **not**
+   * unconditionally, which is what this method used to do (folding
+   * `nc`/`cnonce`/`qop` into the hash input even for a qop-less challenge,
+   * literally hashing the string `"null"` where `qop` belonged). That's the
+   * same bug class the RTSP-side SUNAPI-delegated digest path was found to
+   * have on real devices that don't send a `qop` hint at all (see
+   * `MEMORY.md`) — this class had it too, just never noticed because no
+   * caller had hit a qop-less SUNAPI challenge yet.
+   */
   private formulateResponse(
     username: string | undefined,
     password: string | undefined,
@@ -389,11 +422,16 @@ export class SunapiClient {
     nonce: string | null,
     nc: number | null,
     cnonce: string | null,
-    qop: string | null
+    qop: string | null,
+    algorithm: string | null
   ): string {
-    const HA1 = CryptoJS.MD5(`${username}:${realm}:${password}`).toString();
-    const HA2 = CryptoJS.MD5(`${method}:${uri}`).toString();
-    return CryptoJS.MD5(`${HA1}:${nonce}:${this.decimalToHex(nc, 8)}:${cnonce}:${qop}:${HA2}`).toString();
+    const type = resolveDigestHashType(algorithm);
+    const HA1 = this.hash(type, `${username}:${realm}:${password}`);
+    const HA2 = this.hash(type, `${method}:${uri}`);
+    if (typeof qop === 'string' && qop !== '') {
+      return this.hash(type, `${HA1}:${nonce}:${this.decimalToHex(nc, 8)}:${cnonce}:${qop}:${HA2}`);
+    }
+    return this.hash(type, `${HA1}:${nonce}:${HA2}`);
   }
 
   private getAuthInfoInWwwAuthenticate(wwwAuthenticate: string | null): DigestCache | undefined {
@@ -401,33 +439,14 @@ export class SunapiClient {
       return undefined;
     }
 
-    let realm: string | null = null;
-    let nonce: string | null = null;
-    let opaque: string | null = null;
-    let qop: string | null = null;
-    let nc: number | null = null;
-
-    const digestHeaders = wwwAuthenticate.split(',');
-    const scheme = digestHeaders[0].split(/\s/)[0];
-
-    for (let i = 0; i < digestHeaders.length; i++) {
-      const keyVal = digestHeaders[i].split('=');
-      const key = keyVal[0];
-      const val = keyVal[1].replace(/"/g, '').trim();
-
-      if (key.match(/realm/i) !== null) {
-        realm = val;
-      }
-      if (key.match(/nonce/i) !== null) {
-        nonce = val;
-      }
-      if (key.match(/opaque/i) !== null) {
-        opaque = val;
-      }
-      if (key.match(/qop/i) !== null) {
-        qop = val;
-      }
-    }
+    // Reuses util/DigestGenerator.ts's RFC-7616-compliant challenge parser
+    // (already relied on by RtspClient.ts's SUNAPI-delegated digest path)
+    // instead of this class's own hand-rolled comma-split parsing, which
+    // (a) never parsed `algorithm` at all, and (b) broke on a challenge
+    // whose `qop` value legitimately contains a comma per RFC 7616 §3.3
+    // (`qop="auth,auth-int"` — a single *quoted* value, not two challenge
+    // parameters), since a naive `split(',')` cuts straight through it.
+    const parsed = this.digestGenerator.parseWWWAuthenticate(wwwAuthenticate);
 
     const cnonce = this.generateCnonce();
     // `nc` starts at 0 for a freshly-issued nonce: setDigestHeader() always
@@ -437,9 +456,9 @@ export class SunapiClient {
     // nc=00000002 — confirmed via direct camera testing that at least one
     // real Wisenet camera firmware rejects that as invalid and re-challenges
     // with a brand-new nonce instead of authenticating.)
-    nc = 0;
+    const nc = 0;
 
-    return { scheme, realm, nonce, opaque, qop, cnonce, nc };
+    return { scheme: parsed.method ?? 'Digest', realm: parsed.realm, nonce: parsed.nonce, opaque: parsed.opaque, qop: parsed.qop, algorithm: parsed.algorithm, cnonce, nc };
   }
 
   /** Ported from sunapiClient's local `decimalToHex` — kept separate from util/hex.ts's shared one since the two have diverging default-padding semantics in legacy and this is what setDigestHeader/formulateResponse actually call. */
@@ -476,36 +495,34 @@ export class SunapiClient {
       cache.nonce,
       cache.nc,
       cache.cnonce,
-      cache.qop
+      cache.qop,
+      cache.algorithm
     );
-    return (
-      cache.scheme +
-      ' ' +
-      'username="' +
-      config.username +
-      '", ' +
-      'realm="' +
-      cache.realm +
-      '", ' +
-      'nonce="' +
-      cache.nonce +
-      '", ' +
-      'uri="' +
-      uri +
-      '", ' +
-      'cnonce="' +
-      cache.cnonce +
-      '", ' +
-      'nc=' +
-      this.decimalToHex(cache.nc, 8) +
-      ', ' +
-      'qop=' +
-      cache.qop +
-      ', ' +
-      'response="' +
-      responseValue +
-      '"'
-    );
+
+    let header = cache.scheme + ' ' + 'username="' + config.username + '", ' + 'realm="' + cache.realm + '", ' + 'nonce="' + cache.nonce + '", ' + 'uri="' + uri + '"';
+
+    // Per RFC 7616 §3.4.5: `algorithm`/`qop`/`nc` are unquoted tokens,
+    // unlike every other field here (quoted strings). `algorithm`/`opaque`
+    // are echoed back independently whenever the challenge supplied them —
+    // neither depends on the other or on `qop` — while `cnonce`/`nc`/`qop`
+    // only belong together, gated on `qop` alone, since they exist solely
+    // to support the qop-based response formula computed above.
+    // `opaque` in particular used to be parsed into `DigestCache` but never
+    // actually sent back here — a real RFC 7616 §3.4 compliance gap fixed
+    // alongside `algorithm` support, not just a hygiene cleanup.
+    if (typeof cache.algorithm === 'string' && cache.algorithm !== '') {
+      header += ', algorithm=' + cache.algorithm;
+    }
+    if (typeof cache.opaque === 'string' && cache.opaque !== '') {
+      header += ', opaque="' + cache.opaque + '"';
+    }
+    if (typeof cache.qop === 'string' && cache.qop !== '') {
+      header += ', cnonce="' + cache.cnonce + '"';
+      header += ', nc=' + this.decimalToHex(cache.nc, 8);
+      header += ', qop=' + cache.qop;
+    }
+    header += ', response="' + responseValue + '"';
+    return header;
   }
 
   private setDigestHeader(xhr: XhrLike, method: string, uri: string, digestCache: DigestCache | null | undefined): XhrLike {
@@ -526,7 +543,7 @@ export class SunapiClient {
       // NOTE: legacy quirk preserved — this freshly-built cache's `nc`/`cnonce`
       // are NOT incremented/regenerated the way the digest/xdigest branch does;
       // they stay at their `null` initializers (decimalToHex(null, 8) => "00000000").
-      const freshCache: DigestCache = { scheme: 'Digest', realm: '', nonce: null, opaque: null, qop: 'auth', nc: null, cnonce: null };
+      const freshCache: DigestCache = { scheme: 'Digest', realm: '', nonce: null, opaque: null, qop: 'auth', algorithm: null, nc: null, cnonce: null };
       xhr.setRequestHeader('Authorization', this.buildDigestAuthHeader(freshCache, uri, method));
     }
 
