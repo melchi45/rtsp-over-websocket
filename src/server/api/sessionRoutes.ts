@@ -55,6 +55,16 @@ function validateCreateRequest(body: unknown): { value: CreateSessionRequest; ch
     bFrames = b.bFrames;
   }
 
+  // Optional — see CreateSessionRequest.digestAlgorithm's comment in types.ts. Omitted/undefined
+  // defaults to 'MD5'.
+  let digestAlgorithm: 'MD5' | 'SHA-256' = 'MD5';
+  if (b.digestAlgorithm !== undefined && b.digestAlgorithm !== null) {
+    if (b.digestAlgorithm !== 'MD5' && b.digestAlgorithm !== 'SHA-256') {
+      return { error: '"digestAlgorithm" must be "MD5" or "SHA-256"' };
+    }
+    digestAlgorithm = b.digestAlgorithm;
+  }
+
   return {
     value: {
       youtubeUrl: b.youtubeUrl,
@@ -64,7 +74,8 @@ function validateCreateRequest(body: unknown): { value: CreateSessionRequest; ch
       audioBitrateKbps: b.audioBitrateKbps,
       username: b.username,
       password: b.password,
-      bFrames
+      bFrames,
+      digestAlgorithm
     },
     channel
   };

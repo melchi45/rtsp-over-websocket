@@ -19,6 +19,7 @@ client, with concrete method behavior, wire framing, and RFC citations.*
 | 2026-09-02 | Fix TEARDOWN belt-and-suspenders disconnect trigger racing the real response: it polled every 500ms and force-`clearTransport()`'d as soon as that first tick found `currentState` still `'Playing'`, regardless of whether the actual `200 OK` had arrived yet — on a slower TEARDOWN (observed live on recording/playback sessions) this tore the transport down before the real response could be processed, so no `200 OK` was ever seen for it. Now a single 5s `setTimeout` (`teardownWatchdogHandler`), cancelled from `clearTransport()` itself as soon as the response-driven path (or any other path) completes teardown first, so it never fires once the real response has already been handled |
 | 2026-09-04 | `RtspClient`/`Transport`/`AttributeService`/`SunapiClient`/`SunapiManager`/`SunapiRestClient` each gained a `debug`/`set debug()` gate (`util/debugLog.ts`, see `01-elements-interface-exceptions.md`'s new `debug` attribute and `08-util.md`) — `debug["network"]` in the JSON config, `true` for all six or an array of specific class names. `RtspClient`'s existing 11 `console.log('[RtspClient] ...')` calls and `AttributeService`'s 17 `console.log(...)` calls were migrated onto the new gated `this.debugLog(...)` (real `console.error` calls, in both files, are untouched); `Transport` gained new `Connect()`/`Disconnect()` trace points. `RtspClient` forwards the config to the `Transport` it constructs internally (`Connect()`, `transport.debug = this.debugConfig`) — `StreamPlayer`'s constructor is what actually sets `rtspClient.debug` in the first place (see `01`). `XmlParser` was deliberately **not** instrumented — its own doc comment states it's pure, stateless parsing helpers, and adding mutable debug state would work against that. |
 | 2026-09-04 | `RtspClient.set debug()` now also re-applies to `this.transport` immediately if one already exists (previously only reached the *next* `Transport` `Connect()` constructs) — live-refresh, requested directly by the user after finding a mid-stream `debug` change had no visible effect. See `01`/`03`'s matching History entries and `MEMORY.md` for the full per-class breakdown across the whole propagation chain. |
+| 2026-09-04 | `DigestGenerator`/`RtspClient` RTSP Digest auth rewritten to actually follow **RFC 7616** (per RFC 7826 §19.1.1's explicit instruction), not RFC 2617: fixed four real bugs found by checking RFC 7616's text directly (including its §3.9.1 worked example) — an unquoted-vs-quoted `algorithm=` challenge-parsing mismatch that silently hid any real SHA-256 offer behind an MD5 fallback, an all-or-nothing `Qop`/`Algorithm`/`Opaque` gate where the three are actually independent fields, the qop-formula-selection gate having the same bug, and unquoted `algorithm`/`qop`/`nc` in the `Authorization` response being sent quoted. Also fixed: multi-challenge selection now follows RFC 7616 §3.7 (first-understood-challenge-in-server-order, via new `SUPPORTED_DIGEST_ALGORITHMS`/`selectSupportedQop()` in `RtspClient.ts`) instead of "last challenge line wins"; a challenge's `qop` value (a quoted comma-separated list) is now parsed into a single chosen token instead of echoed back raw. New unit tests in `DigestGenerator.test.ts` verify against RFC 7616's own worked example. Live-verified against the real Wisenet camera used elsewhere in this doc's History — same successful MD5-based connection as before (this camera's own challenge has no `algorithm=` at all, so it exercises the "default to MD5, independent Qop/Opaque handling" path, not the new SHA-256 path — see `MEMORY.md`). |
 
 ---
 
@@ -153,7 +154,14 @@ recent history — see `retryWithCredentials()` below).
   collects every `WWW-Authenticate` header line into `WWWAuthenticate: ParsedWwwAuthenticate[]` via
   `parseWWWAuthenticate`. Other status codes get no field parsing beyond the status line.
 - `parseWWWAuthenticate(str)` — regex-extracts `Basic`/`Digest` scheme plus `realm=`, `nonce=`,
-  `opaque=`, `algorithm=`, `qop=` from one `WWW-Authenticate` header value.
+  `opaque=`, `algorithm=`, `qop=` from one `WWW-Authenticate` header value. **As of 2026-09-04**,
+  `algorithm=` is matched as an UNQUOTED token (`/algorithm\s*=\s*"?([^",\s]+)"?/i`, tolerating a
+  quoted form defensively) rather than requiring a literal `algorithm="` — RFC 7616 §3.3 mandates
+  the challenge's `algorithm` value be unquoted (`algorithm=SHA-256`, confirmed against the RFC's
+  own §3.9.1 worked example), so the old `algorithm="` search could never match a spec-compliant
+  server offering SHA-256 at all, silently leaving `algorithm: null` and falling through to MD5
+  every time. `realm=`/`nonce=`/`opaque=`/`qop=` stay quoted-value searches, matching how those
+  four fields (unlike `algorithm`) are actually specified in the challenge.
 
 **Digest authentication and the interactive-retry redesign**
 
@@ -161,9 +169,28 @@ recent history — see `retryWithCredentials()` below).
   401 response and from `retryWithCredentials()`. Feeds the cached `wwwAuthenticate` text through
   `digestGenerator.getDigestInfoInWwwAuthenticate()`, assembles an `AuthenticateData` (`Method` =
   current state uppercased, `Uri` = URI-encoded `uri`, `username`/`password` = `id`/`pw`,
-  `Realm`/`Nonce`/optionally `Qop`/`Algorithm`/`Opaque`). Two paths: (a) if a plain password is set
-  and no `sunapiClient` is attached, computes `Authentication` directly via
-  `digestGenerator.getAuthenticate(data)` and calls `SendUnauthorizedRtspCmd()`; (b) if a
+  `Realm`/`Nonce`/optionally `Qop`/`Algorithm`/`Opaque`). **Challenge selection (rewritten
+  2026-09-04, RFC 7826 §19.1.1 / RFC 7616 §3.7 compliance):** RFC 7616 §3.7 has a server offering
+  multiple algorithms send one `WWW-Authenticate` challenge line per algorithm, ordered
+  most-preferred first, and has the client use the first one it understands. `formDigestAuthHeader`
+  now filters `digestInfo` down to entries that look like real Digest challenges (`method` matches
+  `/digest/i` and `nonce` is non-empty — a naive header-line slice can otherwise pick up trailing
+  non-challenge text as a spurious "entry" with everything `null`), then picks the first of those
+  whose `algorithm` is either absent or in `SUPPORTED_DIGEST_ALGORITHMS` (`MD5`, `SHA-256`,
+  case-insensitive) — falling back to the first Digest challenge, then the first parsed entry at
+  all, if nothing matches. `Realm`/`Nonce`/`Algorithm`/`Qop`/`Opaque` are then copied from that one
+  selected entry, each independently (no longer requiring all three of `Qop`/`Algorithm`/`Opaque`
+  to be present together before any of them is honored — see `DigestGenerator`'s matching fix
+  below). A `qop=` challenge value is itself a quoted, comma-separated *list* of alternatives
+  (e.g. `qop="auth, auth-int"` — RFC 7616 §3.3); `selectSupportedQop()` splits it and picks `"auth"`
+  if offered (the only mode `DigestGenerator.Digest()` actually implements — its `A2` never folds
+  in an entity-body hash for `"auth-int"`), leaving `Qop` unset if `"auth"` isn't among the
+  offered values, rather than echoing the raw multi-value list back as if it were a single token.
+  Two `debugLog.debug()` trace points were added alongside this: the full list of challenges
+  offered (method/algorithm/qop per entry) and the challenge actually selected. Two paths remain
+  for actually sending the answer: (a) if a plain password is set and no `sunapiClient` is
+  attached, computes `Authentication` directly via `digestGenerator.getAuthenticate(data)` (now
+  also traced via `debugLog.debug()`) and calls `SendUnauthorizedRtspCmd()`; (b) if a
   `sunapiClient` is attached, it instead round-trips through a SUNAPI digest-auth-info endpoint
   (`/stw-cgi/security.cgi?msubmenu=digestauth&action=view`) to obtain a pre-computed `response`
   value from the device itself, then calls `getAuthenticate(data, responseValue)` (skips local
@@ -371,10 +398,17 @@ sequenceDiagram
   specific case). H.264/H.265 SPS/PPS/VPS `fmtp` parameters (`sprop-parameter-sets`,
   `sprop-sps`/`sprop-pps`/`sprop-vps`) come from **RFC 6184** (H.264) and **RFC 7798** (H.265).
 - **HTTP Digest authentication** — `formDigestAuthHeader`/`retryWithCredentials` build the
-  `Authorization` header via `DigestGenerator` per **RFC 2617** (and, since `DigestGenerator`
-  supports a SHA-256 branch, effectively **RFC 7616** — see the `DigestGenerator` section below).
-  The challenge is read from the RTSP response's `WWW-Authenticate` header (RFC 2617 §3.2.1,
-  reused verbatim by RTSP per RFC 2326 §22).
+  `Authorization` header via `DigestGenerator`. **As of 2026-09-04, this now deliberately targets
+  RFC 7616** (not RFC 2617) **per RFC 7826 §19.1.1**, which — despite this codebase's own RTSP wire
+  protocol staying RTSP/1.0 (RFC 2326, see the bullet above, unrelated to this) — is explicit that
+  *if* RTSP Digest auth is implemented, it "follow[s] those defined in [RFC 7616]" rather than the
+  older RFC 2617: multi-challenge ordering/selection (§3.7), independent per-field echoing instead
+  of an all-or-nothing bundle, the qop-value-list-vs-single-token distinction, and (RFC 7616
+  §3.4.5) that `algorithm`/`qop`/`nc` are unquoted tokens in the `Authorization` response while
+  `username`/`realm`/`nonce`/`uri`/`response`/`cnonce`/`opaque` stay quoted — see the
+  `DigestGenerator` section below for the concrete `Digest()`/`getAuthenticate()`/
+  `parseWWWAuthenticate()` changes this drove. The challenge is read from the RTSP response's
+  `WWW-Authenticate` header (RFC 7616 §3.3, reused by RTSP per RFC 2326 §22 / RFC 7826 §19.1).
 - **WebSocket transport framing** (RFC 6455) itself is `Transport`'s responsibility, not
   `RtspClient`'s — `RtspClient` only ever sees already-demuxed RTSP text or already-demuxed RTP
   bytes; see the `Transport` section.
@@ -1356,46 +1390,67 @@ structurally similar hash).
 
 ### Method Analysis
 
+**Rewritten 2026-09-04 for RFC 7826 §19.1.1 / RFC 7616 compliance.** The previous revision of this
+section documented four behaviors as known quirks/divergences from spec; all four turned out to be
+real, independently-confirmable bugs once checked against RFC 7616's actual text (including its
+own §3.9.1 worked example) rather than assumed from the legacy port's original shape, and are now
+fixed. Kept for context in case any of this needs re-deriving: (1) `algorithm`'s presence/absence
+used to gate whether `Qop`/`Opaque` were honored at all, even though the three are independent
+challenge fields; (2) the qop-formula-vs-simple-formula choice was gated the same incorrect way,
+when RFC 7616 §3.4.1/§3.4.3 base it on `qop` alone; (3) `getAuthenticate()` quoted `algorithm`/
+`qop`/`nc` in the `Authorization` header, when RFC 7616 §3.4.5 requires those three specifically be
+*unquoted* tokens (unlike every other field there); (4) `parseWWWAuthenticate()` searched for a
+quoted `algorithm="` in the challenge, when RFC 7616 §3.3 specifies `algorithm` as unquoted there
+too (`algorithm=SHA-256`) — meaning a real spec-compliant SHA-256 challenge could never even be
+parsed, silently defaulting to MD5 every time. See `MEMORY.md` for the fix's full derivation and
+live-verification notes.
+
 - `digestSchema(type, str)` — `type === 'MD5' ? CryptoJS.MD5(str) : CryptoJS.SHA256(str)`
   (`.toString()`-hex-encoded). The only two supported hash algorithms.
 - `generateClientNonce()` — regenerates `cnonce` (8 random chars from `A-Za-z0-9`) and increments
   `nc`.
 - `Digest()` — computes the actual response hash from `this.authenticateData`:
-  1. `type = data.Algorithm === 'MD5' || data.Algorithm == null ? 'MD5' : 'SHA256'` — MD5 is the
-     default and the explicit-`'MD5'` case; *any other* non-null `Algorithm` value (including,
-     notably, `'MD5-sess'`, which RFC 2617 defines as a variant of MD5, not a request for SHA-256)
-     is treated as a request for SHA-256. This is a real code behavior worth knowing if a server
-     ever sends `algorithm="MD5-sess"` — it would be computed as SHA-256 here, which is not RFC
-     2617-conformant for that specific algorithm value, but no server encountered in this
-     codebase's usage has been observed to send it.
+  1. `type = typeof data.Algorithm !== 'string' || data.Algorithm.toUpperCase() === 'MD5' ? 'MD5' :
+     'SHA256'` — MD5 is the default (RFC 7616 §3.3: "If this is not present, it is assumed to be
+     'MD5'") and the case-insensitive-`'MD5'` case; any other non-empty string `Algorithm` value is
+     treated as a request for SHA-256. This is still broader than RFC 7616's actual `algorithm`
+     value set (e.g. an unrecognized string like `"SHA-512-256"` would be computed as SHA-256, not
+     rejected) — `RtspClient.formDigestAuthHeader()`'s `SUPPORTED_DIGEST_ALGORITHMS` filter is what
+     actually prevents an unsupported algorithm from reaching this method in normal use; `Digest()`
+     itself has no such guard if called directly.
   2. `HA1 = digestSchema(type, "username:Realm:password")`.
   3. `HA2 = digestSchema(type, "Method:decodeURIComponent(Uri)")`.
   4. `generateClientNonce()` is called (regenerating `cnonce`/incrementing `nc` as a side effect
      of computing the digest, not before it).
-  5. If `Qop`, `Algorithm`, *and* `Opaque` are **all** non-null/non-undefined: `response =
-     digestSchema(type, "HA1:Nonce:nc(8-hex):cnonce:Qop:HA2")` (the RFC 2617 `qop="auth"` formula)
-     — note the three-way `Qop && Algorithm && Opaque` gate means a server offering `qop` without
-     also sending `algorithm`/`opaque` falls through to the simpler formula below instead, which
-     is stricter than RFC 2617 technically requires (RFC 2617 only requires `qop` presence to pick
-     the qop-formula). A `console.log('input string:', input)` debug line is fired unconditionally
-     in this branch (not gated behind any debug flag — the one place in this network layer where a
-     console call was *not* dropped as pure observability, since it was left un-stripped from the
-     legacy source verbatim; note if auditing for stray logging).
+  5. If `Qop` is non-null/non-empty (independent of `Algorithm`/`Opaque` — RFC 7616 §3.4.1/§3.4.3
+     base this choice on `qop` alone): `response = digestSchema(type,
+     "HA1:Nonce:nc(8-hex):cnonce:Qop:HA2")` (the RFC 7616 `qop="auth"` formula). The unconditional
+     `console.log('input string:', input)` that used to fire here (the one un-gated raw console
+     call in this whole network layer) has been removed.
   6. Otherwise: `response = digestSchema(type, "HA1:Nonce:HA2")` (the RFC 2069/legacy-compatible
      formula without qop).
 - `getAuthenticate(data?, response?)` — sets `authenticateData` if `data` is given, computes
   `responseValue` via `Digest()` unless an explicit `response` was passed (the
   `SunapiClient`-sourced-response path in `RtspClient.formDigestAuthHeader()` uses this to skip
   local hashing entirely). Builds the literal header text: `Authorization: Digest
-  username="...", realm="...", uri="...", nonce="..."` and, only if `Qop`/`Algorithm`/`Opaque` are
-  all present, appends `algorithm="...", opaque="...", nc="<8-hex>", cnonce="...", qop="..."`,
-  always finishing with `, response="<hash>"\r\n`.
+  username="...", realm="...", uri="...", nonce="..."`, then independently (RFC 7616 §3.4: "the
+  values of the opaque and algorithm fields must be those supplied" — echoed whenever the server
+  sent them, unrelated to each other or to `qop`) appends `algorithm=...` if `Algorithm` is set and
+  `opaque="..."` if `Opaque` is set, then — gated on `Qop` alone — `nc=<8-hex>, cnonce="...",
+  qop=...`, always finishing with `, response="<hash>"\r\n`. Per RFC 7616 §3.4.5, `algorithm`/
+  `qop`/`nc` are emitted as bare unquoted tokens; every other field here (including `opaque`,
+  `cnonce`, and `response`) keeps quoted-string syntax.
 - `getDigestInfoInWwwAuthenticate(wwwAuthenticate)` — splits the cached raw header text on line
   breaks and parses each line via `parseWWWAuthenticate` (handles a `WWW-Authenticate` value that
-  may span multiple challenge lines, e.g. one `Basic` and one `Digest` offer).
+  may span multiple challenge lines, e.g. one per algorithm per RFC 7616 §3.7, or one `Basic` and
+  one `Digest` offer).
 - `parseWWWAuthenticate(str)` — extracts `method` (`Basic`/`Digest`/else `'Unknown'`, checked via
-  `.some()` so it stops at the first match) and `realm=`/`nonce=`/`opaque=`/`algorithm=`/`qop=`
-  quoted-value fields via regex + `substr`/`split('"')`.
+  `.some()` so it stops at the first match) and `realm=`/`nonce=`/`opaque=`/`qop=` as quoted-value
+  fields via regex + `substr`/`split('"')` (matching how RFC 7616 §3.3 actually specifies those
+  four). `algorithm=` is matched separately as an **unquoted** token
+  (`/algorithm\s*=\s*"?([^",\s]+)"?/i`, tolerating a quoted form defensively) — RFC 7616 §3.3
+  requires `algorithm` be unquoted in the challenge (confirmed against §3.9.1's own worked
+  example: `algorithm=SHA-256,` with no surrounding quotes).
 
 ### Call Stack
 
@@ -1404,8 +1459,10 @@ Narrowly, within that flow:
 
 1. `RtspClient.formDigestAuthHeader(uri)` calls
    `digestGenerator.getDigestInfoInWwwAuthenticate(wwwAuthenticate)` to parse the cached
-   `WWW-Authenticate` text into one or more `ParsedWwwAuthenticate` entries, and folds the last
-   one with a `qop`+`algorithm`+`opaque` triple into the outgoing `AuthenticateData`.
+   `WWW-Authenticate` text into one or more `ParsedWwwAuthenticate` entries, selects the first
+   understood Digest challenge (see that method's own doc above), and copies its
+   `Realm`/`Nonce`/`Algorithm`/`Qop`/`Opaque` — each independently — into the outgoing
+   `AuthenticateData`.
 2. `formDigestAuthHeader` calls `digestGenerator.getAuthenticate(data)` (no explicit `response` —
    local computation path).
 3. `getAuthenticate` calls `Digest()`, which computes `HA1`/`HA2`/`response` as above and (as a
@@ -1416,24 +1473,28 @@ Narrowly, within that flow:
 
 ### RFC / Standard References
 
-- **RFC 2617 (HTTP Digest Access Authentication)** — the core `HA1`/`HA2`/`response` formulas
-  implemented in `Digest()` match RFC 2617 §3.2.2.1's MD5 digest computation exactly (`HA1 =
-  H(username:realm:password)`, `HA2 = H(method:digest-uri)`, and, with `qop="auth"`, `response =
-  H(HA1:nonce:nonceCount:cnonce:qop:HA2)`; without `qop`, the simpler RFC 2069-style `response =
-  H(HA1:nonce:HA2)`). The `Authorization` header fields constructed by `getAuthenticate()`
-  (`username`, `realm`, `uri`, `nonce`, `algorithm`, `opaque`, `nc`, `cnonce`, `qop`, `response`)
-  are exactly RFC 2617 §3.2.2's `Authorization` header field set. `WWW-Authenticate` parsing
-  (`parseWWWAuthenticate`) reads RFC 2617 §3.2.1's challenge fields.
-- **RFC 7616 (HTTP Digest Access Authentication, obsoletes RFC 2617)** — `digestSchema`'s SHA-256
-  branch is this class's one point of divergence from plain RFC 2617 (which only defines MD5):
-  RFC 7616 §6.1 formally adds `SHA-256`/`SHA-512-256` as selectable digest algorithms via the
-  `algorithm` challenge parameter, which is what `Digest()`'s `type` selection is approximating —
-  though, as noted above, its `!== 'MD5'` catch-all is broader than RFC 7616's `algorithm` value
-  set (e.g. it would also treat an unrecognized/malformed algorithm string as "use SHA-256").
-- **RTSP's reuse of HTTP auth (RFC 2326 §22)** — RTSP explicitly reuses HTTP's `WWW-Authenticate`/
-  `Authorization` header mechanics rather than defining its own, which is why an HTTP-auth class
-  written against RFC 2617 directly plugs into `RtspClient`'s RTSP request construction with no
-  RTSP-specific adaptation needed.
+- **RFC 7616 (HTTP Digest Access Authentication)** — this is now the primary reference, per RFC
+  7826 §19.1.1's explicit instruction that RTSP Digest auth follow RFC 7616, not RFC 2617. The
+  `HA1`/`HA2`/`response` formulas in `Digest()` match RFC 7616 §3.4.2/§3.4.3/§3.4.1: `HA1(A1) =
+  H(username:realm:password)` for the non-session algorithm variant (the only variant implemented
+  — no `-sess` support), `HA2(A2) = H(method:digest-uri)` for `qop=auth` (or unspecified;
+  `auth-int`'s entity-body-hashing variant isn't implemented), and, with `qop` present, `response =
+  H(HA1:nonce:nc:cnonce:qop:HA2)`; without `qop`, `response = H(HA1:nonce:HA2)`. The
+  `Authorization` header fields built by `getAuthenticate()` (`username`, `realm`, `uri`, `nonce`,
+  `algorithm`, `opaque`, `nc`, `cnonce`, `qop`, `response`) match RFC 7616 §3.4's field set,
+  including its §3.4.5 quoted-vs-unquoted split. `WWW-Authenticate` parsing (`parseWWWAuthenticate`)
+  reads RFC 7616 §3.3's challenge fields, including `algorithm`'s unquoted-token shape. `digestSchema`
+  supports the two algorithms this codebase's cameras have been observed to offer (`MD5`,
+  `SHA-256`) out of RFC 7616's full set (which also defines `SHA-512-256` and `-sess` variants of
+  all three) — `RtspClient.formDigestAuthHeader()`'s `SUPPORTED_DIGEST_ALGORITHMS` treats anything
+  outside that pair as an unrecognized/skippable challenge (RFC 7616 §3.3: "If the algorithm is not
+  understood, the challenge SHOULD be ignored").
+- **RTSP's reuse of HTTP auth (RFC 2326 §22 / RFC 7826 §19.1)** — RTSP explicitly reuses HTTP's
+  `WWW-Authenticate`/`Authorization` header mechanics rather than defining its own, which is why an
+  HTTP-auth class plugs directly into `RtspClient`'s RTSP request construction (itself still
+  RTSP/1.0 — see the `RtspClient` RFC References above) with no RTSP-specific adaptation needed;
+  RFC 7826 §19.1.1 is specifically about *which* HTTP-auth RFC to follow (7616, not 2617), not
+  about requiring the RTSP/2.0 wire protocol itself.
 
 ### Relations & Data Flow
 

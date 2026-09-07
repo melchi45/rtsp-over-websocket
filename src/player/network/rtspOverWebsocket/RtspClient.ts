@@ -264,6 +264,29 @@ export type RtspDisconnectCallback = (data: RtspDisconnectResult) => void;
 
 const NO_SESSION = -1;
 
+/**
+ * Digest `algorithm` values `DigestGenerator` actually knows how to hash
+ * with (see its `HashType`/`Digest()`) — anything else (e.g. "SHA-512-256",
+ * "MD5-sess") is a challenge we can't correctly answer, so it must be
+ * skipped rather than mis-hashed under the wrong algorithm. Compared
+ * case-insensitively since RFC 7616 doesn't mandate a token case.
+ */
+const SUPPORTED_DIGEST_ALGORITHMS = new Set(['MD5', 'SHA-256']);
+
+/**
+ * RFC 7616 §3.3's challenge `qop` value is a quoted, comma-separated list of
+ * alternatives (e.g. `qop="auth, auth-int"`); the client must pick exactly
+ * one token for its own (unquoted, single-value) Authorization `qop` field —
+ * never echo the raw list back. Only "auth" is implemented here (see
+ * `DigestGenerator.Digest()`'s A2, which never folds in an entity-body
+ * hash), so "auth-int" is treated as unsupported rather than silently
+ * computing the wrong response.
+ */
+function selectSupportedQop(rawQop: string): string | null {
+  const offered = rawQop.split(',').map((value) => value.trim());
+  return offered.includes('auth') ? 'auth' : null;
+}
+
 /** Overridable factory so tests can inject a fake transport instead of opening a real WebSocket. */
 export type TransportFactory = (serverAddr: string) => TransportLike;
 
@@ -896,8 +919,13 @@ export class RtspClient {
       if ((pos = element.search(/opaque="/gi)) !== -1) {
         parserData.opaque = element.substr(pos + 6).split('"')[1];
       }
-      if ((pos = element.search(/algorithm="/gi)) !== -1) {
-        parserData.algorithm = element.substr(pos + 9).split('"')[1];
+      // Per RFC 7616 §3.3 (RFC 7826 §19.1.1 has RTSP Digest follow this, not
+      // RFC 2617), `algorithm` is an UNQUOTED token in the challenge (e.g.
+      // `algorithm=SHA-256,`) — unlike realm/nonce/opaque/qop below, which
+      // are quoted. `"?...?"` tolerates a quoted form too, defensively.
+      const algorithmMatch = element.match(/algorithm\s*=\s*"?([^",\s]+)"?/i);
+      if (algorithmMatch !== null) {
+        parserData.algorithm = algorithmMatch[1];
       }
       if ((pos = element.search(/qop="/gi)) !== -1) {
         parserData.qop = element.substr(pos + 3).split('"')[1];
@@ -929,6 +957,10 @@ export class RtspClient {
   private formDigestAuthHeader(uri: string): void {
     this.debugLog.debug('formDigestAuthHeader() called -> currentState:', this.currentState, ' has pw:', typeof this.pw === 'string' && this.pw !== '', ' has sunapiClient:', this.sunapiClient !== null && typeof this.sunapiClient !== 'undefined');
     const digestInfo = this.digestGenerator.getDigestInfoInWwwAuthenticate(this.wwwAuthenticate!);
+    this.debugLog.debug(
+      'formDigestAuthHeader() -> challenges offered',
+      digestInfo.map((entry) => `[method=${entry.method ?? 'null'} algorithm=${entry.algorithm ?? 'null'} qop=${entry.qop ?? 'null'}]`)
+    );
     const data: AuthenticateData & { Nc?: string; Cnonce?: string } = {
       Method: this.currentState.toUpperCase(),
       Uri: encodeURIComponent(uri),
@@ -939,22 +971,50 @@ export class RtspClient {
     };
 
     if (digestInfo.length > 0) {
-      digestInfo.forEach((element) => {
-        if (
-          typeof element.qop !== 'undefined' &&
-          element.qop !== null &&
-          typeof element.algorithm !== 'undefined' &&
-          element.algorithm !== null &&
-          typeof element.opaque !== 'undefined' &&
-          element.opaque !== null
-        ) {
-          data.Qop = element.qop;
-          data.Algorithm = element.algorithm;
-          data.Opaque = element.opaque;
+      // RFC 7826 §19.1.1 defers RTSP Digest auth to RFC 7616, which (§3.7)
+      // has servers list multiple challenges — one per algorithm — in order
+      // of preference, most-preferred first, and has the client use the
+      // first one it understands. A server offering only Basic, or a stray
+      // non-challenge line the naive header-slice below picked up, has no
+      // `nonce`; real Digest challenges always carry one, so that's the
+      // signal used here to tell them apart.
+      const digestChallenges = digestInfo.filter(
+        (element) =>
+          typeof element.method === 'string' &&
+          /digest/i.test(element.method) &&
+          typeof element.nonce === 'string' &&
+          element.nonce !== ''
+      );
+      const selected: ParsedWwwAuthenticate =
+        digestChallenges.find(
+          (element) => typeof element.algorithm !== 'string' || SUPPORTED_DIGEST_ALGORITHMS.has(element.algorithm.toUpperCase())
+        ) ??
+        digestChallenges[0] ??
+        digestInfo[0];
+
+      data.Realm = selected.realm ?? '';
+      data.Nonce = selected.nonce ?? '';
+      // `algorithm`/`qop`/`opaque` are independent challenge fields (RFC
+      // 7616 §3.3) — each is carried over on its own whenever the server
+      // sent it, not only when all three appear together.
+      if (typeof selected.algorithm === 'string' && selected.algorithm !== '') {
+        data.Algorithm = selected.algorithm;
+      }
+      if (typeof selected.qop === 'string' && selected.qop !== '') {
+        const qopValue = selectSupportedQop(selected.qop);
+        if (qopValue !== null) {
+          data.Qop = qopValue;
         }
-        data.Realm = element.realm ?? '';
-        data.Nonce = element.nonce ?? '';
-      });
+      }
+      if (typeof selected.opaque === 'string' && selected.opaque !== '') {
+        data.Opaque = selected.opaque;
+      }
+      this.debugLog.debug(
+        'formDigestAuthHeader() -> selected challenge',
+        `algorithm=${data.Algorithm ?? 'MD5(default)'}`,
+        `qop=${data.Qop ?? 'none'}`,
+        `hasOpaque=${data.Opaque !== undefined && data.Opaque !== null}`
+      );
     }
 
     if (
@@ -965,6 +1025,7 @@ export class RtspClient {
       (typeof this.sunapiClient === 'undefined' || this.sunapiClient === null)
     ) {
       this.Authentication = this.digestGenerator.getAuthenticate(data);
+      this.debugLog.debug('formDigestAuthHeader() -> built Authorization header', this.Authentication.trim());
       this.SendUnauthorizedRtspCmd();
     } else if (this.sunapiClient !== null && this.sunapiClient !== undefined) {
       this.digestGenerator.generateClientNonce();

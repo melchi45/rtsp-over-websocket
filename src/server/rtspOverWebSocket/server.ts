@@ -160,7 +160,13 @@ function handleConnection(ws: WebSocket): void {
       ws.close(1008, 'too many auth attempts');
       return;
     }
-    ws.send(Buffer.from(buildRtspResponse(401, 'Unauthorized', cseq, `WWW-Authenticate: Digest realm="rtsp-ws-youtube", nonce="${nonce}"\r\n`)));
+    // `algorithm=SHA-256` (RFC 7616 §3.3 — deliberately unquoted, see
+    // src/player/util/DigestGenerator.ts's matching parseWWWAuthenticate()
+    // fix) is only added when this session opted into it; omitted entirely
+    // for the 'MD5' default so the challenge shape (and every real camera's
+    // observed behavior) stays unchanged for every other session.
+    const algorithmParam = session?.request.digestAlgorithm === 'SHA-256' ? ', algorithm=SHA-256' : '';
+    ws.send(Buffer.from(buildRtspResponse(401, 'Unauthorized', cseq, `WWW-Authenticate: Digest realm="rtsp-ws-youtube", nonce="${nonce}"${algorithmParam}\r\n`)));
   };
 
   const cleanup = (): void => {
@@ -227,7 +233,7 @@ function handleConnection(ws: WebSocket): void {
     // the Digest challenge entirely and relay from the very first request.
     if (session.request.username) {
       const auth = parseDigestAuthorization(text);
-      if (!auth || !verifyDigest(auth, reqLine.method, session.request.username, session.request.password, nonce)) {
+      if (!auth || !verifyDigest(auth, reqLine.method, session.request.username, session.request.password, nonce, session.request.digestAlgorithm)) {
         challenge(cseq);
         return;
       }

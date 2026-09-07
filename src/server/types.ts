@@ -66,6 +66,16 @@ export interface CreateSessionRequest {
    * B-frames internally either way and was never affected). Ignored for MJPEG/AV1/VP8/VP9, which
    * have no B-frame concept in this server's encoder args. */
   bFrames?: boolean;
+  /** RTSP Digest algorithm this session's bridge (rtspOverWebSocket/server.ts) challenges with —
+   * default 'MD5' when omitted, matching every real camera this player has been tested against
+   * (see MEMORY.md). 'SHA-256' makes the bridge send an unquoted `algorithm=SHA-256` in its
+   * WWW-Authenticate challenge (RFC 7616 §3.3) and verify the response with SHA-256 instead of
+   * MD5 (rtspOverWebSocket/digest.ts) — since no real device available for testing offers
+   * RFC 7616's SHA-256 mode, this is this repo's only way to exercise the player's SHA-256 digest
+   * path (util/DigestGenerator.ts) end-to-end against a real Digest exchange. Ignored entirely
+   * when `username`/`password` are empty (no-auth session) — there is no challenge to choose an
+   * algorithm for. */
+  digestAlgorithm?: 'MD5' | 'SHA-256';
 }
 
 export type SessionStatus = 'starting' | 'live' | 'stopped' | 'failed';

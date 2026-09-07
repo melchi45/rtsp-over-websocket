@@ -65,32 +65,39 @@ export class DigestGenerator {
     this.nc += 1;
   }
 
+  /**
+   * Per RFC 7616 §3.4.1/§3.4.3 (which RFC 7826 §19.1.1 mandates RTSP Digest
+   * auth follow instead of RFC 2617): whether the qop-based response formula
+   * applies depends on `qop` alone — `algorithm`/`opaque` presence is
+   * unrelated to which formula to use, they're independent challenge fields.
+   */
   Digest(): string {
     const data = this.authenticateData!;
-    const type: HashType =
-      data.Algorithm === 'MD5' || typeof data.Algorithm === 'undefined' || data.Algorithm === null ? 'MD5' : 'SHA256';
+    const type: HashType = typeof data.Algorithm !== 'string' || data.Algorithm.toUpperCase() === 'MD5' ? 'MD5' : 'SHA256';
     const ha1 = this.digestSchema(type, `${data.username}:${data.Realm}:${data.password}`);
     const ha2 = this.digestSchema(type, `${data.Method}:${decodeURIComponent(data.Uri)}`);
     let response: string;
     this.generateClientNonce();
 
-    if (
-      typeof data.Qop !== 'undefined' &&
-      data.Qop !== null &&
-      typeof data.Algorithm !== 'undefined' &&
-      data.Algorithm !== null &&
-      typeof data.Opaque !== 'undefined' &&
-      data.Opaque !== null
-    ) {
+    if (typeof data.Qop !== 'undefined' && data.Qop !== null && data.Qop !== '') {
       const input = `${ha1}:${data.Nonce}:${decimalToHex(this.nc, 8)}:${this.cnonce}:${data.Qop}:${ha2}`;
       response = this.digestSchema(type, input);
-      console.log('input string:', input);
     } else {
       response = this.digestSchema(type, `${ha1}:${data.Nonce}:${ha2}`);
     }
     return response;
   }
 
+  /**
+   * Field emission per RFC 7616 §3.4 (RFC 7826 §19.1.1 defers RTSP Digest to
+   * this, not RFC 2617): `algorithm`/`opaque` are echoed back independently,
+   * whenever the server's challenge supplied them — neither depends on the
+   * other or on `qop` being present. `nc`/`cnonce`/`qop` are emitted
+   * together, gated on `qop` alone, since they only exist to support the
+   * qop-based response formula (see `Digest()`). Per §3.4.5, `algorithm`,
+   * `qop`, and `nc` are unquoted tokens — unlike every other field here,
+   * which use quoted-string syntax.
+   */
   getAuthenticate(data?: AuthenticateData | null, response?: string | null): string {
     if (data !== undefined && data !== null) {
       this.authenticateData = data;
@@ -98,24 +105,23 @@ export class DigestGenerator {
     const responseValue = typeof response === 'undefined' || response === null ? this.Digest() : response;
 
     const auth = this.authenticateData!;
+    const hasQop = typeof auth.Qop !== 'undefined' && auth.Qop !== null && auth.Qop !== '';
+
     let authentication = 'Authorization: Digest';
     authentication += ` username="${auth.username}"`;
     authentication += `, realm="${auth.Realm}"`;
     authentication += `, uri="${decodeURIComponent(auth.Uri)}"`;
     authentication += `, nonce="${auth.Nonce}"`;
-    if (
-      typeof auth.Qop !== 'undefined' &&
-      auth.Qop !== null &&
-      typeof auth.Algorithm !== 'undefined' &&
-      auth.Algorithm !== null &&
-      typeof auth.Opaque !== 'undefined' &&
-      auth.Opaque !== null
-    ) {
-      authentication += `, algorithm="${auth.Algorithm}"`;
+    if (typeof auth.Algorithm === 'string' && auth.Algorithm !== '') {
+      authentication += `, algorithm=${auth.Algorithm}`;
+    }
+    if (typeof auth.Opaque === 'string' && auth.Opaque !== '') {
       authentication += `, opaque="${auth.Opaque}"`;
-      authentication += `, nc="${decimalToHex(this.nc, 8)}"`;
+    }
+    if (hasQop) {
+      authentication += `, nc=${decimalToHex(this.nc, 8)}`;
       authentication += `, cnonce="${this.cnonce}"`;
-      authentication += `, qop="${auth.Qop}"`;
+      authentication += `, qop=${auth.Qop}`;
     }
     authentication += `, response="${responseValue}"\r\n`;
     return authentication;
@@ -159,8 +165,14 @@ export class DigestGenerator {
     if ((pos = authenticateString.search(/opaque="/gi)) !== -1) {
       parserData.opaque = authenticateString.substr(pos + 6).split('"')[1];
     }
-    if ((pos = authenticateString.search(/algorithm="/gi)) !== -1) {
-      parserData.algorithm = authenticateString.substr(pos + 9).split('"')[1];
+    // Per RFC 7616 §3.3 (which RFC 7826 §19.1.1 has RTSP Digest follow), the
+    // challenge's `algorithm` value is an UNQUOTED token (e.g.
+    // `algorithm=SHA-256`) — unlike realm/nonce/opaque/qop, which are all
+    // quoted. `"?...?"` tolerates a quoted form too, defensively, in case a
+    // server gets this wrong.
+    const algorithmMatch = authenticateString.match(/algorithm\s*=\s*"?([^",\s]+)"?/i);
+    if (algorithmMatch !== null) {
+      parserData.algorithm = algorithmMatch[1];
     }
     if ((pos = authenticateString.search(/qop="/gi)) !== -1) {
       parserData.qop = authenticateString.substr(pos + 3).split('"')[1];

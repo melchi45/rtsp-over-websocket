@@ -12,6 +12,7 @@
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-09-04 | Added §13 (ONVIF metadata overlay) |
 | 2026-09-04 | Corrected TC-PLY-112 (Transformation is NOT applied) and updated TC-PLY-113/114/115 for the SVG -> `<div>` rendering surface change |
+| 2026-09-07 | Added TC-SRV-022c/022d for the new `digestAlgorithm` session field (SRS.md REQ-SRV-010/REQ-SRV-043) |
 
 ---
 
@@ -97,6 +98,8 @@ Legend: **Auto** = covered by an existing automated test · **Manual** = exercis
 | TC-SRV-022 | REQ-SRV-010 | — | `POST /api/sessions` with `audioBitrateKbps: 0` | `400` | Manual |
 | TC-SRV-022a | REQ-SRV-010 | — | `POST /api/sessions` with `username: "tester", password: ""` (one empty, one not) | `400`, error names both fields | Manual — verified 2026-08-25 |
 | TC-SRV-022b | REQ-SRV-010, REQ-SRV-043a | — | `POST /api/sessions` with `username: "", password: ""` | `201`; created session's `request.username` is `""` | Manual — verified 2026-08-25 |
+| TC-SRV-022c | REQ-SRV-010 | — | `POST /api/sessions` with `digestAlgorithm: "AES-256"` (unrecognized) | `400`, error names `digestAlgorithm` | Manual — verified 2026-09-07 |
+| TC-SRV-022d | REQ-SRV-010, REQ-SRV-043 | — | `POST /api/sessions` with `digestAlgorithm: "SHA-256"` and non-empty `username`/`password` | `201`; created session's `request.digestAlgorithm` is `"SHA-256"`; a subsequent RTSP connection on that session's channel gets challenged with an unquoted `algorithm=SHA-256` and authenticates successfully with a SHA-256-computed response | Manual — verified 2026-09-07 (see MEMORY.md for the full player-side trace) |
 | TC-SRV-023 | REQ-SRV-012 | Requested `videoCodec` unsupported by installed `ffmpeg` | `POST /api/sessions` with that codec | `422`, message references `GET /api/capabilities` | Manual |
 | TC-SRV-024 | REQ-SRV-013 | Valid body, unreachable `youtubeUrl` | `POST /api/sessions` | `502` | Manual |
 | TC-SRV-025 | REQ-SRV-014 | Fully valid body | `POST /api/sessions` | `201`, body has `status: "starting"`, no `password` field; session later transitions to `live` (poll `GET /api/sessions/:id`) | Manual |

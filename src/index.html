@@ -598,6 +598,10 @@
                         <button id="btn-toggle-yt-password" type="button">Show</button>
                       </span>
                     </label>
+                    <label class="checkbox-field" id="yt-sha256-auth-field"
+                      ><input id="yt-sha256-auth" type="checkbox" />
+                      SHA-256 auth <span class="field-note">(RFC 7826/RFC 7616 Digest — off challenges with MD5, same as every real camera tested so far)</span>
+                    </label>
                   </div>
                 </div>
 
@@ -2247,11 +2251,19 @@
         // what gets sent — this handler only keeps the inputs' disabled state
         // and the Player tab's live-synced fields in step with it.
         var ytAuthToggle = document.getElementById('yt-auth-toggle');
+        // ---- SHA-256 auth toggle — off by default (MD5, matching every
+        // real camera tested so far); only meaningful while the "Use" toggle
+        // above is on, since there's no Digest challenge at all otherwise.
+        // Lets the bridge (rtspOverWebSocket/server.ts) exercise the
+        // player's RFC 7616 SHA-256 digest path (util/DigestGenerator.ts)
+        // end-to-end, which no real device available for testing offers.
+        var ytSha256AuthCheckbox = document.getElementById('yt-sha256-auth');
         function updateAuthFieldsAvailability() {
           var enabled = ytAuthToggle.checked;
           ytUsernameInput.disabled = !enabled;
           ytPasswordInput.disabled = !enabled;
           btnToggleYtPassword.disabled = !enabled;
+          ytSha256AuthCheckbox.disabled = !enabled;
         }
         ytAuthToggle.addEventListener('change', function () {
           updateAuthFieldsAvailability();
@@ -2373,6 +2385,7 @@
           // with the "Use" toggle off (no RTSP Digest auth) — reflect that
           // back into the toggle rather than leaving a stale checked state.
           ytAuthToggle.checked = !!s.request.username;
+          ytSha256AuthCheckbox.checked = s.request.digestAlgorithm === 'SHA-256';
           updateAuthFieldsAvailability();
           ytUsernameInput.value = s.request.username;
           form.username.value = s.request.username;
@@ -2443,6 +2456,7 @@
               ((s.request.videoCodec === 'H264' || s.request.videoCodec === 'H265') ? (s.request.bFrames === false ? ' (no B-frames)' : ' (B-frames)') : '') +
               ' / ' + s.request.audioCodec + ' ' + s.request.audioBitrateKbps + 'kbps' +
             '</span>' +
+            (s.request.username ? '<span>auth: ' + (s.request.digestAlgorithm === 'SHA-256' ? 'SHA-256' : 'MD5') + '</span>' : '') +
             '<span style="width: 100%">WebSocket: ' + wsUrlForCurrentServer() + '</span>';
           if (s.error) {
             parts += '<span style="color: var(--error)">' + s.error + '</span>';
@@ -2496,7 +2510,8 @@
             // see CreateSessionRequest.username's comment in src/server/types.ts.
             username: ytAuthToggle.checked ? document.getElementById('yt-username').value : '',
             password: ytAuthToggle.checked ? document.getElementById('yt-password').value : '',
-            bFrames: bFramesCheckbox.checked
+            bFrames: bFramesCheckbox.checked,
+            digestAlgorithm: ytAuthToggle.checked && ytSha256AuthCheckbox.checked ? 'SHA-256' : 'MD5'
           };
           // Entered as 1-based, same as the Player tab's Channel field, and
           // converted to 0-based (the wire value — see Session.channel in

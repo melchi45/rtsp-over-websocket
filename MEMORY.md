@@ -4403,3 +4403,144 @@ unit tests (`debugLog.test.ts`'s `isLevelEnabled`/`createDebugLogger` suites now
 against the real camera for this specific change (a live check would just confirm "zero packet
 noise, same as before" for a default that's simple, well-covered by existing unit tests, and
 mechanically identical to the already-live-verified level-switching behavior from the entry above).
+
+## RTSP Digest auth (`DigestGenerator.ts`/`RtspClient.ts`) rewritten for real RFC 7616 compliance
+
+The user asked, after a general "why is it using MD5 instead of SHA256" question, to make sure the
+digest-auth implementation actually satisfies **RFC 7826** (RTSP 2.0). Checked RFC 7826 §19.1.1
+directly (fetched the real RFC text, not assumed from memory) rather than guessing: it says RTSP
+Digest auth must "follow those defined in [RFC 7616]" specifically — **not** RFC 2617, which is
+what `docs/player/02-network.md`'s `DigestGenerator` section had been citing as the primary
+reference up to this point (with RFC 7616's SHA-256 support noted only as a bolt-on "point of
+divergence"). Re-read RFC 7616's actual text next (also fetched directly, including its §3.9.1
+worked example) and cross-checked the existing code against it line by line — found four real bugs,
+not stylistic gaps, all previously *documented* in `docs/player/02-network.md` as "known
+quirks"/"stricter than spec requires" without anyone having actually checked whether that stricter
+behavior was still spec-conformant:
+
+1. **`parseWWWAuthenticate()` searched for a quoted `algorithm="..."` in the challenge, but RFC
+   7616 §3.3 specifies `algorithm` as an UNQUOTED token** (`algorithm=SHA-256`, confirmed
+   character-for-character against §3.9.1's own example — `qop`/`realm`/`nonce`/`opaque` in the
+   same challenge ARE quoted, `algorithm` uniquely isn't). This is the headline bug: a real,
+   spec-compliant camera offering SHA-256 could never have that offer recognized at all — the
+   regex literally can't match, `algorithm` silently stays `null`, and the code falls through to
+   MD5 every single time, regardless of what the server actually advertised. This looked, from the
+   outside, exactly like "the player always uses MD5" — which is precisely the symptom the user
+   originally reported.
+2. **`formDigestAuthHeader()`'s challenge-folding required `Qop`/`Algorithm`/`Opaque` to ALL be
+   present together** before honoring any of them — RFC 7616 §3.3 treats these as three independent
+   challenge fields (`opaque` is explicitly optional; a server can send `qop`+`algorithm` with no
+   `opaque` at all, which is common). `DigestGenerator.Digest()`'s qop-vs-simple-formula selection
+   had the identical bug (gated on all three instead of `qop` alone, per RFC 7616 §3.4.1/§3.4.3).
+3. **`getAuthenticate()` quoted `algorithm`/`qop`/`nc` in the outgoing `Authorization` header** —
+   RFC 7616 §3.4.5 requires those three specifically be UNQUOTED tokens, unlike every other field
+   there (`username`/`realm`/`nonce`/`uri`/`response`/`cnonce`/`opaque`, which stay quoted). Many
+   real servers are lenient about this, which is likely why it went unnoticed against the one real
+   camera available for testing.
+4. **Multi-challenge selection was "last `WWW-Authenticate` line wins," not RFC 7616 §3.7's
+   "server lists challenges most-preferred-first, client uses the first one it understands."** Also
+   fixed: a challenge's `qop` value is a quoted, comma-separated *list* (`qop="auth, auth-int"`) —
+   the old code passed this raw list straight through as if it were the single-token value the
+   `Authorization` response's own `qop=` field requires; `RtspClient.ts`'s new
+   `selectSupportedQop()` now picks `"auth"` from the list (the only mode actually implemented —
+   `Digest()`'s A2 never folds in an entity-body hash for `"auth-int"`).
+
+Fix: `RtspClient.formDigestAuthHeader()` gained `SUPPORTED_DIGEST_ALGORITHMS`
+(`MD5`/`SHA-256`, case-insensitive) and `selectSupportedQop()`, and now filters `digestInfo` to
+real Digest challenges (`method` matches `/digest/i` and `nonce` non-empty — guards against the
+naive header-line slice picking up trailing non-challenge text as a spurious "challenge" with
+everything `null`) before picking the first understood one and copying its fields independently.
+`DigestGenerator.Digest()`/`getAuthenticate()`/`parseWWWAuthenticate()` fixed as described above.
+Added two `debugLog.debug()` trace points in `formDigestAuthHeader()` (challenges offered, and the
+one selected) plus one logging the built `Authorization` header text, all gated through the
+existing `debug` system from the prior phase of this session.
+
+New `DigestGenerator.test.ts` (14 tests) verifies algorithm selection, response-formula selection,
+`getAuthenticate()`'s quoted-vs-unquoted field shape, and `parseWWWAuthenticate()`'s unquoted-
+algorithm parsing — several assertions built directly from RFC 7616 §3.9.1's own worked
+username/realm/nonce/response values, not just internally-consistent round-trips. Full suite green
+(129 tests, `tsc -b` clean, production build clean).
+
+**Live-verified against the real Wisenet camera** (same one used throughout this session,
+`192.168.214.39`, credentials in `.env`/scratch scripts only, never committed) via Playwright driving
+a real Windows-side Edge over CDP (this sandbox's own WSL networking can't reach that camera's LAN
+directly — confirmed via a timed-out `ping`/`/dev/tcp` — but the Windows host it runs alongside
+can; a plain static file server was started under Windows' own `node.exe`, outside the repo, to work
+around WSL→Windows `localhost` forwarding not working reliably for the demo server's own port in
+this environment, given the two run in **mirrored** WSL networking mode where address routing
+between the two sides can be inconsistent per-port). Result: full `Options → 401 → digest-retry (200)
+→ Describe → Setup → Play → Playing` sequence succeeded, live video rendered (screenshot captured).
+This particular camera's own challenge has **no `algorithm=` at all** (`hasOpaque=false` too) — so
+this run exercises the "algorithm absent → default to MD5, `Qop` honored independently of
+`Algorithm`/`Opaque`" path, not the new SHA-256 path (no SHA-256-capable RTSP device was available
+to test against) — but it's the decisive regression check: the exact real-world shape that was
+already working before this change (MD5, qop present, algorithm+opaque both absent) still works
+identically after it, end-to-end, not just in isolated unit tests.
+
+**How to apply**: when a codebase's own docs describe spec-adjacent behavior as a deliberately
+"stricter than spec" or "known quirk" choice, that framing itself deserves a second look against
+the actual RFC text before being taken as settled — this doc's own prior wording for bugs (2) and
+(4) above ("stricter than RFC 2617 technically requires") was itself evidence nobody had actually
+verified it against a real RFC section number, just noticed the divergence and rationalized it as
+intentional. Fetching the actual RFC text (`curl` the plaintext `.txt` RFC — the `WebFetch` tool's
+own small-model summarizer truncated large RFCs well before reaching the relevant section on this
+same task, `curl`+`Read`/`grep` did not) and checking a real worked example character-for-character
+is worth the extra step whenever "does this satisfy RFC X" is asked directly, rather than pattern-
+matching from general HTTP-auth knowledge — the unquoted-`algorithm=` bug in particular would not
+have been found without that direct text check, since "algorithm values are usually written in
+quotes somewhere" is an easy, wrong, and highly plausible-sounding assumption.
+
+## Demo server: `digestAlgorithm` session option to test-drive the player's SHA-256 digest path
+
+Direct follow-up to the RFC 7616 digest-auth fix above. The real Wisenet camera used for live
+verification only ever offers MD5 (no `algorithm=` at all in its challenge), so the fix's new
+SHA-256 selection/hashing path had only ever been checked by unit tests, never against a real
+Digest challenge/response round trip. The user asked whether the demo page could add a toggle to
+make its own RTSP server side use SHA-256, specifically to close that gap — and it can, because
+unlike the real camera, **this repo's own RTSP-over-WebSocket bridge (`src/server/rtspOverWebSocket/`)
+is code this repo controls**, not a third-party device's firmware.
+
+Added `CreateSessionRequest.digestAlgorithm?: 'MD5' | 'SHA-256'` (`src/server/types.ts`, default
+`'MD5'`), validated in `sessionRoutes.ts` the same way as the existing optional `bFrames` field.
+`rtspOverWebSocket/digest.ts`'s `verifyDigest()` gained an `algorithm` parameter (default `'MD5'`)
+selecting `node:crypto`'s `sha256` vs `md5` for HA1/HA2/response — still qop-less either way, since
+this bridge's challenge never sends `qop` regardless of algorithm (deliberate — see the function's
+own doc comment on why: avoids needing server-side nc/cnonce session state for what's effectively a
+loopback-adjacent relay). `rtspOverWebSocket/server.ts`'s `challenge()` now appends an **unquoted**
+`, algorithm=SHA-256` to the `WWW-Authenticate` line when the session opted in — unquoted
+specifically to match RFC 7616 §3.3 and exercise the exact `parseWWWAuthenticate()` parsing path
+that was just fixed player-side, not just wire a working-by-coincidence quoted form.
+
+`src/index.html`'s Server tab (Transcoding settings → Connection info) gained a "SHA-256 auth"
+checkbox next to Session Username/Password — disabled whenever the existing "Use" auth toggle is
+off (no auth session ⇒ no challenge ⇒ nothing for it to select), reflected back into the checkbox
+when loading an already-running session's settings (mirroring `bFramesCheckbox`'s existing
+pattern), and echoed into the session-status summary line (`auth: SHA-256`/`auth: MD5`, only shown
+for an authenticated session).
+
+**Live-verified end-to-end, entirely within this sandbox this time** (unlike the real-camera
+verification above, this needs no Windows-side detour — the whole path is this repo's own local
+YouTube-transcode pipeline, reachable directly from this WSL environment): started a session via
+Playwright with the SHA-256 checkbox checked, connected the Player tab to it with `debug =
+{level:'debug', network:['RtspClient']}`. Console trace confirmed: `challenges offered
+[[method=Digest algorithm=SHA-256 qop=null]]` → `selected challenge algorithm=SHA-256 qop=none
+hasOpaque=false` → a built `Authorization` header with unquoted `algorithm=SHA-256` and a SHA-256
+`response` value → `ResponseCode: 200` on both the OPTIONS/DESCRIBE and SETUP retries → reached
+`Playing`. This is the first real (non-unit-test) confirmation that the SHA-256 selection, hashing,
+and header-formatting fix actually interoperates with a real Digest challenge/response exchange,
+not just RFC 7616's own worked example numbers.
+
+Separately, this same run hit an unrelated `Fail to append frame buffer to source buffer from
+videoTagPlayer ... HTMLMediaElement.error attribute is not null` MediaSource error after reaching
+`Playing`, which then triggered a tight disconnect/reconnect loop. Not investigated — it's a
+video-tag MSE playback issue (headless-Chromium-specific H.264 profile/level quirk is the likely
+culprit, unconfirmed), orthogonal to the Digest-auth exchange that had already completed
+successfully (200 OK, `Playing` state reached) before this occurred. Worth a look if this
+`digestAlgorithm` toggle is used again and playback itself needs verifying, not just the auth
+handshake.
+
+**How to apply**: when a fix's correctness has only been machine-checked (unit tests, RFC-example
+arithmetic) and the one real device available for live verification can't exercise the new branch,
+look for a controlled/self-owned counterpart that can be made to exercise it deliberately — this
+repo's own demo server was already sitting right there as exactly that, rather than treating "no
+SHA-256-capable camera available" as a hard stop on live-verifying the SHA-256 path at all.

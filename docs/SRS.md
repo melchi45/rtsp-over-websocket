@@ -14,6 +14,7 @@ test cases.*
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-09-04 | Added §4.10 (ONVIF metadata overlay) — REQ-PLY-110 through REQ-PLY-116 |
 | 2026-09-04 | Corrected REQ-PLY-112 — real device data proved `Transformation` must NOT be applied to `Shape` coordinates, reversing the requirement's original direction |
+| 2026-09-07 | REQ-SRV-010/REQ-SRV-043 updated for the new optional `digestAlgorithm` (`'MD5'`/`'SHA-256'`) session field — lets the demo server's own RTSP Digest bridge exercise the player's RFC 7616 SHA-256 path, since no real camera available for testing offers it. See `MEMORY.md`. |
 
 ---
 
@@ -36,7 +37,7 @@ requirements describe.
 | Channel | Numeric identifier a Player connects to; 1-based in the `channel` attribute/UI, 0-based on the wire and in `Session.channel` |
 | Bridge | `src/server/rtspOverWebSocket/server.ts` — the WebSocket ⇄ RTSP relay |
 | IDR / keyframe | A self-contained video frame decodable without prior frames — required before a decoder can start producing output |
-| Digest auth | RTSP Digest (MD5, no `qop`) authentication, per RFC 2617 §3.2.2 simple mode |
+| Digest auth | RTSP Digest (MD5 default, or SHA-256 per-session via `digestAlgorithm`; no `qop` either way), the RFC 2617 §3.2.2 / RFC 7616 §3.4.1 qop-less "simple mode" formula |
 
 ## 3. System overview
 
@@ -195,7 +196,9 @@ section) into `{ xml, json }` and dispatches it as the public `meta` event. This
   of the fixed resolution ladder), `videoCodec` (one of `MJPEG`/`H264`/`H265`/`AV1`/`VP8`/`VP9`), `audioCodec` (one
   of `OPUS`/`AAC`/`G711`/`G726`), `audioBitrateKbps` (1–512), `username`/`password` (each a string; MUST be either
   both empty — an unauthenticated session, REQ-SRV-043a — or both non-empty, never one empty and the other not),
-  and an optional non-negative-integer `channel`. Any violation MUST return `400` with a descriptive `error`.
+  an optional non-negative-integer `channel`, and an optional `digestAlgorithm` (`'MD5'` default, or `'SHA-256'` —
+  selects which algorithm the bridge's RTSP Digest challenge, REQ-SRV-043, uses; irrelevant and ignored when
+  `username`/`password` are empty). Any violation MUST return `400` with a descriptive `error`.
 - **REQ-SRV-011**: If `channel` is given and already occupied by a `starting`/`live` session, the request MUST
   return `409`. If occupied by a `stopped`/`failed` session, that session MUST be deleted and the channel reused.
 - **REQ-SRV-012**: If the installed `ffmpeg` build has no encoder for the requested `videoCodec`/`audioCodec`, the
@@ -248,7 +251,10 @@ section) into `{ xml, json }` and dispatches it as the public `meta` event. This
   then close with code `1008`.
 - **REQ-SRV-043**: The bridge MUST challenge every unauthenticated/incorrectly-authenticated request with RTSP
   Digest (`401` + a fresh nonce per challenge), verified against **that session's own** `username`/`password`
-  (never a shared/global credential) — except as carved out by REQ-SRV-043a.
+  (never a shared/global credential) — except as carved out by REQ-SRV-043a. The challenge MUST use MD5 by
+  default, or, if the session's `digestAlgorithm` (REQ-SRV-010) is `'SHA-256'`, MUST include an unquoted
+  `algorithm=SHA-256` (RFC 7616 §3.3) in the `WWW-Authenticate` line and verify the response with SHA-256 instead
+  of MD5.
 - **REQ-SRV-043a**: If a session's `username`/`password` are both empty (REQ-SRV-010), the bridge MUST skip the
   Digest challenge entirely for connections on that session's channel and proceed directly to relaying from the
   first request, with no `401` ever sent.

@@ -63,6 +63,11 @@ End-to-end walkthrough of what happens between the demo page's Server and Player
    asynchronously in the background. `username`/`password` may both be left as empty strings to start the session
    with **no RTSP Digest auth at all** — the demo page's Server tab exposes this as the "Use" toggle next to
    Session Username (on by default); one empty and the other non-empty is rejected. There is no partial-auth state.
+   An optional `digestAlgorithm` (`'MD5'` default, or `'SHA-256'`) picks which algorithm the bridge challenges
+   with — the Server tab's "SHA-256 auth" checkbox (only enabled while "Use" is on) sets this. It exists because
+   no real camera available for testing this player against actually offers RFC 7616 SHA-256 Digest auth (see
+   `src/player/util/DigestGenerator.ts`'s player-side support); this is the only way to exercise that code path
+   end-to-end against a real challenge/response exchange rather than only in unit tests.
 3. **Transcode reaches MediaMTX** — `yt-dlp`'s stdout is piped directly into `ffmpeg`'s stdin; `ffmpeg` encodes to
    the requested codec/resolution and publishes to `rtsp://127.0.0.1:8554/<sessionId>` on MediaMTX. The first
    `frame=` line in `ffmpeg`'s stderr flips the session to `status: "live"`; no output within 20s (or a process
@@ -70,7 +75,8 @@ End-to-end walkthrough of what happens between the demo page's Server and Player
 4. **Player connects** — the `<rtsp-over-websocket>` element opens `ws(s)://<host>:<port>/StreamingServer` and
    sends an RTSP `DESCRIBE` whose URI embeds the channel number (`channel` attribute, 1-based in markup, 0-based on
    the wire). The bridge reads that channel, looks up the matching session, and challenges with RTSP Digest
-   (`401` + nonce) using **that session's own username/password** — not real camera credentials — unless the
+   (`401` + nonce, plus an unquoted `algorithm=SHA-256` per RFC 7616 §3.3 if the session's `digestAlgorithm` was
+   set to `'SHA-256'`) using **that session's own username/password** — not real camera credentials — unless the
    session was created with empty username/password, in which case the bridge skips the challenge entirely and
    relays from the first request. The player itself never needs `username`/`password` attributes set for this: it
    only ever answers a challenge reactively (RtspClient's digest header stays empty until a `401` asks for one), so
