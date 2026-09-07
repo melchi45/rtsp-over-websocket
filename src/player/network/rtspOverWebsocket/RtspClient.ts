@@ -1,7 +1,7 @@
 import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError';
 import { RTSPError } from '../../exceptions/RTSPError';
 import { RtspStatusCode } from '../RtspStatusCode';
-import { DigestGenerator, type AuthenticateData, type ParsedWwwAuthenticate } from '../../util/DigestGenerator';
+import { DigestGenerator, computeDigestResponseCandidates, type AuthenticateData, type ParsedWwwAuthenticate } from '../../util/DigestGenerator';
 import { fromHex, decimalToHex } from '../../util/hex';
 import { Transport } from '../transport/Transport';
 import { createDebugLogger, type DebugConfig, type DebugLogger, NOOP_DEBUG_LOGGER } from '../../util/debugLog';
@@ -1045,7 +1045,34 @@ export class RtspClient {
           } else {
             responseValue = response.Response;
           }
-          this.Authentication = this.digestGenerator.getAuthenticate(data, responseValue as string);
+          // Confirmed live against two real devices that a device's own
+          // digestauth CGI does not reliably honor the Qop/Nc/Cnonce hints
+          // passed to it above: one computes the qop-based response
+          // correctly from them, the other silently ignores them and always
+          // returns the plain (qop-less) response instead -- not an error
+          // either way, just a different (and undeclared) answer. Building
+          // the final Authorization header with a `qop` shape that doesn't
+          // match whichever formula actually produced `responseValue` gets
+          // it rejected by the real RTSP server every time, so which shape
+          // to use is decided here per-response, by recomputing both
+          // candidates locally (data.password is already in hand -- it was
+          // just sent to the CGI above) and matching against whichever one
+          // the device actually returned, rather than assuming either shape
+          // universally. The local (non-SUNAPI) path above needs none of
+          // this: it computes its own qop-based response correctly and
+          // always builds a header that matches it.
+          let dataForHeader: AuthenticateData & { Nc?: string; Cnonce?: string } = data;
+          if (typeof data.Qop === 'string' && data.Qop !== '' && typeof responseValue === 'string') {
+            const candidates = computeDigestResponseCandidates(data, data.Nc!, data.Cnonce!);
+            if (responseValue === candidates.plain && responseValue !== candidates.qopBased) {
+              this.debugLog.debug('formDigestAuthHeader() -> sunapiClient.get() response matched the qop-less formula -> omitting qop from the header');
+              const { Qop: _unusedQop, ...withoutQop } = data;
+              dataForHeader = withoutQop;
+            } else {
+              this.debugLog.debug('formDigestAuthHeader() -> sunapiClient.get() response matched the qop-based formula -> keeping qop in the header');
+            }
+          }
+          this.Authentication = this.digestGenerator.getAuthenticate(dataForHeader, responseValue as string);
           this.SendUnauthorizedRtspCmd();
         },
         (errorCode) => {

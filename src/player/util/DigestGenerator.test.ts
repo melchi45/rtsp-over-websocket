@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import CryptoJS from 'crypto-js';
-import { DigestGenerator, type AuthenticateData } from './DigestGenerator';
+import { DigestGenerator, computeDigestResponseCandidates, resolveDigestHashType, type AuthenticateData } from './DigestGenerator';
 
 function baseData(overrides: Partial<AuthenticateData> = {}): AuthenticateData {
   return {
@@ -150,6 +150,64 @@ describe('DigestGenerator', () => {
       const generator = new DigestGenerator();
       const parsed = generator.parseWWWAuthenticate('Digest realm="r", nonce="n", qop="auth"');
       expect(parsed.algorithm).toBeNull();
+    });
+  });
+
+  describe('resolveDigestHashType()', () => {
+    it('defaults to MD5 when algorithm is absent/null/undefined', () => {
+      expect(resolveDigestHashType(undefined)).toBe('MD5');
+      expect(resolveDigestHashType(null)).toBe('MD5');
+    });
+
+    it('resolves MD5 case-insensitively', () => {
+      expect(resolveDigestHashType('MD5')).toBe('MD5');
+      expect(resolveDigestHashType('md5')).toBe('MD5');
+    });
+
+    it('treats any other non-empty value as SHA-256', () => {
+      expect(resolveDigestHashType('SHA-256')).toBe('SHA256');
+      expect(resolveDigestHashType('SHA-512-256')).toBe('SHA256');
+    });
+  });
+
+  describe('computeDigestResponseCandidates() — SUNAPI-delegated response-shape detection', () => {
+    // Shape (username/realm/method/nonce/qop/nc/cnonce) matches a real
+    // exchange captured live against two actual devices whose SUNAPI
+    // `security.cgi?msubmenu=digestauth&action=view` helper endpoints
+    // disagree on whether they honor the Qop/Nc/Cnonce hints they're given
+    // (see RtspClient.ts's formDigestAuthHeader() SUNAPI branch and
+    // MEMORY.md) — one computes the qop-based response correctly, the
+    // other silently always returns the plain one instead. Host/credentials
+    // replaced with placeholders; expected hashes recomputed to match.
+    const data: AuthenticateData = {
+      username: 'admin',
+      Realm: 'TestRealm',
+      password: 'hunter2',
+      Method: 'OPTIONS',
+      Uri: 'rtsp://camera.example.org/0/H.264/media.smp',
+      Nonce: '56FCB6476C07FE606E48D0F7F107C2FB',
+      Qop: 'auth'
+    };
+    const nc = '00000001';
+    const cnonce = '0rUb8Lj5';
+
+    it('computes the plain formula matching a device that ignores Qop/Nc/Cnonce', () => {
+      const candidates = computeDigestResponseCandidates(data, nc, cnonce);
+      expect(candidates.plain).toBe('cc901c489b5762ad21143d00d1997a91');
+    });
+
+    it('computes the qop-based formula matching a device that honors Qop/Nc/Cnonce', () => {
+      const candidates = computeDigestResponseCandidates(data, nc, cnonce);
+      expect(candidates.qopBased).toBe('b258b0b458de7893ab1c2b2fd800e391');
+    });
+
+    it('the two candidates are never equal for a real qop-bearing challenge', () => {
+      const candidates = computeDigestResponseCandidates(data, nc, cnonce);
+      expect(candidates.plain).not.toBe(candidates.qopBased);
+    });
+
+    it('is pure -- repeated calls with the same inputs return the same result', () => {
+      expect(computeDigestResponseCandidates(data, nc, cnonce)).toEqual(computeDigestResponseCandidates(data, nc, cnonce));
     });
   });
 });

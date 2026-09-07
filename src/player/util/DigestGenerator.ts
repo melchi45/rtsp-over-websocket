@@ -32,6 +32,45 @@ function decimalToHex(dec: number, padding = 2): string {
   return hex;
 }
 
+function hashWith(type: HashType, str: string): string {
+  return type === 'MD5' ? CryptoJS.MD5(str).toString() : CryptoJS.SHA256(str).toString();
+}
+
+/**
+ * Resolves which hash algorithm a challenge's `algorithm` value selects —
+ * MD5 is the default (absent) and case-insensitive-`'MD5'` case, anything
+ * else non-empty is treated as SHA-256 (see `Digest()`'s own doc comment on
+ * why this is broader than RFC 7616's actual `algorithm` value set).
+ * Exported so callers besides `Digest()` (`RtspClient.ts`'s SUNAPI-delegated
+ * path) can compute a response candidate without duplicating this rule.
+ */
+export function resolveDigestHashType(algorithm: string | null | undefined): HashType {
+  return typeof algorithm !== 'string' || algorithm.toUpperCase() === 'MD5' ? 'MD5' : 'SHA256';
+}
+
+/**
+ * Computes both response formulas RFC 7616 §3.4.1 defines (qop-based and
+ * plain) for the same `data`/`nc`/`cnonce`, without touching `nc`/`cnonce`
+ * state the way `Digest()` does. Used by `RtspClient.ts`'s SUNAPI-delegated
+ * digest path to detect *which* formula a device's own digest-computing
+ * helper endpoint actually used for an externally-supplied response value —
+ * confirmed live against two real devices that this isn't a hypothetical:
+ * one's helper endpoint correctly honors the `Qop`/`Nc`/`Cnonce` it's given
+ * and returns the qop-based response, the other silently ignores them and
+ * always returns the plain one, and neither difference is discoverable
+ * except by comparing the returned value against both candidates.
+ */
+export function computeDigestResponseCandidates(data: AuthenticateData, nc: string, cnonce: string): { qopBased: string; plain: string } {
+  const type = resolveDigestHashType(data.Algorithm);
+  const ha1 = hashWith(type, `${data.username}:${data.Realm}:${data.password}`);
+  const ha2 = hashWith(type, `${data.Method}:${decodeURIComponent(data.Uri)}`);
+  const qop = data.Qop ?? '';
+  return {
+    qopBased: hashWith(type, `${ha1}:${data.Nonce}:${nc}:${cnonce}:${qop}:${ha2}`),
+    plain: hashWith(type, `${ha1}:${data.Nonce}:${ha2}`)
+  };
+}
+
 /**
  * Ported from the legacy player’s Util/digestGenerator (HTTP Digest auth per RFC 2617).
  * `makeNonceCount()` and the unused `infoWWWAuthenticate` parameter of `Digest()`
@@ -57,7 +96,7 @@ export class DigestGenerator {
   }
 
   digestSchema(type: HashType, str: string): string {
-    return type === 'MD5' ? CryptoJS.MD5(str).toString() : CryptoJS.SHA256(str).toString();
+    return hashWith(type, str);
   }
 
   generateClientNonce(): void {
@@ -73,7 +112,7 @@ export class DigestGenerator {
    */
   Digest(): string {
     const data = this.authenticateData!;
-    const type: HashType = typeof data.Algorithm !== 'string' || data.Algorithm.toUpperCase() === 'MD5' ? 'MD5' : 'SHA256';
+    const type: HashType = resolveDigestHashType(data.Algorithm);
     const ha1 = this.digestSchema(type, `${data.username}:${data.Realm}:${data.password}`);
     const ha2 = this.digestSchema(type, `${data.Method}:${decodeURIComponent(data.Uri)}`);
     let response: string;

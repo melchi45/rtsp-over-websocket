@@ -20,6 +20,7 @@ client, with concrete method behavior, wire framing, and RFC citations.*
 | 2026-09-04 | `RtspClient`/`Transport`/`AttributeService`/`SunapiClient`/`SunapiManager`/`SunapiRestClient` each gained a `debug`/`set debug()` gate (`util/debugLog.ts`, see `01-elements-interface-exceptions.md`'s new `debug` attribute and `08-util.md`) — `debug["network"]` in the JSON config, `true` for all six or an array of specific class names. `RtspClient`'s existing 11 `console.log('[RtspClient] ...')` calls and `AttributeService`'s 17 `console.log(...)` calls were migrated onto the new gated `this.debugLog(...)` (real `console.error` calls, in both files, are untouched); `Transport` gained new `Connect()`/`Disconnect()` trace points. `RtspClient` forwards the config to the `Transport` it constructs internally (`Connect()`, `transport.debug = this.debugConfig`) — `StreamPlayer`'s constructor is what actually sets `rtspClient.debug` in the first place (see `01`). `XmlParser` was deliberately **not** instrumented — its own doc comment states it's pure, stateless parsing helpers, and adding mutable debug state would work against that. |
 | 2026-09-04 | `RtspClient.set debug()` now also re-applies to `this.transport` immediately if one already exists (previously only reached the *next* `Transport` `Connect()` constructs) — live-refresh, requested directly by the user after finding a mid-stream `debug` change had no visible effect. See `01`/`03`'s matching History entries and `MEMORY.md` for the full per-class breakdown across the whole propagation chain. |
 | 2026-09-04 | `DigestGenerator`/`RtspClient` RTSP Digest auth rewritten to actually follow **RFC 7616** (per RFC 7826 §19.1.1's explicit instruction), not RFC 2617: fixed four real bugs found by checking RFC 7616's text directly (including its §3.9.1 worked example) — an unquoted-vs-quoted `algorithm=` challenge-parsing mismatch that silently hid any real SHA-256 offer behind an MD5 fallback, an all-or-nothing `Qop`/`Algorithm`/`Opaque` gate where the three are actually independent fields, the qop-formula-selection gate having the same bug, and unquoted `algorithm`/`qop`/`nc` in the `Authorization` response being sent quoted. Also fixed: multi-challenge selection now follows RFC 7616 §3.7 (first-understood-challenge-in-server-order, via new `SUPPORTED_DIGEST_ALGORITHMS`/`selectSupportedQop()` in `RtspClient.ts`) instead of "last challenge line wins"; a challenge's `qop` value (a quoted comma-separated list) is now parsed into a single chosen token instead of echoed back raw. New unit tests in `DigestGenerator.test.ts` verify against RFC 7616's own worked example. Live-verified against the real Wisenet camera used elsewhere in this doc's History — same successful MD5-based connection as before (this camera's own challenge has no `algorithm=` at all, so it exercises the "default to MD5, independent Qop/Opaque handling" path, not the new SHA-256 path — see `MEMORY.md`). |
+| 2026-09-07 | Found and fixed a real regression the above `Qop`-independence fix introduced for `RtspClient.ts`'s SUNAPI-delegated digest path specifically: a device's own `digestauth` helper endpoint doesn't necessarily honor the `Qop`/`Nc`/`Cnonce` hints it's given, and two real devices were confirmed live to disagree on this (one honors them, one silently doesn't) — new `resolveDigestHashType()`/`computeDigestResponseCandidates()` exports on `DigestGenerator.ts` let `RtspClient.ts` detect, per response, which formula a given device's endpoint actually used and shape the final `Authorization` header to match, rather than assuming either universally. Also fixed, unrelated pre-existing bug found along the way: `src/index.html`'s "Connect via SUNAPI Manager" flow set `.username` but never `.password` on the player element after a successful SUNAPI login, so every RTSP-level digest retry silently used an empty password. See `MEMORY.md` for the full live-verification trace (real MD5 hashes computed by hand and compared against both real devices' actual responses). |
 
 ---
 
@@ -193,10 +194,27 @@ recent history — see `retryWithCredentials()` below).
   also traced via `debugLog.debug()`) and calls `SendUnauthorizedRtspCmd()`; (b) if a
   `sunapiClient` is attached, it instead round-trips through a SUNAPI digest-auth-info endpoint
   (`/stw-cgi/security.cgi?msubmenu=digestauth&action=view`) to obtain a pre-computed `response`
-  value from the device itself, then calls `getAuthenticate(data, responseValue)` (skips local
-  hashing) before `SendUnauthorizedRtspCmd()`. If neither a password nor a `sunapiClient` is
-  available, reports error `0x0403` through the normal error callback (deliberately not thrown —
-  this runs inside the async `SendRtspCommand` response callback, outside any caller's try/catch).
+  value from the device itself. **Response-shape detection (added 2026-09-07):** confirmed live
+  against two real devices that this endpoint does not reliably honor the `Qop`/`Nc`/`Cnonce` query
+  parameters it's given — one computes the RFC 7616 qop-based response from them correctly, the
+  other silently ignores them and always returns the plain (qop-less) response instead, with no way
+  to tell which behavior a given device has without checking. Sending a `qop`-bearing Authorization
+  header built around a plain-formula response (or vice versa) gets rejected by the real RTSP
+  server every time, even with fully correct credentials — indistinguishable from a wrong password
+  from the outside, since both surface as a 401 that survives a credentials retry. So before
+  calling `getAuthenticate()`, the success callback now calls
+  `computeDigestResponseCandidates(data, data.Nc, data.Cnonce)` (`util/DigestGenerator.ts`) —
+  recomputing *both* candidate responses locally, using the same `data.password` just sent to the
+  endpoint — and compares the device's actual `responseValue` against them: a match against the
+  plain candidate (and not the qop-based one) strips `Qop` from what `getAuthenticate()` sees for
+  this call only (a destructured copy, `data` itself is untouched); anything else (including "no
+  `Qop` was even offered by the challenge" or "matches the qop-based candidate") keeps `data` as-is.
+  Two `debugLog.debug()` trace points log which shape was detected. Then calls
+  `getAuthenticate(dataForHeader, responseValue)` (skips local hashing — that's the whole point of
+  the SUNAPI round-trip) before `SendUnauthorizedRtspCmd()`. If neither a password nor a
+  `sunapiClient` is available, reports error `0x0403` through the normal error callback
+  (deliberately not thrown — this runs inside the async `SendRtspCommand` response callback,
+  outside any caller's try/catch).
 - `retryWithCredentials(username, password)` — **the redesigned no-reconnect 401 retry path.**
   Sets `id`/`pw` to the newly supplied credentials, resets `unahtuorizedCount = 0`, and re-invokes
   `formDigestAuthHeader(this.rtspUrl!)` — reusing the *same* cached `wwwAuthenticate` challenge
@@ -1451,6 +1469,18 @@ live-verification notes.
   (`/algorithm\s*=\s*"?([^",\s]+)"?/i`, tolerating a quoted form defensively) — RFC 7616 §3.3
   requires `algorithm` be unquoted in the challenge (confirmed against §3.9.1's own worked
   example: `algorithm=SHA-256,` with no surrounding quotes).
+- `resolveDigestHashType(algorithm)` (module-level export, added 2026-09-07) — the same MD5-
+  default/`!== 'MD5'`-means-SHA256 rule `Digest()` uses for its own `type` selection, factored out
+  so `RtspClient.ts`'s SUNAPI-delegated path (see that class's Method Analysis) can compute a
+  response candidate with the exact same rule instead of duplicating it.
+- `computeDigestResponseCandidates(data, nc, cnonce)` (module-level export, added 2026-09-07) — a
+  side-effect-free counterpart to `Digest()`: computes *both* the qop-based and plain response
+  formulas for the given `data`/explicit `nc`/`cnonce` (unlike `Digest()`, never calls
+  `generateClientNonce()` — the caller's `nc`/`cnonce` are already fixed, e.g. already sent to an
+  external endpoint, and must not be perturbed). Exists solely so `RtspClient.ts`'s SUNAPI branch
+  can detect which formula a device's own digest-computing helper endpoint actually used for an
+  externally-supplied response value it can't otherwise inspect — see that class's Method Analysis
+  section for why this is necessary (two real devices disagree on this).
 
 ### Call Stack
 

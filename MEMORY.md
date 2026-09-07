@@ -4544,3 +4544,84 @@ arithmetic) and the one real device available for live verification can't exerci
 look for a controlled/self-owned counterpart that can be made to exercise it deliberately — this
 repo's own demo server was already sitting right there as exactly that, rather than treating "no
 SHA-256-capable camera available" as a hard stop on live-verifying the SHA-256 path at all.
+
+## RFC 7616 fix broke SUNAPI-delegated digest auth on one real camera — a genuine device-to-device
+## disagreement no static rule can resolve, needed per-response detection instead
+
+Follow-up bug report, three days after the RFC 7616 digest-auth fix and its live-camera
+verification above: the user connects to two real Wisenet cameras on the same LAN
+(`192.168.214.32` and `.39`) — `.32` worked, `.39` got a `401 Unauthorized` even after re-entering
+the correct password. My first live re-test (direct RTSP URL, credentials embedded, no SUNAPI)
+showed **both** cameras working identically post-fix, which didn't match the report at all — until
+the user pointed out the one variable that actually differed: they use **SUNAPI Manager**
+(`RtspClient.ts`'s `sunapiClient`-attached path), my test didn't.
+
+**Investigation, in order:**
+
+1. Reproduced via the demo's "Connect via SUNAPI Manager" checkbox against `.39` and found the
+   *first* real bug immediately: the digestauth CGI request showed `password=` — **completely
+   empty**. `src/index.html`'s `attemptSunapiConnect()` sets `srcurlPlayerEl.username = username`
+   after a successful `SunapiManager.init()` login but **never sets `.password`** — a pre-existing
+   bug in this demo page since 2026-08-05 (confirmed via `git log -S`, predates and is unrelated to
+   the RFC 7616 work), invisible until now because this was the first time this session actually
+   drove the SUNAPI-checkbox flow with a real device. Fixed by adding the missing
+   `srcurlPlayerEl.password = password;` line, with a comment explaining *why* it's still needed
+   even though `sunapiClient` is attached (the SUNAPI-delegated digest path sends this password to
+   the device's own `security.cgi?msubmenu=digestauth&action=view` helper on *every* challenge —
+   it does not reuse the login session).
+2. Fixed that, rebuilt, retried against `.39`: **still failed**, now with the correct password
+   actually being sent. Captured the exact request/response (`Nonce=3A5C...`, `Qop=auth`,
+   `Nc=00000001`, `Cnonce=xtmfXNwu`, returned `Response=a3c1875b...`) and hand-computed both the
+   RFC 7616 qop-based formula and the plain (qop-less) formula in a throwaway `node -e` script using
+   the same HA1/HA2 inputs. The device's returned hash matched the **plain** formula exactly, not
+   the qop-based one — meaning the camera's digestauth helper **silently ignores** the
+   `Qop`/`Nc`/`Cnonce` parameters it's given and always computes the old qop-less response, while
+   the RFC 7616 fix's `getAuthenticate()` was (correctly, per the challenge) building a header that
+   *claims* qop was used. The real RTSP server, seeing `qop=auth` in the header, verifies against
+   the qop-based formula instead — mismatch, guaranteed 401 regardless of password correctness.
+   First fix attempt: unconditionally strip `Qop` before calling `getAuthenticate()` in the
+   SUNAPI branch, matching what this device's helper actually computes.
+3. **That "fix" was wrong** — re-ran the identical live comparison against `.32` (the camera the
+   user said *already worked*) and it now failed too. Hand-computed both formulas again for `.32`'s
+   captured exchange: this time the device's returned hash matched the **qop-based** formula, not
+   the plain one — the opposite of `.39`. **The two physical cameras' digestauth helper endpoints
+   implement this differently** (almost certainly a firmware difference) — `.32`'s honors
+   `Qop`/`Nc`/`Cnonce` and computes correctly from them, `.39`'s doesn't and always falls back to
+   the legacy plain formula. There is no static rule (always-include-qop, always-omit-qop) that is
+   correct for both; before the RFC 7616 fix, `data.Qop` was *never* set for either camera (the old
+   all-or-nothing gate), which is why `.32` — whose real RTSP server strictly requires the qop-based
+   formula — was **never actually working correctly via SUNAPI even before this week's fix**; it's
+   likely the user hadn't hit that specific combination yet, or conflated it with the direct
+   (non-SUNAPI) path elsewhere.
+4. Real fix: since the JS side already holds the real password in-memory (it's what got sent to the
+   CGI), it can independently recompute *both* candidate responses itself and check which one the
+   device actually returned, without needing to guess or retry against the live RTSP server (which
+   risks the account-lockout threshold documented elsewhere in this file). Added
+   `resolveDigestHashType()` and `computeDigestResponseCandidates(data, nc, cnonce)` to
+   `DigestGenerator.ts` (side-effect-free — explicit `nc`/`cnonce` params, unlike `Digest()`, which
+   must not perturb the values already sent to the CGI) and wired them into `RtspClient.ts`'s
+   SUNAPI success callback: compute both candidates, compare against the device's actual
+   `responseValue`, and only strip `Qop` from the header if it matches the plain candidate and not
+   the qop-based one. Confirmed live against both real cameras with the new code: `.39` logs
+   "matched the qop-less formula" and reaches `Playing`; `.32` logs "matched the qop-based formula"
+   and also reaches `Playing` — both succeed simultaneously with the same code, no per-device
+   configuration needed.
+
+New tests in `DigestGenerator.test.ts` for `resolveDigestHashType()`/`computeDigestResponseCandidates()`
+use the real `.39` MD5 hashes captured live (`55597a641bf0fed3ad5472be6502893d` plain,
+`12dec839c1f7fbdffdde52a94dcfb4c1` qop-based, same Nonce/Nc/Cnonce) rather than invented values, so
+a future refactor that breaks the formula gets caught against a real, previously-verified answer.
+Full suite green (136 tests), `tsc -b` clean.
+
+**How to apply**: a fix that's provably correct in isolation (RFC-text-verified, unit-tested, even
+live-verified against one real device) can still regress a *different* real-world code path if that
+path depends on a second, independent, undocumented device behavior — here, "does this camera's
+management-API digest helper actually implement qop." When two real devices of the same product
+line disagree on an undocumented behavior like this, don't pick a static rule and move on to "fixed
+one, broke the other" — the only robust answer is to make the client route around the ambiguity
+entirely: recompute what's independently verifiable (both candidate formulas, since the password
+was already in hand) and detect which one actually happened, rather than assuming. Also: a bug
+report that contradicts a just-completed live verification is a signal to find the *exact* variable
+that differs (here: SUNAPI Manager, which the previous verification pass never exercised) rather
+than re-running the same successful test and reporting "can't reproduce" — the user's own
+comparison of what differed between their setup and mine was what actually cracked this.

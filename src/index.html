@@ -1739,6 +1739,16 @@
             initPromise
               .then(function () {
                 srcurlPlayerEl.username = username;
+                // Still required even though sunapiClient is attached: the
+                // SUNAPI-delegated digest path (RtspClient.ts's
+                // formDigestAuthHeader()) sends this password in a
+                // security.cgi?msubmenu=digestauth&action=view request for
+                // the device to compute HA1/the response hash itself, per
+                // request -- it does not reuse the SunapiManager login's own
+                // session. Leaving this unset silently sends an empty
+                // password there, so every RTSP challenge gets a
+                // digest response computed for "" and every retry 401s.
+                srcurlPlayerEl.password = password;
                 srcurlPlayerEl.sunapiClient = sunapiManager.sunapiClient;
                 srcurlCredentials.hidden = true;
                 srcurlShowParsedAttributes(srcurlPlayerEl);
