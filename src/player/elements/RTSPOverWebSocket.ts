@@ -11,7 +11,7 @@ import { StreamPlayer } from '../interface/StreamPlayer';
 import type { StreamPlayerInfo } from '../interface/StreamPlayer';
 import { RTSPOverWebSocketPlayType, RTSPOverWebSocketPlayState, RTSPOverWebSocketBestshotFilter, RTSPOverWebSocketPlaySpeed, type RTSPOverWebSocketPlaySpeedEntry } from './RTSPOverWebSocketTypes';
 import * as panelStyles from './panelStyles';
-import { parseOnvifVideoAnalyticsFrame, type OnvifVideoAnalyticsFrame } from '../util/onvifMetadata';
+import { parseOnvifVideoAnalyticsFrame, parseOnvifVideoAnalyticsFrameFromValue, type OnvifVideoAnalyticsFrame } from '../util/onvifMetadata';
 import { OnvifOverlay } from '../components/ui/onvifOverlay/OnvifOverlay';
 import { createSwitch, type SwitchController } from '../components/ui/switch/Switch';
 import { parseDebugAttribute, validateDebugConfig, type DebugConfig } from '../util/debugLog';
@@ -296,6 +296,14 @@ export class RTSPOverWebSocket extends HTMLElement {
    *  arrive, which real ONVIF analytics streams don't send at a
    *  predictable/frequent rate. */
   onvifLastFrame?: OnvifVideoAnalyticsFrame | null;
+  /** `rtspOverWebSocketWrapperElement`'s box size, kept in sync by
+   *  `onvifResizeObserver` instead of being read (`clientWidth`/
+   *  `clientHeight`) directly inside `renderOnvifOverlay()` on every single
+   *  metadata frame -- see that observer's own setup comment in
+   *  `updateRendering()` for why reading layout geometry that often is a
+   *  real problem, not just a micro-optimization. */
+  onvifContainerSize?: { width: number; height: number } | null;
+  onvifResizeObserver?: ResizeObserver | null;
 
   rewindElement?: HTMLElement;
   forwardElement?: HTMLElement;
@@ -1039,6 +1047,19 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
     } catch (error) {
       console.error('RTSPOverWebSocket: failed to clean up on disconnectedCallback', error);
+    }
+
+    try {
+      // Newly added alongside `onvifResizeObserver` itself (see its setup
+      // comment in `updateRendering()`) -- without this, the observer keeps
+      // `rtspOverWebSocketWrapperElement` (and everything reachable from
+      // this instance through the closure it was created with) alive for
+      // the page's lifetime even after this element is detached, same
+      // leak shape as the window/document listeners removed just below.
+      this.onvifResizeObserver?.disconnect();
+      this.onvifResizeObserver = null;
+    } catch (error) {
+      console.error('RTSPOverWebSocket: failed to disconnect ONVIF resize observer on disconnectedCallback', error);
     }
 
     try {
@@ -2680,6 +2701,37 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.onvifOverlay = new OnvifOverlay(rtspOverWebSocketWrapperElement);
     }
 
+    // Real problem, found live: `renderOnvifOverlay()` used to read
+    // `rtspOverWebSocketWrapperElement.clientWidth`/`.clientHeight` directly,
+    // every single time a metadata frame arrived. Reading a layout geometry
+    // property right after `OnvifOverlay.render()`'s own DOM writes forces a
+    // synchronous browser reflow ("layout thrashing") on every ONVIF
+    // analytics frame -- and real analytics streams can send one of those
+    // per video frame while an event is active, so this was recurring load
+    // on the same main thread doing video decode/paint, not an occasional
+    // spike (see docs/player/10-onvif-metadata-overlay.md's History for the
+    // full writeup and benchmark). A `ResizeObserver` instead keeps
+    // `this.onvifContainerSize` up to date only when the box actually
+    // resizes (rare compared to metadata frames), so `renderOnvifOverlay()`
+    // can read a plain cached field every time instead of touching layout.
+    // Set up at most once per instance (idempotent, same as `onvifOverlay`
+    // above); guarded for environments without `ResizeObserver` (falls back
+    // to `renderOnvifOverlay()`'s own direct-read fallback).
+    if ((this.onvifResizeObserver === undefined || this.onvifResizeObserver === null) && typeof ResizeObserver === 'function') {
+      this.onvifContainerSize = {
+        width: rtspOverWebSocketWrapperElement.clientWidth,
+        height: rtspOverWebSocketWrapperElement.clientHeight
+      };
+      this.onvifResizeObserver = new ResizeObserver(() => {
+        this.onvifContainerSize = {
+          width: rtspOverWebSocketWrapperElement.clientWidth,
+          height: rtspOverWebSocketWrapperElement.clientHeight
+        };
+        this.renderOnvifOverlay();
+      });
+      this.onvifResizeObserver.observe(rtspOverWebSocketWrapperElement);
+    }
+
     // Legacy bug preserved: mixes the public `profile_number` getter with the
     // raw `_profile_number` field in the same condition (should have used
     // the getter consistently), and both duplicate the same well-formed
@@ -4163,8 +4215,25 @@ export class RTSPOverWebSocket extends HTMLElement {
 
       // ONVIF metadata overlay (REQ-PLY-110..116, docs/player/10-onvif-metadata-overlay.md)
       // -- a pure addition alongside the public 'meta' event above, not a
-      // replacement for it.
-      if (typeof meta.json === 'string') {
+      // replacement for it. Prefers `meta.jsonValue` (the pre-stringify
+      // parsed object `MetaDataParser.parse()` now also carries, see its own
+      // doc comment) over re-`JSON.parse`-ing `meta.json` straight back out
+      // of the string that object was just stringified into -- avoids a
+      // redundant object->string->object round trip on every single
+      // metadata frame. Falls back to the string path only when `jsonValue`
+      // isn't present (e.g. a caller invoking this directly without going
+      // through `MetaDataParser`).
+      if (typeof meta.jsonValue !== 'undefined') {
+        const frame = parseOnvifVideoAnalyticsFrameFromValue(meta.jsonValue);
+        if (frame !== null) {
+          this.onvifLastFrame = frame;
+          if (this.hasReceivedOnvifMetadata !== true) {
+            this.hasReceivedOnvifMetadata = true;
+            this.applyOnvifOverlayMenuState();
+          }
+          this.renderOnvifOverlay();
+        }
+      } else if (typeof meta.json === 'string') {
         const frame = parseOnvifVideoAnalyticsFrame(meta.json);
         if (frame !== null) {
           this.onvifLastFrame = frame;
@@ -4201,14 +4270,20 @@ export class RTSPOverWebSocket extends HTMLElement {
   private renderOnvifOverlay(): void {
     if (this.onvifOverlay === undefined || this.onvifOverlay === null) return;
     if (this.onvifLastFrame === undefined || this.onvifLastFrame === null) return;
-    const container = this.rtspOverWebSocketWrapperElement;
+    // Prefer the `ResizeObserver`-maintained cache (see its setup comment in
+    // `updateRendering()`) over reading `clientWidth`/`clientHeight` here
+    // directly -- this method runs once per metadata frame, so a direct read
+    // would force a synchronous layout that often. Only falls back to a
+    // direct read when the observer wasn't set up at all (environments
+    // without `ResizeObserver`), which is not the hot path.
+    const containerSize = this.onvifContainerSize ?? {
+      width: this.rtspOverWebSocketWrapperElement?.clientWidth ?? 0,
+      height: this.rtspOverWebSocketWrapperElement?.clientHeight ?? 0
+    };
     this.onvifOverlay.render({
       frame: this.onvifLastFrame,
       videoIntrinsicSize: this.onvifVideoIntrinsicSize ?? { width: 0, height: 0 },
-      containerSize: {
-        width: container?.clientWidth ?? 0,
-        height: container?.clientHeight ?? 0
-      }
+      containerSize
     });
   }
 
@@ -6619,6 +6694,7 @@ interface RTSPOverWebSocketResizeEvent {
 interface RTSPOverWebSocketMetaEvent {
   json?: unknown;
   xml?: unknown;
+  jsonValue?: unknown;
 }
 interface RTSPOverWebSocketMetaImageEvent {
   objectId?: unknown;

@@ -117,6 +117,36 @@ describe('OnvifOverlay', () => {
     expect(host.querySelectorAll('div.onvif-overlay-box')).toHaveLength(0);
   });
 
+  // Regression test for the per-frame DOM-churn overload found live (see
+  // docs/player/10-onvif-metadata-overlay.md's History): render() used to
+  // removeChild()+createElement() every box/label on every single call, even
+  // when consecutive metadata frames described the same number of objects
+  // (the common case for a tracked object) -- directly competing with video
+  // decode/paint on the main thread. Locks in that consecutive renders with
+  // the same object count now reuse the same DOM node instances.
+  it('reuses the same box/label DOM nodes across renders with an unchanged object count', () => {
+    const host = document.createElement('div');
+    const overlay = new OnvifOverlay(host);
+    const size = { width: 100, height: 100 };
+
+    overlay.render({ frame: makeFrame(), videoIntrinsicSize: size, containerSize: size });
+    const boxBefore = host.querySelector('div.onvif-overlay-box');
+    const labelBefore = host.querySelector('div.onvif-overlay-label');
+
+    overlay.render({
+      frame: makeFrame({
+        objects: [{ objectId: '0', boundingBox: { left: 10, top: 10, right: 50, bottom: 50 }, classCandidates: [] }]
+      }),
+      videoIntrinsicSize: size,
+      containerSize: size
+    });
+
+    expect(host.querySelectorAll('div.onvif-overlay-box')).toHaveLength(1);
+    expect(host.querySelector('div.onvif-overlay-box')).toBe(boxBefore);
+    expect(host.querySelector('div.onvif-overlay-label')).toBe(labelBefore);
+    expect((boxBefore as HTMLDivElement).style.left).toBe('10px');
+  });
+
   it('setVisible toggles the hidden property without clearing content', () => {
     const host = document.createElement('div');
     const overlay = new OnvifOverlay(host);

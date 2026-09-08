@@ -35,6 +35,26 @@ interface RenderedRect {
 export class OnvifOverlay {
   private readonly container: HTMLDivElement;
 
+  /** One `<div class="onvif-overlay-box">`/`<div class="onvif-overlay-label">`
+   *  pair per pool slot, index-aligned with `frame.objects` on the most
+   *  recent `render()` call that actually drew something. Real problem,
+   *  found live via a benchmark (see `docs/player/10-onvif-metadata-overlay.md`'s
+   *  History): the original implementation did a full `removeChild` sweep
+   *  plus fresh `createElement`/`appendChild` for every object on *every*
+   *  `render()` call, i.e. on every single metadata frame -- real ONVIF
+   *  analytics streams can send one of those per video frame while an event
+   *  is active, so this was continuous DOM churn directly competing with
+   *  video decode/paint on the same main thread, not an occasional cost.
+   *  Reusing the same nodes across consecutive frames with the same object
+   *  count (the common case for a tracked object) turns that into plain
+   *  style-property writes on already-attached elements. This does NOT
+   *  reintroduce cross-frame object tracking -- see `renderObject()`'s own
+   *  comment -- every property on every pooled node is still fully
+   *  recomputed from scratch each `render()` call; only the DOM node
+   *  *objects themselves* are recycled. */
+  private readonly boxPool: HTMLDivElement[] = [];
+  private readonly labelPool: HTMLDivElement[] = [];
+
   /** The user's own ON/OFF preference (the "ONVIF Event" switch), independent
    *  of `suppressedByControls` below -- see `setVisible()`/`setSuppressed()`. */
   private visible = false;
@@ -61,27 +81,29 @@ export class OnvifOverlay {
     hostElement.appendChild(this.container);
   }
 
-  /** Clears any previously-drawn objects and, if `frame` is non-null and
-   *  has at least one object, draws the new frame's objects -- each
-   *  `render()` call is a full refresh, no cross-frame object tracking
-   *  (see DESIGN.md §2.7's "Object lifecycle"). */
+  /** If `frame` is null/empty (or intrinsic size isn't known yet), fully
+   *  clears the pool -- matches the pre-pooling behavior other code (and
+   *  `OnvifOverlay.test.ts`) already relies on: nothing stays in the DOM
+   *  once there's nothing to draw. Otherwise resizes the pool to exactly
+   *  `frame.objects.length` (creating/removing the delta only, not
+   *  everything) and rewrites every pooled node's content/position/
+   *  visibility from scratch -- still a full per-frame refresh (DESIGN.md
+   *  §2.7's "Object lifecycle": no cross-frame interpolation/staleness
+   *  tracking), just without discarding and recreating the DOM nodes
+   *  themselves when the object count doesn't change frame-to-frame. */
   render(input: OnvifOverlayRenderInput): void {
-    while (this.container.firstChild) {
-      this.container.removeChild(this.container.firstChild);
-    }
-
     const frame = input.frame;
-    if (frame === null || frame.objects.length === 0) {
-      return;
-    }
-    if (input.videoIntrinsicSize.width <= 0 || input.videoIntrinsicSize.height <= 0) {
+    const objects = frame !== null ? frame.objects : [];
+    const canDraw = objects.length > 0 && input.videoIntrinsicSize.width > 0 && input.videoIntrinsicSize.height > 0;
+
+    if (!canDraw) {
+      this.resizePool(0);
       return;
     }
 
+    this.resizePool(objects.length);
     const rendered = this.computeRenderedRect(input.videoIntrinsicSize, input.containerSize);
-    for (const object of frame.objects) {
-      this.renderObject(object, rendered);
-    }
+    objects.forEach((object, index) => this.renderObject(object, rendered, index));
   }
 
   setVisible(visible: boolean): void {
@@ -106,6 +128,34 @@ export class OnvifOverlay {
     this.container.parentElement?.removeChild(this.container);
   }
 
+  /** Grows or shrinks `boxPool`/`labelPool` to exactly `count` pairs,
+   *  appending newly-created pairs or `remove()`-ing the excess -- never
+   *  touches slots that stay within the new size, which is what makes a
+   *  steady object count across frames free of DOM creation/removal. Static
+   *  per-node styling (position/box-sizing/pointer-events/font/etc.) is set
+   *  once here, at creation time, not re-applied every `render()`. */
+  private resizePool(count: number): void {
+    while (this.boxPool.length < count) {
+      const box = document.createElement('div');
+      box.setAttribute('class', 'onvif-overlay-box');
+      box.style.cssText = 'position:absolute;box-sizing:border-box;pointer-events:none;';
+      this.container.appendChild(box);
+      this.boxPool.push(box);
+
+      const label = document.createElement('div');
+      label.setAttribute('class', 'onvif-overlay-label');
+      label.style.cssText =
+        'position:absolute;transform:translateY(-100%);color:#FFFFFF;font-family:sans-serif;' +
+        'font-size:12px;padding:2px 4px;white-space:nowrap;pointer-events:none;';
+      this.container.appendChild(label);
+      this.labelPool.push(label);
+    }
+    while (this.boxPool.length > count) {
+      this.boxPool.pop()?.remove();
+      this.labelPool.pop()?.remove();
+    }
+  }
+
   /** `object-fit: contain`'s own containment math, computed here (not read
    *  back from the DOM) since this overlay is a sibling element, not a
    *  child, of the video/canvas element it's matching. */
@@ -127,7 +177,16 @@ export class OnvifOverlay {
     return { x: rendered.offsetX + px * rendered.scale, y: rendered.offsetY + py * rendered.scale };
   }
 
-  private renderObject(object: OnvifAnalyticsObject, rendered: RenderedRect): void {
+  /** Writes object `index`'s pooled box/label pair (`resizePool()` already
+   *  guarantees both exist) from scratch -- still a full per-object refresh,
+   *  same as the pre-pooling version, just onto a recycled node instead of a
+   *  freshly created one. Uses individual style-property assignment rather
+   *  than replacing `style.cssText` wholesale, since the latter would blow
+   *  away the static properties `resizePool()` set once at creation. */
+  private renderObject(object: OnvifAnalyticsObject, rendered: RenderedRect, index: number): void {
+    const box = this.boxPool[index];
+    const label = this.labelPool[index];
+
     const bestCandidate = object.classCandidates.reduce<(typeof object.classCandidates)[number] | undefined>(
       (best, candidate) => (best === undefined || candidate.likelihood > best.likelihood ? candidate : best),
       undefined
@@ -148,43 +207,39 @@ export class OnvifOverlay {
       const width = Math.abs(bottomRight.x - topLeft.x);
       const height = Math.abs(bottomRight.y - topLeft.y);
 
-      const box = document.createElement('div');
-      box.setAttribute('class', 'onvif-overlay-box');
-      // box-sizing: border-box keeps the border inside width/height instead
-      // of growing the box past the mapped coordinates.
-      box.style.cssText =
-        `position:absolute;left:${x}px;top:${y}px;width:${width}px;height:${height}px;` +
-        `border:2px solid ${color};box-sizing:border-box;pointer-events:none;`;
-      this.container.appendChild(box);
+      // box-sizing: border-box (set once in resizePool()) keeps the border
+      // inside width/height instead of growing the box past the mapped
+      // coordinates.
+      box.style.display = '';
+      box.style.left = `${x}px`;
+      box.style.top = `${y}px`;
+      box.style.width = `${width}px`;
+      box.style.height = `${height}px`;
+      box.style.border = `2px solid ${color}`;
 
       // REQ-PLY-113: label sits at the bounding box's top edge.
       labelX = x;
       labelY = y;
     } else if (object.centerOfGravity !== undefined) {
+      box.style.display = 'none';
       const center = this.mapPoint(object.centerOfGravity.x, object.centerOfGravity.y, rendered);
       labelX = center.x;
       labelY = center.y;
     } else {
       // Nothing positional to draw against -- skip this object's label
       // entirely rather than guessing a location.
+      box.style.display = 'none';
+      label.style.display = 'none';
       return;
     }
 
-    this.renderLabel(labelText, labelX, labelY, color);
-  }
-
-  private renderLabel(text: string, x: number, y: number, color: string): void {
-    const label = document.createElement('div');
-    label.setAttribute('class', 'onvif-overlay-label');
-    // translateY(-100%) sits the label just above the anchor point (box top
-    // edge / center) regardless of its actual rendered size -- a div's
-    // width/height auto-sizes to its text content, unlike an SVG <rect>
-    // which needed a hand-measured width/height computed up front.
-    label.style.cssText =
-      `position:absolute;left:${x}px;top:${y}px;transform:translateY(-100%);` +
-      `background:${color};color:#FFFFFF;font-family:sans-serif;font-size:12px;` +
-      'padding:2px 4px;white-space:nowrap;pointer-events:none;';
-    label.textContent = text;
-    this.container.appendChild(label);
+    // translateY(-100%) (set once in resizePool()) sits the label just above
+    // the anchor point (box top edge / center) regardless of its actual
+    // rendered size -- a div's width/height auto-sizes to its text content.
+    label.style.display = '';
+    label.style.left = `${labelX}px`;
+    label.style.top = `${labelY}px`;
+    label.style.background = color;
+    label.textContent = labelText;
   }
 }

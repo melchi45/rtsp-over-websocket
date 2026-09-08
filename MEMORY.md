@@ -4875,6 +4875,76 @@ whenever a codec-specific muxer/RTP error mentions something the general `videoE
 flags (`-pix_fmt`, `-preset`, etc.) don't already cover — several of this codebase's other codec
 branches (AV1/VP9's `-strict experimental`, H.264/H.265's `repeat-headers`) were found the same way.
 
+## ONVIF overlay drawing stole main-thread time from video decode/paint — reported live as "playback stutters whenever bounding boxes are being drawn"
+
+Reported directly by the user (`wisenet-camera-discovery`'s player): video playback visibly stutters
+specifically while the ONVIF Event bounding-box overlay is actively drawing, not otherwise. Traced by
+tracing the call chain rather than guessing: `MediaRouter.ts`'s `handleMetadata()` calls
+`MetaDataParser.parse()` synchronously from the *same* demux dispatch loop that also routes video/audio
+RTP data (`handleVideoData`/`handleAudioData`, same call site pattern) — so any heavy work triggered
+from a metadata frame runs on the main thread in the same tick as the video pipeline, not off to the
+side. From there: `MetaDataParser.parse()` -> `RTSPOverWebSocket.onRTSPOverWebSocketMeta()` ->
+`OnvifOverlay.render()`, all synchronous.
+
+**Confirmed via benchmark** (a temporary vitest+jsdom test, deleted after use — not left in the repo):
+simulating 90 metadata frames (30fps for 3s) through the real XML-parse -> JSON-stringify ->
+`parseOnvifVideoAnalyticsFrame` -> `OnvifOverlay.render()` pipeline showed `render()` itself dominating
+(70-90% of per-frame cost), scaling with object count — 1.0ms/frame at 1 object, 4.1ms/frame at 20
+objects (12.3% of a 30fps frame's 33.3ms budget), *in jsdom*, which has no real layout engine at all.
+Real-browser cost is understated by that benchmark, not overstated — see the next paragraph.
+
+**Three concrete overload sources found**, in descending order of actual impact:
+1. `OnvifOverlay.render()` did a full `container.removeChild()` sweep plus fresh
+   `createElement()`/`appendChild()` for every object on *every single call* — i.e. every metadata
+   frame, not just when the object count changed. Real ONVIF analytics streams can send one frame per
+   video frame while an event is active, so this was continuous DOM churn, not an occasional spike.
+2. `RTSPOverWebSocket`'s `renderOnvifOverlay()` read `container.clientWidth`/`.clientHeight` right
+   after `OnvifOverlay.render()`'s own DOM writes, on every metadata frame. Reading a layout-geometry
+   property immediately after a DOM write forces a synchronous browser reflow ("layout thrashing") —
+   jsdom has no layout engine, so this cost doesn't even show up in the benchmark numbers above; the
+   real-browser number is worse than what was measured.
+3. `MetaDataParser.parse()` already `JSON.stringify()`s the parsed XML into `.json` (for the public
+   `'meta'` DOM event contract), and `parseOnvifVideoAnalyticsFrame()` then `JSON.parse()`s that same
+   string straight back into an object — a redundant object->string->object round trip on every frame.
+   Individually small, but pure waste layered on top of (1) and (2).
+
+**Fixed**, all three, without changing the public `'meta'` DOM event contract (`{ json, xml }`) or
+`OnvifOverlay`'s "full refresh every frame, no cross-frame object tracking" design principle (DESIGN.md
+§2.7) — every value drawn is still fully recomputed from scratch each `render()` call, only the
+underlying DOM/JS objects are recycled:
+1. `OnvifOverlay` now pools box/label `<div>` pairs indexed by position (`resizePool()`), growing/
+   shrinking only the delta when the object count changes and reusing existing nodes (style-property
+   writes only, no create/destroy) when it doesn't. Falls back to a full pool clear when there's
+   nothing to draw at all, matching the exact DOM-node-count behavior `OnvifOverlay.test.ts` already
+   asserted (no test changes needed).
+2. `RTSPOverWebSocket` now maintains `onvifContainerSize` via a `ResizeObserver` on
+   `rtspOverWebSocketWrapperElement` (set up once in `updateRendering()`, disconnected in
+   `disconnectedCallback()`) instead of reading `clientWidth`/`clientHeight` inside
+   `renderOnvifOverlay()` every time — write (on an actual resize, rare) and read (every metadata
+   frame, frequent) are now decoupled, so the frequent path never touches layout.
+3. `MetaDataParser.ParsedMetaData` gained an additional `jsonValue` field carrying the pre-stringify
+   parsed object as-is (only used internally — `RTSPOverWebSocket`'s `dispatch('meta', ...)` still only
+   forwards `{ json, xml }`, so the public event shape is unchanged). `onvifMetadata.ts`'s
+   `parseOnvifVideoAnalyticsFrame(json: string)` was split into a thin `JSON.parse` + delegate wrapper
+   around a new exported `parseOnvifVideoAnalyticsFrameFromValue(parsed: unknown)`, which
+   `RTSPOverWebSocket.onRTSPOverWebSocketMeta()` now calls directly with `meta.jsonValue`, falling back
+   to the string path only if `jsonValue` is absent.
+
+**Verified**: `npx tsc -b --force` clean; `npx vitest run` full suite passes, including two new
+regression tests — `OnvifOverlay.test.ts`'s "reuses the same box/label DOM nodes across renders with an
+unchanged object count" (asserts node identity across two `render()` calls, not just visual output) and
+`onvifMetadata.test.ts`'s "produces the same result as `parseOnvifVideoAnalyticsFrame(JSON.stringify(value))`"
+(cross-checks the two entry points agree).
+
+**How to apply**: "stutters specifically while X is happening" is a strong signal to look at what runs
+synchronously in the *same call stack* as the thing that stutters, not just at X's own cost in
+isolation — here, the real leverage wasn't optimizing metadata *parsing* (cheap on its own) but finding
+that its DOM/layout side effects shared a thread, and a tick, with video decode/paint. A jsdom benchmark
+is useful for finding which *piece* of a DOM-touching pipeline dominates cost (relative comparison), but
+treat its absolute numbers as a floor, not a ceiling, for anything involving real layout (`clientWidth`/
+`clientHeight`/`getBoundingClientRect`/etc.) — jsdom has no layout engine, so forced-reflow costs that
+are very real in an actual browser are invisible in that environment.
+
 ## ONVIF overlay swallowed the native `<video controls>` bar's "more options" popup once the toggle was on (fixed)
 
 Reported directly by the user (`wisenet-camera-discovery`'s player, Korean): "video tag 에서 control

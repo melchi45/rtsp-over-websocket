@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { XMLParser } from 'fast-xml-parser';
-import { parseOnvifVideoAnalyticsFrame } from './onvifMetadata';
+import { parseOnvifVideoAnalyticsFrame, parseOnvifVideoAnalyticsFrameFromValue } from './onvifMetadata';
 
 // Same fast-xml-parser configuration MetaDataParser.ts uses in production --
 // kept in sync deliberately (not imported from there) so this test exercises
@@ -203,5 +203,29 @@ describe('parseOnvifVideoAnalyticsFrame', () => {
 
   it('returns null (does not throw) for malformed JSON', () => {
     expect(parseOnvifVideoAnalyticsFrame('{not valid json')).toBeNull();
+  });
+});
+
+describe('parseOnvifVideoAnalyticsFrameFromValue', () => {
+  // RTSPOverWebSocket now calls this directly with MetaDataParser's
+  // pre-stringify parsed object (ParsedMetaData.jsonValue) instead of
+  // JSON.parse()-ing meta.json straight back out of the string that same
+  // object was just JSON.stringify()'d into on every metadata frame -- see
+  // docs/player/10-onvif-metadata-overlay.md's History. Locks in that both
+  // entry points agree on the same result for the same underlying data.
+  it('produces the same result as parseOnvifVideoAnalyticsFrame(JSON.stringify(value))', () => {
+    const value = xmlParser.parse(ONE_OBJECT_WITH_TRANSFORMATION_XML);
+
+    const fromValue = parseOnvifVideoAnalyticsFrameFromValue(value);
+    const fromString = parseOnvifVideoAnalyticsFrame(JSON.stringify(value));
+
+    expect(fromValue).toEqual(fromString);
+    expect(fromValue?.objects[0].boundingBox).toEqual({ left: 0, top: 0, right: 1511, bottom: 1535 });
+  });
+
+  it('returns null for a non-object value without throwing', () => {
+    expect(parseOnvifVideoAnalyticsFrameFromValue(null)).toBeNull();
+    expect(parseOnvifVideoAnalyticsFrameFromValue('not an object')).toBeNull();
+    expect(parseOnvifVideoAnalyticsFrameFromValue(undefined)).toBeNull();
   });
 });

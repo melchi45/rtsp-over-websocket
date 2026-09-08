@@ -166,20 +166,17 @@ function parseObject(object: Record<string, unknown>): OnvifAnalyticsObject | nu
 }
 
 /**
- * Parses `MetaDataParser`'s already-produced JSON string into a typed
- * `OnvifVideoAnalyticsFrame`. Returns `null` (never throws) for anything
- * that isn't this exact `tt:MetadataStream`/`tt:VideoAnalytics`/`tt:Frame`
- * shape -- malformed JSON, a different ONVIF metadata topic, or a `Frame`
- * with no usable `Object` at all -- so callers can treat every non-`null`
- * result as immediately renderable.
+ * Same as `parseOnvifVideoAnalyticsFrame`, but takes the already-parsed
+ * value directly instead of a JSON string -- for callers that already have
+ * the object `MetaDataParser`'s `fast-xml-parser` call produced (e.g.
+ * `RTSPOverWebSocket` via `ParsedMetaData.jsonValue`) and would otherwise
+ * have to `JSON.parse` it straight back out of the `JSON.stringify`'d
+ * `.json` string that same object was just turned into. Extracted from
+ * `parseOnvifVideoAnalyticsFrame` (below), which is now a thin
+ * `JSON.parse` + delegate wrapper kept for callers that only have the
+ * string (e.g. this file's own tests).
  */
-export function parseOnvifVideoAnalyticsFrame(json: string): OnvifVideoAnalyticsFrame | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return null;
-  }
+export function parseOnvifVideoAnalyticsFrameFromValue(parsed: unknown): OnvifVideoAnalyticsFrame | null {
   if (typeof parsed !== 'object' || parsed === null) {
     return null;
   }
@@ -209,4 +206,25 @@ export function parseOnvifVideoAnalyticsFrame(json: string): OnvifVideoAnalytics
     videoSourceToken: typeof videoSourceToken === 'string' ? videoSourceToken : undefined,
     objects
   };
+}
+
+/**
+ * Parses `MetaDataParser`'s already-produced JSON string into a typed
+ * `OnvifVideoAnalyticsFrame`. Returns `null` (never throws) for anything
+ * that isn't this exact `tt:MetadataStream`/`tt:VideoAnalytics`/`tt:Frame`
+ * shape -- malformed JSON, a different ONVIF metadata topic, or a `Frame`
+ * with no usable `Object` at all -- so callers can treat every non-`null`
+ * result as immediately renderable. A thin `JSON.parse` + delegate wrapper
+ * around `parseOnvifVideoAnalyticsFrameFromValue` (above) -- prefer that
+ * function directly when the caller already has the parsed value (see its
+ * own doc comment for why).
+ */
+export function parseOnvifVideoAnalyticsFrame(json: string): OnvifVideoAnalyticsFrame | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  return parseOnvifVideoAnalyticsFrameFromValue(parsed);
 }

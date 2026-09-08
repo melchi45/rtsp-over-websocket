@@ -8,6 +8,17 @@ export interface ParsedMetaData {
   channelId: number;
   xml?: string;
   json?: string;
+  /** The same value `json` was `JSON.stringify`'d from, exposed as-is
+   *  (pre-stringify) purely so `RTSPOverWebSocket`'s internal ONVIF overlay
+   *  parsing (`onvifMetadata.ts`'s `parseOnvifVideoAnalyticsFrameFromValue`)
+   *  doesn't have to `JSON.parse(json)` straight back into the same shape on
+   *  every single metadata frame -- a real, measured (if individually small)
+   *  chunk of the per-frame overload found live alongside the much larger
+   *  `OnvifOverlay.render()`/`clientWidth` costs, see
+   *  docs/player/10-onvif-metadata-overlay.md's History. NOT part of the
+   *  public `'meta'` DOM event contract -- `RTSPOverWebSocket` only forwards
+   *  `{ json, xml }` to that dispatch, same as before this field existed. */
+  jsonValue?: unknown;
 }
 
 // Options mirror the legacy player's own fast-xml-parser v2-era call
@@ -127,6 +138,7 @@ export class MetaDataParser {
 
       const json = xmlParser.parse(metaData.xml);
       metaData.json = fastJsonStringfy(json);
+      metaData.jsonValue = json;
 
       this.debugLog.debug('parse() ->', metaData.json);
       this.callback(metaData);

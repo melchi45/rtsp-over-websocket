@@ -3,13 +3,14 @@
 *Per-class reference for the ONVIF `VideoAnalytics` bounding-box/label overlay and the reusable
 toggle-switch UI component it's shown/hidden with.*
 
-**Version:** 1.1.12 · **Author:** Youngho Kim · **Milestone:** M-4
+**Version:** 1.1.13 · **Author:** Youngho Kim · **Milestone:** M-4
 
 **History**
 
 | Date | Change |
 | --- | --- |
 | 2026-09-08 | Bug fix: with native `<video controls>` on, the browser's own overflow "more options" popup stopped appearing once the "ONVIF Event" toggle was on. Root cause: `OnvifOverlay`'s mounted `<div>` is `position: absolute`, a sibling appended after `this.video` — the same stacking shape `RTSPOverWebSocket`'s pre-existing `videoContainerElement` already had a fix for (a positioned element paints above a plain-flow sibling regardless of DOM order, so it visually sits on top of the native controls bar whenever it isn't `hidden`; `pointer-events: none` only stops it intercepting clicks, not covering the popup visually). `OnvifOverlay` gained a second, independent `setSuppressed(suppressed)` on top of the existing user-facing `setVisible(visible)` — shown only when both allow it — and `RTSPOverWebSocket.applyVideoContainerVisibility()` now also calls `this.onvifOverlay?.setSuppressed(this._controls)` alongside its existing `videoContainerElement` handling, at all three of its call sites. See `setVisible(visible)`'s Method Analysis entry below and `MEMORY.md`'s matching entry. |
+| 2026-09-07 | Perf fix: reported live as "video playback stutters while ONVIF bounding boxes are being drawn." Root cause: `OnvifOverlay.render()`/`RTSPOverWebSocket.renderOnvifOverlay()`/`MetaDataParser.parse()` all ran synchronously in the same main-thread call stack as video/audio RTP demuxing, once per metadata frame. Three overload sources fixed: (1) `OnvifOverlay` now pools box/label `<div>` pairs (`resizePool()`) instead of `removeChild`+`createElement` on every `render()`; (2) `RTSPOverWebSocket` now caches container size via a `ResizeObserver` (`onvifContainerSize`) instead of reading `clientWidth`/`clientHeight` — and forcing a synchronous reflow — on every metadata frame; (3) `MetaDataParser.ParsedMetaData` gained `jsonValue` (the pre-stringify parsed object) so `RTSPOverWebSocket` calls the new `parseOnvifVideoAnalyticsFrameFromValue()` directly instead of `JSON.parse()`-ing `.json` straight back out of the string it was just `JSON.stringify()`'d into. See `MEMORY.md`'s matching entry for the full benchmark/investigation and the `OnvifOverlay`/`parseOnvifVideoAnalyticsFrame` Method Analysis sections below for the per-symbol detail. |
 | 2026-09-04 | `RTSPOverWebSocket.stop()` now hides the ONVIF overlay (`this.onvifOverlay?.setVisible(false)`) — requested directly by the user, so a stopped session doesn't leave a stale bounding box visible. See `setVisible(visible)`'s Method Analysis entry above. |
 | 2026-09-04 | Bug fix: `parseOnvifVideoAnalyticsFrame` no longer applies `tt:Transformation` to `BoundingBox`/`CenterOfGravity` — a real device capture proved that inverse-divide corrupted already-pixel-space coordinates (see `parseOnvifVideoAnalyticsFrame`'s Method Analysis below and `MEMORY.md`) |
 | 2026-09-04 | `OnvifOverlay` rendering surface changed from SVG (`<rect>`/`<text>`) to plain positioned `<div>`s, per explicit user request — see its Structure/Method Analysis/RFC References sections below |
@@ -59,15 +60,27 @@ export interface OnvifVideoAnalyticsFrame {
 }
 
 export function parseOnvifVideoAnalyticsFrame(json: string): OnvifVideoAnalyticsFrame | null;
+export function parseOnvifVideoAnalyticsFrameFromValue(parsed: unknown): OnvifVideoAnalyticsFrame | null;
 ```
 
 ### Method Analysis
 
-- **`parseOnvifVideoAnalyticsFrame(json)`** — `JSON.parse(json)`, then walks
-  `['tt:MetadataStream']['tt:VideoAnalytics']['tt:Frame']` (the shape `fast-xml-parser`'s
+- **`parseOnvifVideoAnalyticsFrameFromValue(parsed)`** — the real implementation: walks
+  `parsed['tt:MetadataStream']['tt:VideoAnalytics']['tt:Frame']` off an already-parsed value (no
+  `JSON.parse` of its own). Extracted out of `parseOnvifVideoAnalyticsFrame` (below) so a caller that
+  already has the parsed object — `RTSPOverWebSocket` via `ParsedMetaData.jsonValue`, see
+  `MetaDataParser`'s own doc comment and `MEMORY.md`'s "ONVIF overlay drawing stole main-thread time"
+  entry — doesn't have to `JSON.parse()` a string that was *just* `JSON.stringify()`'d from this exact
+  same object, on every single metadata frame. Same `null`-not-throw contract as
+  `parseOnvifVideoAnalyticsFrame` for anything that isn't a non-`null` object or isn't this exact shape.
+- **`parseOnvifVideoAnalyticsFrame(json)`** — thin wrapper: `JSON.parse(json)` (catching and returning
+  `null` on malformed JSON), then delegates to `parseOnvifVideoAnalyticsFrameFromValue` for the actual
+  `['tt:MetadataStream']['tt:VideoAnalytics']['tt:Frame']` walk (the shape `fast-xml-parser`'s
   `removeNSPrefix: false` configuration in `MetaDataParser.ts` produces — namespace prefixes are
-  kept on every key). Returns `null` (does not throw) for anything that isn't this exact shape —
-  malformed JSON, a metadata frame belonging to a different ONVIF topic, or a `Frame` with no
+  kept on every key). Kept for callers that only have the JSON string (this file's own tests; any
+  future caller without direct access to the pre-stringify object). Returns `null` (does not throw)
+  for anything that isn't this exact shape — malformed JSON, a metadata frame belonging to a
+  different ONVIF topic, or a `Frame` with no
   `Object` at all (an empty-but-valid analytics tick) all resolve to `null`, which callers treat as
   "nothing to render," not an error.
 - **Transformation is deliberately NOT applied.** `Frame['tt:Transformation']`'s `Translate`/`Scale`
@@ -187,32 +200,57 @@ mounted as a sibling of the video/canvas rendering element inside `RTSPOverWebSo
 `pointer-events: none` is load-bearing: without it, the overlay (which fully covers the video) would
 swallow clicks meant to open the context menu. Rendering uses plain positioned `<div>`s, not SVG —
 switched from an earlier SVG (`<rect>`/`<text>`) implementation per explicit user request; see
-DESIGN §2.7's "Rendering surface" for the rationale.
+DESIGN §2.7's "Rendering surface" for the rationale. Also owns two parallel node pools,
+`boxPool`/`labelPool` (`HTMLDivElement[]`, index-aligned with the most recently rendered
+`frame.objects`) — see `render()`'s Method Analysis entry below for why.
 
 ### Method Analysis
 
-- **`render({ frame, videoIntrinsicSize, containerSize })`** — first clears every child of the
-  mounted `<div class="onvif-overlay">` (DESIGN §2.7's "each Frame is a full refresh" lifecycle —
-  no cross-frame object tracking). If `frame` is `null` or `frame.objects` is empty, returns after
-  clearing (nothing to draw). Otherwise computes the rendered/letterboxed sub-rect from
-  `videoIntrinsicSize` + `containerSize` using the same containment math `object-fit: contain`
-  itself applies (DESIGN §2.7's coordinate mapping, step 2), then for each object:
-  - if `boundingBox` is present, maps its four corners into that sub-rect and appends one
-    `<div class="onvif-overlay-box">` (`border: 2px solid {getOnvifEventColor(...)}`,
-    `box-sizing: border-box`, positioned/sized via inline `left`/`top`/`width`/`height`);
-  - always appends a label (`<div class="onvif-overlay-label">`, background-colored the same as the
-    box's border, `transform: translateY(-100%)` to sit just above its anchor point regardless of
-    its own auto-sized width/height) showing `objectId`, the highest-`likelihood` `classCandidates`
-    entry's `type`+`likelihood` (or just `objectId` alone if there are no candidates), anchored at
-    the bounding box's top-left when one exists, or at the mapped `centerOfGravity` otherwise.
-- **`setVisible(visible)`** — toggles the mounted `<div class="onvif-overlay">`'s `hidden` property;
-  does *not* clear already-rendered content, so toggling back on immediately shows the last
-  `render()`'s output without waiting for a new metadata frame. `RTSPOverWebSocket.stop()` calls
-  `this.onvifOverlay?.setVisible(false)` at the end of every stop, requested directly by the user —
-  without it, a stopped session's last-drawn bounding box(es) stayed visible over the (now frozen)
-  video frame, and would reappear immediately if the "ONVIF Event" toggle were flipped again before
-  a new session's first metadata frame arrived, since `onvifLastFrame` itself isn't cleared on
-  stop.
+- **`render({ frame, videoIntrinsicSize, containerSize })`** — if `frame` is `null`, `frame.objects`
+  is empty, or `videoIntrinsicSize` isn't yet known (`width`/`height` `<= 0`), calls
+  `resizePool(0)` (shrinks the pool to nothing, `remove()`-ing every pooled node from the DOM) and
+  returns — nothing to draw. Otherwise calls `resizePool(frame.objects.length)`, computes the
+  rendered/letterboxed sub-rect from `videoIntrinsicSize` + `containerSize` using the same
+  containment math `object-fit: contain` itself applies (DESIGN §2.7's coordinate mapping, step 2),
+  then for each object at index `i` (`renderObject(object, rendered, i)`) rewrites `boxPool[i]`/
+  `labelPool[i]`'s dynamic style properties (`left`/`top`/`width`/`height`/`border`/`display` on the
+  box, `left`/`top`/`background`/`display`/`textContent` on the label) from scratch:
+  - if `boundingBox` is present, maps its four corners into that sub-rect and shows the box
+    (`border: 2px solid {getOnvifEventColor(...)}`, positioned/sized via `left`/`top`/`width`/
+    `height`; `box-sizing: border-box`/`position`/`pointer-events` are static, set once when the
+    node is created in `resizePool()`, not re-applied per render);
+  - shows a label (background-colored the same as the box's border, `transform: translateY(-100%)`
+    — also static, set once — to sit just above its anchor point regardless of its own auto-sized
+    width/height) showing `objectId`, the highest-`likelihood` `classCandidates` entry's
+    `type`+`likelihood` (or just `objectId` alone if there are no candidates), anchored at the
+    bounding box's top-left when one exists, or at the mapped `centerOfGravity` (box hidden via
+    `display: none` in this case) otherwise; if neither is present, both box and label are hidden
+    for that index instead.
+
+  **Real problem, found live** (see `MEMORY.md`'s "ONVIF overlay drawing stole main-thread time"
+  entry): the original implementation did a full `container.removeChild()` sweep plus fresh
+  `createElement()`/`appendChild()` for every object on *every* `render()` call, i.e. on every
+  metadata frame — real ONVIF analytics streams can send one of those per video frame while an
+  event is active, so this was continuous DOM churn directly competing with video decode/paint on
+  the same main thread. Pooling (this version) still fully recomputes every drawn value on every
+  call — DESIGN §2.7's "each Frame is a full refresh" lifecycle (no cross-frame object tracking/
+  interpolation/staleness timeout) is unchanged and still applies — only the underlying DOM node
+  *objects* are recycled across consecutive `render()` calls with the same object count, turning
+  that case into plain style-property writes on already-attached elements instead of DOM
+  creation/removal. `resizePool()` still fully clears the pool (matching the pre-pooling
+  create/destroy behavior, and what `OnvifOverlay.test.ts` already asserted) whenever there's
+  nothing to draw at all — only the *steady-object-count* case (a tracked object across consecutive
+  frames, the common case) benefits from reuse; growing/shrinking the pool by the exact delta when
+  the count changes is still cheaper than the old full-clear-and-rebuild, just not free.
+- **`setVisible(visible)`** — sets the user-facing `visible` flag (the "ONVIF Event" toggle's own
+  ON/OFF state) and recomputes the mounted `<div class="onvif-overlay">`'s `hidden` property via
+  `applyHidden()`; does *not* clear already-rendered content, so toggling back on immediately shows
+  the last `render()`'s output without waiting for a new metadata frame. `RTSPOverWebSocket.stop()`
+  calls `this.onvifOverlay?.setVisible(false)` at the end of every stop, requested directly by the
+  user — without it, a stopped session's last-drawn bounding box(es) stayed visible over the (now
+  frozen) video frame, and would reappear immediately if the "ONVIF Event" toggle were flipped
+  again before a new session's first metadata frame arrived, since `onvifLastFrame` itself isn't
+  cleared on stop.
 - **`setSuppressed(suppressed)`** — sets a second, independent `suppressedByControls` flag and
   recomputes `hidden` the same way (`hidden = !visible || suppressedByControls`). Real bug, found
   live: this container is `position: absolute`, appended as a sibling after `this.video` — the same
@@ -255,6 +293,18 @@ the draw. Verified via a Playwright harness that feeds metadata before ever call
 `onRTSPOverWebSocketResize`, confirms nothing draws yet (matching the pre-fix bug), then fires the
 resize event and confirms the box appears retroactively — plus a re-run of the original
 metadata-after-resize scenario to confirm no regression.
+
+`renderOnvifOverlay()` itself builds `containerSize` from `this.onvifContainerSize` — a field kept
+up to date by a `ResizeObserver` set up once in `updateRendering()` (observing
+`rtspOverWebSocketWrapperElement`, disconnected in `disconnectedCallback()`) — rather than reading
+`rtspOverWebSocketWrapperElement.clientWidth`/`.clientHeight` directly on every call, which is what
+it did originally. Real problem, found live alongside the DOM-pooling fix above (same investigation,
+same `MEMORY.md` entry): reading a layout-geometry property immediately after `OnvifOverlay.render()`'s
+own DOM writes forces a synchronous browser reflow ("layout thrashing"), and this method runs once
+per metadata frame — the `ResizeObserver` decouples the frequent read (every metadata frame) from the
+infrequent write (an actual container resize), so the hot path is a plain field read with no layout
+cost. Falls back to a direct `clientWidth`/`.clientHeight` read only if `onvifContainerSize` was never
+set (e.g. `ResizeObserver` unavailable in the runtime), which is not the hot path.
 
 ### RFC / Standard References
 
