@@ -3,12 +3,13 @@
 *Per-class reference for the `<video>`-tag / Media Source Extensions rendering pipeline: the shared
 `VideoPlayer` abstract base and `VideoTagPlayer` — its fMP4-muxing/`SourceBuffer`-append lifecycle,
 its two G.711/G.726 audio-transcoding tiers (WASM vs. WebCodecs), every `currentTime`/seeking trigger
-it owns, and the `VTTCue`-based timestamp channel that ultimately surfaces as `RTSPOverWebSocket`'s
-`'timestamp'` DOM event. The sibling canvas/WebGL rendering pipeline (`CanvasTagPlayer` and friends)
-split out to [11-canvas-tag-player.md](11-canvas-tag-player.md) on 2026-09-08 — see this file's own
-History and that file's Context note for why.*
+it owns, the Live-only local-scrub "instant playback" mode, and the `VTTCue`-based timestamp channel
+that ultimately surfaces as `RTSPOverWebSocket`'s `'timestamp'` DOM event. The sibling canvas/WebGL
+rendering pipeline (`CanvasTagPlayer` and friends) split out to
+[11-canvas-tag-player.md](11-canvas-tag-player.md) on 2026-09-08 — see this file's own History and
+that file's Context note for why.*
 
-**Version:** 1.2.13 · **Author:** Youngho Kim
+**Version:** 1.2.18 · **Author:** Youngho Kim
 
 **History**
 
@@ -51,6 +52,11 @@ History and that file's Context note for why.*
 | 2026-09-08 | Added dedicated call-stack `sequenceDiagram`s, requested directly by the user, to three sections that previously only had a structural `flowchart`: "Video/Audio sample → `SourceBuffer` pipeline" gained one diagram covering *both* the video and audio entry points converging on `appendBuffer()` (previously only the class-level "Call Stack" section covered this, and only the video side); "Audio encoder selection" gained two — one per transcode path (WASM's Worker round trip vs. WebCodecs' synchronous-decode/async-encode call order), since the two paths' actual participants/timing differ enough that one shared diagram would blur the distinction; "Timestamp cue → `RTSPOverWebSocket` flow"'s single combined diagram was split into a dedicated "enqueue" (cue creation/`addCue()`) diagram and a dedicated "dequeue" (`onCueEnter`/polling → `reportCueTimestamp()` → `RTSPOverWebSocket`) diagram. No behavior change — pure documentation addition. |
 | 2026-09-08 | Fixed the real reason the same Live memory leak resurfaced *again* despite every fix above (`segmentArray`/`boxStartTime`/cue-count caps, the `updateend` reorder, the hysteresis/min-interval livelock guards) — reported live as memory still climbing (800MB → 1.2GB → 1.5GB across a single continuous session) and, once past roughly 1GB, the player visibly cycling Play → Pause → Play. Root cause, in `checkBufferSize()`'s trim-target calculation (`:2654`/`:2660`): `Math.abs(Math.min(endTime, currentTime) - getMaxInstantPlaybackTime())` is negative whenever `currentTime` hasn't reached `getMaxInstantPlaybackTime()` seconds yet — which the outer gate (`endTime - bufferedStart > getMaxInstantPlaybackTime() + 5`, measuring total buffered *span*, entirely independent of `currentTime`) does nothing to rule out. This is routinely true whenever `currentTime` has been sitting still for more than `getMaxInstantPlaybackTime()` seconds while Live appends keep arriving in the background regardless — e.g. the video was `pause()`d for a while (appends never stop for Live just because the `<video>` element is paused), or playback stalled/fell behind for any other reason. `Math.abs()` flipped that negative value positive instead of treating it as "no real margin yet, don't trim": e.g. `currentTime = 0` with the 30s default computed `removeEnd = 30`, so `sourceBuffer.remove(0, 30)` deleted the *exact* data still needed to resume from `currentTime` — a self-inflicted, permanent stall (the video can never advance past its own now-missing current position), after which every later `checkBufferSize()` call recomputes the same already-cleared `removeEnd` and no-ops forever while `endTime` (unaffected by the stall) keeps growing completely untrimmed for the rest of the session. Any transient stall/pause past the ~30-35s watermark was therefore enough to turn itself permanent and start the same unbounded-growth pattern all over again, explaining why the leak kept resurfacing after each of the fixes above closed off a different specific trigger for reaching that watermark. Fixed by clamping to 0 (`Math.max(0, ...)`, skip trimming — nothing safe to remove yet) instead of flipping the sign, in both the `boxsize !== 1` and `boxsize === 1` branches, and adding the same `if (removeEnd > 0)` guard to the first branch that the second already had. See `MEMORY.md`. |
 | 2026-09-08 | **Correction to this file's 2026-09-04 entry above** ("The actual DOM-level `<video>` element reset needed to reclaim browser-internal MSE/decoder memory was added one layer up, in `RTSPOverWebSocket.ts`'s new `resetPlayerElement()`"): no `resetPlayerElement()` exists anywhere in this codebase (confirmed via `grep`, prompted by a direct user question about how `<video>`/`<canvas>` resources get cleared on stop). The DOM-level reset described is real, just not where that entry says — it's inline in this class's own `close()` (`:3236-3265`), documented in the new "Teardown" bullet above. While investigating, also found and documented (not fixed — see that same bullet) that `close()`'s `videoElement.load()` call is Live-only (`if (!this.playbackFlag)`), with no comment anywhere explaining why; a proposed fix to also call it in Playback mode was not applied once tracing `close()`'s actual callers showed it fires on every in-session reinit (seek/resume/speed-change via `MediaRouter.initVideoPlayer()`, codec/size change via `selectVideoPlayer()`), not just final teardown — Playback reinits via seeking far more often than Live does, and `.load()`'s full pipeline reset is disruptive enough (visible flash, added latency) that blanket-enabling it for Playback risked a real, user-visible seek/scrub regression instead of the requested leak fix. See `01-elements-interface-exceptions.md`'s matching correction and `MEMORY.md`. |
+| 2026-09-08 | Fixed a Mermaid render error the user hit pasting the "Call Stack" `sequenceDiagram` (`:783-`) into a renderer: `participant VE as &lt;video&gt; element (browser-native decode)` and `VE-->>VE: visible pixels rendered to the &lt;video&gt; element` used HTML-entity-escaped angle brackets in bare (unquoted) sequence-diagram participant-alias/message text, which some Mermaid parsers fail on (`Expecting ... arrow token, got 'NEWLINE'`) — unlike this doc's `flowchart` diagrams elsewhere, where the same `&lt;video&gt;` pattern *inside a quoted `["..."]` node label* renders fine and was left as-is. Fixed by dropping the angle brackets in the two sequence-diagram occurrences (plain "video element" text) rather than escaping further. See `11-canvas-tag-player.md`'s matching fix (same pattern, `&lt;canvas&gt;`) and `MEMORY.md`. |
+| 2026-09-08 | Fixed one more Mermaid render error in the "Class hierarchy" diagram (`:85-`), same underlying issue as the entry above: `CanvasTagPlayer`'s stereotype `<<see 11-canvas-tag-player.md>>` crammed a cross-reference into the stereotype slot instead of a plain word like this doc's own `<<abstract>>` two lines above it — removed entirely (the cross-reference is already redundant with this file's own opening paragraph and History). See `11-canvas-tag-player.md`'s/`07-talk-backup-worker.md`'s matching stereotype fixes (same day) and `MEMORY.md`. |
+| 2026-09-08 | Expanded "Timestamp cue → `RTSPOverWebSocket` flow"'s "Up through `MediaRouter` to `RTSPOverWebSocket`" bullet and the dequeue `sequenceDiagram`'s tail, requested directly by the user to match `11-canvas-tag-player.md`'s own "Timestamp callback" section depth (expanded there first, same day). Added: where the cue's `timestamp`/`timestamp_usec` originate before this class ever sees them (`MediaRouter.handleVideoData()`'s RTCP-Sender-Report-anchored NTP sync, Live-mode only — cross-referenced to file 11's full formula rather than duplicated, since it's the identical shared code path, not `VideoTagPlayer`-specific); `MediaRouter.sendTimeStamp()`'s actual code and its previously-undocumented `lastRenderingTime` side channel (read back by step-play's `controlStepPlay()`); and `RTSPOverWebSocket.onRTSPOverWebSocketTimestamp()`'s full 5-step breakdown ending in the dispatched `'timestamp'` event's field-by-field shape. No behavior change — pure documentation depth increase. |
+| 2026-09-08 | Fixed a Mermaid render error in that same expanded dequeue `sequenceDiagram` (introduced by the entry immediately above, same day): `RWS-->>RWS: timestamp.timezone = GMT*60; localTimestamp = curDate + timezone offset -> this._localTimestamp` combined two statements with a `;` — every other self-message in this diagram is one clause per line, and the semicolon-joined line is the one that failed to parse (`Expecting ... arrow token, got '+'`). Fixed by splitting into two separate `RWS-->>RWS:` lines, matching the diagram's own established one-clause-per-line style; also reworded `+` to "plus" in the split line's own text as a precaution, though the semicolon is the more likely actual cause (the adjacent line above it, `curDate = new Date(timestamp*1000 + timestamp_usec) -> this._currentTimestamp`, keeps a bare `+` and an inline `->` and parses fine, both present before this fix and unchanged by it). See `11-canvas-tag-player.md`'s matching fix (identical line, copied into both diagrams the same day) and `MEMORY.md`. |
+| 2026-09-08 | Added a new "Instant playback" section, requested directly by the user (this class had no coverage of the feature at all before now). Traced the full path across five classes: `RTSPOverWebSocket.ts`'s `playType`/`mode` setters and `pause()`/`resume()` (the public entry/exit points), `StreamPlayer.control()`'s `instantplayback` `cmd` routing, `MediaRouter.sendCommandData('instantplayback', ...)`, and this class's own `instantplaybackCmd()` (`init`/`play`/`pause`/`seek`/`terminate`) plus every site gated on `this.instantplayback` (`checkBufferSize()` suspension, `onPause()`/`onWaiting()`/`onSeeking()`/`onCanPlay()`/`getCurrentVideoFrame()`/`resume()`). Documented all eight `0x110`-prefixed status/error codes with their exact trigger and dispatched-detail shape (including two real asymmetries found along the way: `0x1104` is thrown directly rather than delivered via the event callback like the other seven, and `0x1107` isn't in `onRTSPOverWebSocketInstantPlayback()`'s switch so its `currentTime` gets silently dropped at dispatch) and the unrelated same-named `RtspClient.instantplayback` field (a different flag, on a different class, that only suppresses the RTSP alive-watchdog during any Live pause — easy to confuse with this section's field given the identical name). Added a call-stack `sequenceDiagram` covering entry, the pause/status-report cycle, and exit. Updated this file's opening abstract to mention the feature. No behavior change — pure documentation addition. |
 
 ---
 
@@ -116,9 +122,7 @@ classDiagram
         +capture(fileName)* abstract
         +toggleControls(flags)* abstract
     }
-    class CanvasTagPlayer {
-        <<see 11-canvas-tag-player.md>>
-    }
+    class CanvasTagPlayer
     class VideoTagPlayer
 
     VideoPlayer <|-- CanvasTagPlayer
@@ -658,6 +662,119 @@ jumps above (`onWaiting()` itself) and a frequent *side effect* of one landing s
 fully decodable — see `MEMORY.md`'s "seek domino" entry for a real `chrome://media-internals` trace
 of this cascading before the rate-limit fix above.
 
+#### Instant playback
+
+A Live-only feature letting a host page pause and locally scrub within the last
+`getMaxInstantPlaybackTime()` seconds (default 30s) of *already-downloaded* video — entirely
+client-side, against the `<video>` element's own `SourceBuffer`, with no RTSP round trip to the
+camera for the pause/seek/resume operations themselves (that's the "instant" in the name: no
+network latency for any of them). Spans five classes; this section documents the
+`VideoTagPlayer`-side mechanics in full and only as much of `RTSPOverWebSocket.ts`/`StreamPlayer.ts`
+as is needed to see where each call originates — see `01-elements-interface-exceptions.md` for the
+full public API surface.
+
+**Entry.** A host page sets `element.mode = 'instantplayback'` (or the equivalent
+`element.playType = RTSPOverWebSocketPlayType.INSTANTPLAYBACK`). The `playType` setter
+(`RTSPOverWebSocket.ts:1500-1527`) stashes the current mode as `_oldPlayType` (to restore later),
+pauses if currently playing, then sends `cmd: 'init'` with `media.type: 'instantplayback'` via
+`player.control(this.info)`. `StreamPlayer.control()` (`:820-836`) routes every `instantplayback`
+`cmd` the same way: `MediaRouter.sendCommandData('instantplayback', {cmd, ...})` →
+`MediaRouter`'s `case 'instantplayback'` (`:1334-1336`) → `this.player.instantplaybackCmd(data)` →
+this class's own `instantplaybackCmd(data)` (`:3340-3381`). Its `'init'` case only takes effect
+`if (this.playmode === 'live')`: sets `this.instantplayback = true`, and if the `MediaSource` is
+already marked `willEnd`, calls `mediaSource.endOfStream()`.
+
+**While active.**
+- `checkBufferSize()`'s normal ~30-35s trim is suspended (`videoUpdating()`'s Live branch only calls
+  it `if (!this.instantplayback)` — see "`SourceBuffer` fill/trim lifecycle" above) — the entire
+  point is to *keep* the buffer around for scrubbing, not trim it away out from under a paused user.
+- The host page's `pause()`/`resume()`/`seek()` calls (`RTSPOverWebSocket.ts`, gated on
+  `this._playType === INSTANTPLAYBACK`) no longer issue a real RTSP PAUSE/PLAY/SEEK to the camera —
+  they instead send `cmd: 'pause'`/`'play'`/`'seek'` through the same `instantplayback` channel,
+  landing in this class's `instantplaybackCmd()` switch: `'play'` calls `this.play()` (which, if
+  resuming and the buffer/`MediaSource` "will end", also calls `endOfStream()` — `:3116`); `'pause'`
+  calls `this.pause()`; `'seek'` bounds-checks (`0 <= seekTime <= videoElement.duration`) then
+  assigns `videoElement.currentTime` directly — a plain local seek within the existing buffer, nothing
+  else.
+- `onSeeked()` and `onSeeking()`/`onWaiting()`/`onCanPlay()` all branch on `this.instantplayback`:
+  a seek while scrubbing does **not** auto-resume playback or clear timestamp cues the way a normal
+  seek does (`onSeeked()`, `:1572-1577`) — the user stays paused at the scrubbed position,
+  matching the expected "scrub while paused" UX instead of snapping back to playing.
+- **Status/error reporting.** Every checkpoint below calls `this.eventInstantPlaybackCallback(data)`
+  (registered the same way as every other player-level callback, via `MediaRouter`'s
+  `'instantplayback'` listener category, `:1410-1411`/`:1738`, up to
+  `RTSPOverWebSocket.onRTSPOverWebSocketInstantPlayback()`, `:4676-4697`, which dispatches the
+  public `'instantplayback'` `CustomEvent`):
+
+  | Code | Fired from | When | Dispatched detail |
+  | --- | --- | --- | --- |
+  | `0x1100` | `onPause()` (`:1392-1419`) | Native `'pause'` event confirms the video actually stopped, while `instantplayback && userPaused` | `{timeline: {startTime, endTime, currentTime}}` — the scrubbable range, read straight off `sourceBuffer.buffered`. **The key event for building a rewind-scrubber UI.** |
+  | `0x1101` | `VideoTagPlayer.resume()` (`:3142-3154`, the class's own `resume()`, not `RTSPOverWebSocket.resume()`) | `playmode === 'live' && instantplayback`, i.e. instant playback is ending | `{timeline: undefined}` — no extra fields (falls into `onRTSPOverWebSocketInstantPlayback()`'s `0x1100`/`0x1101` branch, which reads `.timeline`, absent here) |
+  | `0x1102` | `getCurrentVideoFrame()` (`:1189-1193`) | Every rendered-frame tick (via `statisticsTimer`) while `instantplayback && !videoElement.paused` | `{currentTime}` — a periodic "here's your current instant-playback position while playing forward" tick, not an error |
+  | `0x1103` | `onPause()` | Same trigger as `0x1100`, fired first | `{currentTime}` |
+  | `0x1104` | `instantplaybackCmd()`'s `'terminate'` case (`:3368-3378`) | `this.clearBuffer()` itself throws | **Not** delivered via `eventInstantPlaybackCallback` — thrown directly as an `RTSPOverWebSocketError`, a different delivery mechanism from every other code here |
+  | `0x1105` | `onWaiting()` (`:1439-1453`) | Native `'waiting'` event while `instantplayback` — scrubbed to a position with no buffered data | `{currentTime}` |
+  | `0x1106` | `onSeeking()` (`:1558-1569`) | Native `'seeking'` event while `instantplayback` | `{currentTime}` |
+  | `0x1107` | `onCanPlay()` (`:1365-1382`) | Native `'canplay'` event while `instantplayback` and still paused — the scrubbed-to position has finished (re)buffering | `{currentTime}` gets dropped: `onRTSPOverWebSocketInstantPlayback()`'s `switch` has no `'0x1107'` case, so it falls to `default` and dispatches only `{error, state}` |
+
+  `onRTSPOverWebSocketInstantPlayback()`'s own grouping: `0x1100`/`0x1101` read `.timeline`;
+  `0x1102`/`0x1103`/`0x1105`/`0x1106` read `.currentTime`; everything else (including `0x1107`)
+  falls to the `default` branch and dispatches neither.
+
+**Exit.** Setting `element.mode`/`.playType` back to `'live'` calls `RTSPOverWebSocket.resume()`
+(`:5844-5862`) while `_playType` is still `INSTANTPLAYBACK`: sends `cmd: 'terminate'` through the
+same channel → `instantplaybackCmd()`'s `'terminate'` case calls `this.clearBuffer()` (sets
+`clearBufferFlag = true`, drained by the next `sourceBuffer` `'updateend'` into a full
+`sourceBuffer.remove(0, endTime)` wipe of the whole instant-playback window — see the
+`sourceBufferEventListener` `'updateend'` case in "`SourceBuffer` fill/trim lifecycle" above) — then
+`RTSPOverWebSocket.resume()` restores `info.media.type`/`_playType` from `_oldPlayType`. The
+`instantplayback` field itself flips back to `false` (and fires `0x1101`) separately, inside
+`VideoTagPlayer.resume()` — not inside `instantplaybackCmd()`'s `'terminate'` case itself, which
+only clears the buffer.
+
+**A same-named, unrelated flag one layer down.** `RtspClient.ts` has its own `instantplayback`
+field (`:342`), set by `StreamPlayer.pause()`/`resume()` specifically when `media.type === 'live'`
+(`:615`/`:632`) — nothing to do with this class's field of the same name, and not gated on the
+`INSTANTPLAYBACK` play type at all (a plain Live pause sets it too). Its only effect: the RTSP
+alive-watchdog (`checkAliveIntervalHandlerFunc`'s 1s interval, `:1275`) skips marking
+`isRTPRunning = false` while it's `true`, so intentionally pausing Live playback doesn't get
+misread as a dead connection. Easy to confuse with this section's `VideoTagPlayer.instantplayback`
+given the identical name — they're different fields on different classes with different triggers.
+
+```mermaid
+sequenceDiagram
+    participant Host as Host page
+    participant RWS as RTSPOverWebSocket
+    participant SP as StreamPlayer.control()
+    participant MR as MediaRouter
+    participant VTP as VideoTagPlayer
+
+    Host->>RWS: element.mode = 'instantplayback'
+    RWS-->>RWS: playType setter: _oldPlayType = current
+    RWS-->>RWS: pause() if currently playing
+    RWS->>SP: control({cmd:'init', media:{type:'instantplayback'}})
+    SP->>MR: sendCommandData('instantplayback', {cmd:'init'})
+    MR->>VTP: instantplaybackCmd({cmd:'init'})
+    VTP-->>VTP: if playmode==='live': this.instantplayback = true
+    VTP-->>VTP: if mediaSource.willEnd: mediaSource.endOfStream()
+
+    Host->>RWS: element.pause() (local scrub pause)
+    RWS->>SP: control({cmd:'pause', media:{type:'instantplayback'}})
+    SP->>MR: sendCommandData('instantplayback', {cmd:'pause'})
+    MR->>VTP: instantplaybackCmd({cmd:'pause'}) -> this.pause()
+    VTP-->>VTP: onPause() fires (native 'pause' event)
+    VTP->>RWS: eventInstantPlaybackCallback({errorCode:0x1100, timeline:{startTime,endTime,currentTime}})
+    RWS-->>RWS: dispatch('instantplayback', {error, state, timeline})
+
+    Host->>RWS: element.mode = 'live' (exit)
+    RWS->>RWS: resume(): still sees _playType === INSTANTPLAYBACK
+    RWS->>SP: control({cmd:'terminate', media:{type:'instantplayback'}})
+    SP->>MR: sendCommandData('instantplayback', {cmd:'terminate'})
+    MR->>VTP: instantplaybackCmd({cmd:'terminate'}) -> this.clearBuffer()
+    Note over VTP: clearBufferFlag=true, drained on the next 'updateend' -><br/>sourceBuffer.remove(0, endTime), full wipe
+    RWS-->>RWS: restore info.media.type / _playType from _oldPlayType
+```
+
 #### Timestamp cue → `RTSPOverWebSocket` flow
 
 Every muxed video/audio sample carries its own RTP-derived wall-clock `timeStamp` (`.timestamp`/
@@ -715,11 +832,16 @@ sequenceDiagram
     RCT->>RCT: lastReportedCue = cue (dedup + polling's own early-stop)
     RCT->>VTP: this.timeStampCallback(timeStamp)
     VTP->>MR: (registered via player.setTimeStampCallback((ts) => self.sendTimeStamp(ts)))
+    MR-->>MR: sendTimeStamp(): this.lastRenderingTime = timeStamp (read later by controlStepPlay())
     MR->>MR: this.timeStampCallback(timeStamp, this.stepFlag)
     Note over MR: (registered from RTSPOverWebSocket.ts:352,<br/>time: (...args) => this.onRTSPOverWebSocketTimestamp(args[0]))
     MR->>RWS: onRTSPOverWebSocketTimestamp(time)
-    RWS->>RWS: compute _currentTimestamp/_localTimestamp (GMT-shifted)
+    RWS-->>RWS: unwrap time.timeStamp if nested, else use time directly
+    RWS-->>RWS: curDate = new Date(timestamp*1000 + timestamp_usec) -> this._currentTimestamp
+    RWS-->>RWS: timestamp.timezone = GMT*60
+    RWS-->>RWS: localTimestamp = curDate plus timezone offset -> this._localTimestamp
     RWS-->>RWS: this.dispatch('timestamp', {mode, clock, timestamp, timezone, local, speed})
+    Note over RWS: also mirrors localTimestamp into this.timestampElement.textContent, if configured
 
     Note over TT,Cue: separately, onCueExit fires when 'time marches on' passes the cue's endTime -> track.removeCue(this)<br/>(the normal removal/dequeue-without-reporting path, a seek that skips clean over [startTime,endTime)<br/>orphans the cue instead -- see makeOnCueChange()'s cap in the Structure section above for that safety net)
 ```
@@ -749,16 +871,60 @@ sequenceDiagram
   `type: 'timestamp'`, `channelId`, `currentTimeDiff` (`(currentTime - cue.startTime) * 1000`, ms),
   and `videoSize`, records `cue` as `lastReportedCue` (dedup + `checkTimestampCueAtCurrentTime()`'s
   own early-stop optimization), then calls `this.timeStampCallback(timeStamp)`.
-- **Up through `MediaRouter` to `RTSPOverWebSocket`.** `timeStampCallback` is registered from
-  `MediaRouter.ts:850` (`self.player.setTimeStampCallback((ts) => self.sendTimeStamp(ts))`, run once
-  a session's player is selected) — `sendTimeStamp()` (`:772-`) then invokes `MediaRouter`'s *own*
-  `timeStampCallback`, which was itself registered from `RTSPOverWebSocket.ts:352`
-  (`time: (...args: unknown[]) => this.onRTSPOverWebSocketTimestamp(args[0])`, part of the same
-  callbacks object `StreamPlayer` wires up for `codec`/`error`/`resize`/etc.).
-  `onRTSPOverWebSocketTimestamp()` (`RTSPOverWebSocket.ts:4376-`) computes `_currentTimestamp`
-  (UTC ISO string) and `_localTimestamp` (GMT-shifted per `this.GMT`), then calls
-  `this.dispatch('timestamp', {mode, clock, timestamp, timezone, local, speed})` — a public,
-  consumer-facing `CustomEvent` (see `01-elements-interface-exceptions.md`'s events reference).
+- **Where the cue's own `timeStamp.timestamp`/`timestamp_usec` come from in the first place.**
+  Computed one layer up from this class entirely, in `MediaRouter.handleVideoData()` (`:811-815`,
+  **Live-mode only**): `videoNTPDateTime`/`rtcpTSvideo` (set by `MediaRouter.handleRtcpData()` the
+  moment the video track's RTCP Sender Report arrives — an NTP wall-clock reading paired with the
+  RTP timestamp it corresponds to, RFC 3550 §6.4.1) anchor every subsequent frame's own RTP
+  timestamp to real time via a fixed-clock-rate delta from that one anchor — see
+  [11-canvas-tag-player.md](11-canvas-tag-player.md)'s "Timestamp callback" section for the exact
+  `utcTimeStamp`/`timestamp`/`timestamp_usec` formula (identical code path, not
+  `VideoTagPlayer`-specific — this class only differs in *how* the resulting timestamp gets
+  delivered, via the `VTTCue` mechanism documented above, not in where the value itself comes from).
+- **`MediaRouter.sendTimeStamp()` (`:772-777`)** — the callback `reportCueTimestamp()` above calls
+  into:
+
+  ```ts
+  private sendTimeStamp(timeStamp: unknown): void {
+    if (this.timeStampCallback !== null) {
+      this.lastRenderingTime = timeStamp;
+      this.timeStampCallback(timeStamp, this.stepFlag);
+    }
+  }
+  ```
+
+  Two effects: forwards to `MediaRouter`'s *own* registered `timeStampCallback` (the
+  `RTSPOverWebSocket.ts:352` one, next), **and** stashes the raw timestamp as
+  `this.lastRenderingTime` first — read exactly once elsewhere, at `MediaRouter.ts:965`
+  (`self.player.controlStepPlay(self.lastRenderingTime, self.stepCmd)`): step-play (single-frame
+  forward/backward) resumes from whatever timestamp the *last rendered frame* actually carried, not
+  from any independently-tracked playback position.
+- **`RTSPOverWebSocket.onRTSPOverWebSocketTimestamp()` (`:4392-4458`)** — registered from
+  `RTSPOverWebSocket.ts:352` (`time: (...args: unknown[]) => this.onRTSPOverWebSocketTimestamp(args[0])`,
+  part of the same callbacks object `StreamPlayer` wires up for `codec`/`error`/`resize`/etc.). Exact
+  steps:
+  1. Unwraps the input: accepts either a bare `{timestamp, timestamp_usec, ...}` object or one
+     nested one level under a `.timeStamp` property (both shapes reach this method from different
+     callers — see `:4738`'s backup-mode call site for the nested case).
+  2. `curDate = new Date(timestamp.timestamp * 1000 + timestamp.timestamp_usec)` — the UTC instant —
+     stored as `this._currentTimestamp` (ISO string).
+  3. `timestamp.timezone = this.GMT * 60` (minutes), then (`GMT` always defaults to `0`, so always
+     present): `localTimestamp = new Date(curDate.valueOf() + (timestamp.timezone / 60) * 3600 *
+     1000)`, stored as `this._localTimestamp` (ISO string) — the same UTC instant shifted to the
+     device's own local wall clock.
+  4. Dispatches the public, consumer-facing `'timestamp'` `CustomEvent`
+     (`01-elements-interface-exceptions.md`'s events reference) with this exact detail shape:
+
+     | Field | Value |
+     | --- | --- |
+     | `mode` | `timestamp.mode` — `'live'`/`'playback'` |
+     | `clock` | `timestamp.timestamp * 1000 + timestamp.timestamp_usec` — the raw UTC instant, in milliseconds |
+     | `timestamp` | `this._currentTimestamp` — the same instant, as an ISO string |
+     | `timezone` | `timestamp.timezone` (minutes) if set, else `this.GMT` |
+     | `local` | `localTimestamp.toISOString()` — the GMT-shifted instant |
+     | `speed` | `this.info.media.requestInfo.scale` — the currently-requested playback speed, unrelated to the timestamp itself but piggybacked on the same event |
+  5. If a debug `timestampElement` is configured, also mirrors `localTimestamp.toISOString()` into
+     its `textContent` — a live on-page clock display, independent of the dispatched event.
 - **Cue cleanup.** `makeOnCueExit()`'s closure removes the cue from its `TextTrack` the moment "time
   marches on" passes `endTime` — the normal lifecycle. A currentTime jump (any row in the "Seeking"
   table above) that skips clean over a cue's `[startTime, endTime)` range means `onexit` never fires
@@ -780,7 +946,7 @@ sequenceDiagram
     participant VTP as VideoTagPlayer
     participant M4 as mp4Generator (vendor)
     participant SB as SourceBuffer (MSE)
-    participant VE as &lt;video&gt; element (browser-native decode)
+    participant VE as video element (browser-native decode)
 
     MR->>VTP: onVideoData(playMode, streamData, videoInfo)
     alt first I-frame of session
@@ -800,7 +966,7 @@ sequenceDiagram
     SB-->>VTP: 'updateend' event
     VTP->>VTP: videoUpdating() (checkBufferSize trim) then appendSegmentToSourceBuffer() (drain next queued segment)
     Note over VE: browser MSE pipeline demuxes/decodes fMP4 internally
-    VE-->>VE: visible pixels rendered to the &lt;video&gt; element
+    VE-->>VE: visible pixels rendered to the video element
 ```
 
 - **RFC / Standard References.**

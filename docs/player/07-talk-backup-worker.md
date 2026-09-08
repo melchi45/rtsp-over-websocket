@@ -4,7 +4,7 @@
 the Web Worker–side classes (`worker/`) that do video decode, audio transcode, MJPEG depacketize, SUNAPI REST,
 and AVI/ZIP muxing off the main thread.*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim
+**Version:** 1.1.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -16,6 +16,7 @@ and AVI/ZIP muxing off the main thread.*
 | 2026-09-03 | Added new §3b, `WebCodecsVideoEncoder` (`worker/videoEncoder/`) — MJPEG's new H264 re-encode tier, feeding `VideoTagPlayer.ts`'s real-MSE pipeline. Grouped by source directory next to `worker/videoDecoder/` despite running on the main thread, not in a Worker — see that section's own note. See `05-video-tag-player.md`, `08-util.md`, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
 | 2026-09-03 | Fixed a real bug in `WebCodecsVideoEncoder`, found live against a real 2048x1536 camera: `encodeQueueSize` didn't count frames still awaiting `encode()`'s own `createImageBitmap()` decode step, only the underlying `VideoEncoder`'s own queue — invisible backpressure that let a real backlog grow unbounded (confirmed live: ~1s to ~28s within one real minute) while the caller's drop-based throttle kept reading 0. Fixed with a new `pendingDecodeCount` field folded into `encodeQueueSize`. See this section and `MEMORY.md`. |
 | 2026-09-04 | `BackupProvider`/`FileMaker` each gained a `debug`/`set debug()` gate (`util/debugLog.ts`, `debug["backup"]` — see `01-elements-interface-exceptions.md`'s new `debug` attribute and `08-util.md`), with new `init()`/`processMessage()` trace points. `BackupProvider.init()` also applies its own `debugConfig` to `sharedFileMaker` — the module-level `FileMaker` singleton this file's own doc comment already documents as shared across *every* channel's `BackupProvider` (only ever constructed once, by whichever channel starts a backup first) — so its debug tracing is subject to the same last-writer-wins sharing as every other piece of its state, not a new caveat introduced by this feature. |
+| 2026-09-08 | Fixed Mermaid render errors (`Expecting ... arrow token, got 'NEWLINE'`) the user hit pasting several of this file's `classDiagram`s into a renderer: eight class-body stereotype annotations (`<<mediaSession, documented elsewhere>>`, `<<Worker, documented in §7>>` ×2, `<<Worker entry, onmessage shim>>` ×4, `<<Worker entry / class in one file>>`, `<<network/http, documented elsewhere>>`, `<<Worker entry, standalone — no wrapped class>>`) crammed a cross-reference/explanation into the stereotype slot instead of a short token — every other stereotype in this doc set (`<<abstract>>`, `<<interface>>`) is a single plain word, and several Mermaid parsers reject the punctuation-heavy ones. Fixed by shortening each to `<<Worker>>` (or removing the annotation entirely where it was purely a cross-reference, e.g. `AudioTalkSession`/`SunapiClient`) — the dropped detail is already covered in this file's own prose everywhere it mattered. `<<base binary writer>>` (plain words, no punctuation) was left as-is, not implicated by the reported errors. See `05-video-tag-player.md`'s/`11-canvas-tag-player.md`'s matching fixes (same day, same underlying pattern, different annotations) and `MEMORY.md`. |
 
 ---
 
@@ -39,9 +40,7 @@ per-subsystem docs in this series for their own full treatment.
 classDiagram
     class Talk
     class G711AudioEncoder
-    class AudioTalkSession {
-        <<mediaSession, documented elsewhere>>
-    }
+    class AudioTalkSession
     Talk ..> AudioTalkSession : PCM buffer handed to, via callback (not a direct reference)
     AudioTalkSession --> G711AudioEncoder : creates/uses
 ```
@@ -213,10 +212,10 @@ classDiagram
     class BackupProvider
     class FileMaker
     class backupWorker {
-        <<Worker, documented in §7>>
+        <<Worker>>
     }
     class zipWorker {
-        <<Worker, documented in §7>>
+        <<Worker>>
     }
     BackupProvider --> FileMaker : shares one module-level singleton instance
     BackupProvider ..> backupWorker : postMessage/onmessage
@@ -394,7 +393,7 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class decoderWorker {
-        <<Worker entry, onmessage shim>>
+        <<Worker>>
     }
     class AssemblyDecoder
     class WebCodecsVideoDecoder
@@ -713,7 +712,7 @@ Worker, it's simply a new file that happens to sit next to `videoDecoder/` in th
 ```mermaid
 classDiagram
     class audiotranscoderWorker {
-        <<Worker entry, onmessage shim>>
+        <<Worker>>
     }
     class AssemblyTranscoder
     audiotranscoderWorker ..> AssemblyTranscoder : owns
@@ -827,7 +826,7 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class mjpegDepacketizeWorker {
-        <<Worker entry, onmessage shim>>
+        <<Worker>>
     }
     class MjpegDepacketizer
     mjpegDepacketizeWorker ..> MjpegDepacketizer : owns
@@ -985,12 +984,10 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class sunapiRequestTask {
-        <<Worker entry / class in one file>>
+        <<Worker>>
     }
     class SunapiRequestTask
-    class SunapiClient {
-        <<network/http, documented elsewhere>>
-    }
+    class SunapiClient
     sunapiRequestTask ..> SunapiRequestTask : file exports the class directly (no separate shim)
     SunapiClient ..> SunapiRequestTask : parallel/worker-side counterpart (per README §4)
 ```
@@ -1139,10 +1136,10 @@ classDiagram
     class AviFileWriter
     class BackupSession
     class backupWorker {
-        <<Worker entry, onmessage shim>>
+        <<Worker>>
     }
     class zipWorker {
-        <<Worker entry, standalone — no wrapped class>>
+        <<Worker>>
     }
 
     AviFormatWriter <|-- AudioHeader

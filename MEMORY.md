@@ -5860,3 +5860,98 @@ point in time, and `grep`/`git log -S` against the actual source is the only way
 function is real before recommending or building on it, exactly as this project's own memory-system
 guidance already says to do.
 
+## Mermaid render error: HTML-entity-escaped angle brackets break in bare sequence-diagram text
+
+The user pasted `docs/player/11-canvas-tag-player.md`'s "Decoded frame → canvas draw pipeline"
+`sequenceDiagram` into a Mermaid renderer and got a parse error on the `Note over GL: visible
+pixels on the &lt;canvas&gt; element` line (`Expecting ... arrow token, got 'NEWLINE'`).
+`docs/player/05-video-tag-player.md` had the identical pattern (`&lt;video&gt;`) in its own "Call
+Stack" sequence diagram, not yet reported but certain to fail the same way.
+
+Root cause: `&lt;video&gt;`/`&lt;canvas&gt;` were used consistently across both files to render
+literal angle brackets in diagram text, but only work when the text sits inside a *quoted* label —
+a flowchart node's `["..."]` bracket label (both files have a couple of these, left untouched, e.g.
+`VE["&lt;video&gt; element pixels/audio"]`). In *bare*, unquoted sequence-diagram text — a
+`participant X as ...` alias, a plain `A->>B: ...`/`Note over X: ...` message — some Mermaid
+parsers don't handle the entity the same way and fail outright, rather than rendering it as literal
+`<video>`/`<canvas>` text. Fixed by dropping the angle brackets in the four affected bare-text
+occurrences (two per file) — plain "video element"/"canvas element" reads fine and sidesteps the
+parser difference entirely, rather than trying to find another escaping scheme.
+
+**How to apply**: `&lt;tag&gt;` (or literal `<tag>`) inside Mermaid diagram text is only safe inside
+a quoted bracket label (`["..."]`, `|"..."|`); anywhere else in sequence-diagram syntax
+(`participant ... as`, message text, `Note` text), don't try to render a literal HTML tag name at
+all — spell it in plain words instead. Worth a quick grep (`&lt;[a-zA-Z]*&gt;` across
+`docs/player/*.md`) after adding any new sequence diagram that references a DOM element by tag
+name, since this is easy to reintroduce the same way.
+
+## Follow-up: the same "prose crammed into a syntax slot" mistake also broke `classDiagram` stereotypes, in eight more places
+
+Direct continuation of the entry immediately above. The user kept pasting more diagrams from the
+same two docs into a Mermaid renderer and kept hitting the identical error shape (`Expecting ...
+arrow token, got 'NEWLINE'`), just from a different cause each time — not always the `&lt;tag&gt;`
+issue. Two more real, related bugs turned up:
+
+1. **`classDiagram` stereotype annotations with commas/periods/em-dashes inside them.** Mermaid's
+   `<<...>>` class stereotype slot is meant for a short, plain token (`<<abstract>>`,
+   `<<interface>>` — confirmed working throughout this doc set) or, per Mermaid's own docs, a
+   multi-word phrase with no punctuation. Several classes in `07-talk-backup-worker.md` (eight of
+   them) and one each in `05-video-tag-player.md`/`11-canvas-tag-player.md` instead used the
+   stereotype slot to smuggle in a cross-reference or explanation — `<<Worker entry, onmessage
+   shim>>`, `<<mediaSession, documented elsewhere>>`, `<<Worker entry, standalone — no wrapped
+   class>>`, `<<see 11-canvas-tag-player.md>>`, `<<abstract, see 05-video-tag-player.md>>` — and the
+   punctuation broke the parser the same way the HTML entities did. Fixed by shortening each to a
+   real short stereotype (`<<Worker>>`, `<<abstract>>`) or removing the annotation entirely where it
+   was pure cross-reference (moving that detail to prose, which usually already covered it anyway).
+   `<<base binary writer>>` (plain words, no punctuation) was left alone, not implicated by any
+   reported error.
+2. **A quoted string with a parenthetical used as a relationship target.**
+   `CanvasTagPlayer ..> "decoderWorker (Worker)" : postMessage/onmessage` in
+   `11-canvas-tag-player.md` — every other Worker relationship in this doc set (found by grepping
+   for the working pattern first, e.g. `07-talk-backup-worker.md`'s `BackupProvider ..>
+   backupWorker`) uses a bare, unquoted identifier, which Mermaid implicitly treats as a class node
+   with no separate `class X` declaration needed. Fixed to match: `..> decoderWorker`.
+
+**How to apply, extending the entry above's lesson**: the actual generalizable rule isn't
+"HTML entities break Mermaid" specifically — it's "a Mermaid syntax slot that expects a short,
+structured token (a stereotype, a class name, a participant alias) will often silently misparse if
+you put explanatory prose there instead, and the resulting error points at some *later* line, not
+the actual offender, because the parser only realizes something's wrong once it's looking for the
+next expected token and finds free text instead." When a Mermaid error is confusing (points at a
+seemingly-fine line), look one or more lines *upstream* first, specifically at any place a stereotype,
+alias, or bare identifier slot got used for description instead of naming — and check whether the
+same doc already has a **working example of the same construct elsewhere** (there almost always is,
+in a doc set this consistent) before guessing at the fix.
+
+## Third round: a semicolon-joined message line I wrote myself broke the same day's own new diagram content
+
+Directly self-inflicted, unlike the two entries above (which were pre-existing content the user
+found): while expanding `05-video-tag-player.md`'s and `11-canvas-tag-player.md`'s timestamp
+sequence diagrams the same day (adding the `onRTSPOverWebSocketTimestamp()` internal-step detail),
+one new line combined two statements with a semicolon: `RWS-->>RWS: timestamp.timezone = GMT*60;
+localTimestamp = curDate + timezone offset -> this._localTimestamp`. The user hit the same
+`Expecting ... arrow token, got '+'` error shape a third time. Fixed by splitting it into two
+separate `RWS-->>RWS:` self-messages, one clause each — matching every other line in the same
+diagram, none of which combine statements with `;`.
+
+**Not yet confirmed, flagged for later**: a repo-wide grep (`^\s*[A-Za-z0-9_]+-{1,2}>{1,2}[A-Za-z0-9_]*:.*;`)
+turned up nine more semicolon-joined message lines across `01-elements-interface-exceptions.md`,
+`02-network.md`, `03-mediaSession-core-video.md`, `04-mediaSession-audio-text.md`, and
+`07-talk-backup-worker.md` — all pre-existing, none written today, none reported broken by the user
+yet. Not fixed preemptively: unlike the three confirmed bug classes this session (HTML-entity
+angle brackets, prose-stuffed stereotypes, this semicolon case), there's no independent confirmation
+these nine actually fail the same way rather than happening to avoid whatever the semicolon's exact
+trigger condition is — this diagram's own working `curDate = new Date(timestamp*1000 +
+timestamp_usec) -> ...` line (bare `+`, inline `->`, no `;`) parses fine right next to the broken
+one, so `;` specifically,
+not `+` or `->` alone, is the more likely culprit, but the *exact* grammar rule isn't confirmed
+without a real Mermaid parser to test against. If any of those nine get reported, this note is where
+to look first.
+
+**How to apply**: after fixing a Mermaid syntax bug found via user report, immediately grep the
+*rest of the repo* for the same shape before considering the class of bug closed — this session
+found three separate bug classes in these docs (HTML entities, stereotype annotations, semicolons)
+purely because each fix prompted a "does this pattern exist anywhere else" sweep; skipping that step
+after the first report of each class would have meant discovering the rest of them one user-reported
+error at a time instead, exactly as happened before the sweep habit kicked in on this round.
+

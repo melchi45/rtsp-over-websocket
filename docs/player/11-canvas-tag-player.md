@@ -9,7 +9,7 @@ for a `canvas`-mode session is routed to an entirely separate subsystem
 `05-video-player-rendering.md` on 2026-09-08 — see [05-video-tag-player.md](05-video-tag-player.md)
 for the sibling `<video>`-tag/MSE pipeline and its own History for the full split rationale.*
 
-**Version:** 1.2.1 · **Author:** Youngho Kim
+**Version:** 1.2.5 · **Author:** Youngho Kim
 
 **History**
 
@@ -22,6 +22,10 @@ for the sibling `<video>`-tag/MSE pipeline and its own History for the full spli
 | 2026-09-08 | Split out of the former combined `05-video-player-rendering.md` into this new file, requested directly by the user alongside a matching deep-dive expansion for `VideoTagPlayer` (see [05-video-tag-player.md](05-video-tag-player.md)). Gained two new sections at the same depth as file 05's: "Decoded frame → canvas draw pipeline" (the full `decoderWorker`/MJPEG-timeout → `StepBufferList`/`PlaybackBufferManager` → `CanvasRenderer.draw()` → WebGL/2D pixel-upload chain) and "Buffering, frame-drop, and the step-play 'seeking' equivalent" — explicit about why this class has neither a `SourceBuffer` nor a `currentTime` to seek at all, and what actually plays that role here. No behavior change — pure documentation reorganization/expansion. See `docs/player/README.md`'s updated index and this repo's root `MEMORY.md`. |
 | 2026-09-08 | Added a call-stack `sequenceDiagram` for the timestamp-callback path (previously only a `flowchart`), requested directly by the user alongside matching diagrams in file 05 — explicitly framed against file 05's cue-based enqueue/dequeue split, since this class has no queue at all: all three call sites invoke `timeStampCallback(...)` synchronously in the same tick the timestamp becomes available. Also added explicit notes to "Decoded frame → canvas draw pipeline" and "No `SourceBuffer`, no audio" cross-referencing file 05's new `SourceBuffer`-append and audio-transcoding call-stack diagrams — this class has no MSE append queue to fill and no audio path to transcode, so neither has a counterpart diagram here. No behavior change — pure documentation addition. |
 | 2026-09-08 | Full-`src/player` memory-leak audit (same day as file 05's `checkBufferSize()` fix, requested as a follow-up): `CanvasRenderer.draw()`'s MJPEG branch only revoked its per-frame Blob URL from `image.onload` — a partial/corrupt JPEG frame (RTP packet loss, an expected occurrence this codebase already anticipates elsewhere, e.g. `WebCodecsVideoEncoder.ts`'s own `createImageBitmap()` error handling) never fires `onload` at all, so its Blob URL leaked permanently, one per dropped/corrupt frame — a leak that scales directly with packet-loss rate over a long MJPEG session. Fixed by adding a matching `image.onerror` that also revokes the URL. `CanvasTagPlayer.close()`'s own teardown (worker `postMessage({type:'terminate'})` → worker's `decoder.close()` + ack → `decoderWorkerMessage('terminated')`'s real `.terminate()`) was audited too and found correct — a two-step handshake, not a bug, despite superficially resembling one. See `MEMORY.md` for the full audit writeup covering every file checked. |
+| 2026-09-08 | Fixed a Mermaid render error the user hit pasting the "Decoded frame → canvas draw pipeline" `sequenceDiagram` (`:711-`) into a renderer: `YUV-->>YUV: visible pixels on the &lt;canvas&gt; element` and the equivalent `Note over GL: ...` line used HTML-entity-escaped angle brackets in bare sequence-diagram message/note text, which some Mermaid parsers fail on (`Expecting ... arrow token, got 'NEWLINE'`). Fixed by dropping the angle brackets (plain "canvas element" text). See `05-video-tag-player.md`'s matching fix (same pattern, `&lt;video&gt;`) and `MEMORY.md`. |
+| 2026-09-08 | Fixed two more Mermaid render errors in this file's "Class hierarchy" diagram (`:85-`), same underlying issue class as the entry above: the `VideoPlayer` stereotype `<<abstract, see 05-video-tag-player.md>>` crammed a cross-reference into the stereotype slot (fixed to plain `<<abstract>>`, with the cross-reference moved to a prose sentence right above the diagram instead), and `CanvasTagPlayer ..> "decoderWorker (Worker)" : postMessage/onmessage` used a quoted string with a parenthetical as a relationship target instead of a plain identifier — every other Worker relationship in this doc set (e.g. `07-talk-backup-worker.md`'s `BackupProvider ..> backupWorker`) uses an unquoted bare name, which Mermaid implicitly treats as a class node; fixed to match (`..> decoderWorker`). See `07-talk-backup-worker.md`'s matching stereotype fixes (same day) and `MEMORY.md`. |
+| 2026-09-08 | Expanded "Timestamp callback", requested directly by the user for more concrete detail than the previous "identical to file 05 from here on" hand-wave: added where `timestamp`/`timestamp_usec` themselves originate before `CanvasTagPlayer` ever sees them (`MediaRouter.handleVideoData()`'s RTCP-Sender-Report-anchored NTP sync, Live-mode only, with the exact `utcTimeStamp`/`timestamp`/`timestamp_usec` formula), a full breakdown of `MediaRouter.sendTimeStamp()` (including the previously-undocumented `lastRenderingTime` side channel step-play's `controlStepPlay()` reads back later) and `RTSPOverWebSocket.onRTSPOverWebSocketTimestamp()` (its 5-step transformation, ending in the dispatched `'timestamp'` event's exact field-by-field shape), and extended the call-stack `sequenceDiagram` to show those internal steps explicitly instead of collapsing them into one `RWS-->>RWS: dispatch(...)` self-message. No behavior change — pure documentation depth increase. |
+| 2026-09-08 | Fixed a Mermaid render error in that same expanded `sequenceDiagram` (introduced by the entry immediately above, same day): `RWS-->>RWS: timestamp.timezone = GMT*60; localTimestamp = curDate + timezone offset -> this._localTimestamp` combined two statements with a `;`, which the Mermaid parser rejected (`Expecting ... arrow token, got '+'`) — every other self-message in this diagram is one clause per line. Fixed by splitting into two separate `RWS-->>RWS:` lines. See `05-video-tag-player.md`'s matching fix (identical line, copied into both diagrams the same day) and `MEMORY.md`. |
 
 ---
 
@@ -81,10 +85,13 @@ Collaborators documented elsewhere, referenced here by name only:
 
 ## Class hierarchy
 
+`VideoPlayer` is the shared abstract base `CanvasTagPlayer` and `VideoTagPlayer` both extend — see
+[05-video-tag-player.md](05-video-tag-player.md) for its own fields/methods.
+
 ```mermaid
 classDiagram
     class VideoPlayer {
-        <<abstract, see 05-video-tag-player.md>>
+        <<abstract>>
     }
     class CanvasTagPlayer
     class CanvasRenderer
@@ -100,7 +107,7 @@ classDiagram
 
     CanvasTagPlayer --> CanvasRenderer : creates (init())
     CanvasTagPlayer --> StepBufferList : creates (init())
-    CanvasTagPlayer ..> "decoderWorker (Worker)" : postMessage/onmessage
+    CanvasTagPlayer ..> decoderWorker : postMessage/onmessage
 
     CanvasRenderer --> YUVWebGLCanvas : creates (H264/H265)
     CanvasRenderer --> Image2DCanvas : creates (MJPEG)
@@ -210,7 +217,7 @@ sequenceDiagram
     CR->>CR: drawCanvas(frame or image)
     CR->>YUV: drawer.drawCanvas(data)
     Note over YUV: H264/H265/VP8/VP9/AV1: slice into Y/U/V, upload 3 textures, GPU YUV2RGB shader<br/>MJPEG: ctx.drawImage() directly, no shader
-    YUV-->>YUV: visible pixels on the &lt;canvas&gt; element
+    YUV-->>YUV: visible pixels on the canvas element
     CTP->>CTP: timeStampCallback(data.time / streamData.timeStamp) -- see Timestamp callback below
 ```
 
@@ -303,6 +310,30 @@ section for the contrast), `CanvasTagPlayer` calls `this.timeStampCallback(timeS
 per frame, from three separate call sites — no cue objects, no polling loop, no browser-scheduled
 dispatch of any kind:
 
+**Where `timestamp`/`timestamp_usec` themselves come from, before `CanvasTagPlayer` ever sees
+them.** The `streamData.timeStamp` object `CanvasTagPlayer` receives already carries real
+`timestamp`/`timestamp_usec` fields by the time `onVideoData()` runs — computed one layer up, in
+`MediaRouter.handleVideoData()` (`:811-815`), and **Live-mode only**:
+
+```
+utcTimeStamp = videoNTPDateTime.utc + (frame's rtpTimestamp - rtcpTSvideo)
+timestamp      = trunc(utcTimeStamp / 1000)
+timestamp_usec = utcTimeStamp % 1000
+utcDatetime    = new Date(utcTimeStamp)
+```
+
+`videoNTPDateTime`/`rtcpTSvideo` are the anchor: `MediaRouter.handleRtcpData()` (`:1068-1082`)
+sets them from the video track's RTCP Sender Report the moment one arrives — an NTP-timestamp
+(wall-clock) reading paired with the RTP timestamp it corresponds to (RFC 3550 §6.4.1). Every
+subsequent video frame's own RTP timestamp is then converted to real wall-clock time purely by its
+*delta* from that one anchor point — no per-frame NTP data of its own is needed, since RTP
+timestamps increase at a fixed, known clock rate. This is why the computation is gated on
+`playMode === 'Live'`: Playback sessions don't get a live RTCP Sender Report stream to anchor
+against, so `streamData.timeStamp.timestamp`/`timestamp_usec` for Playback arrive already populated
+some other way upstream (from the recorded stream's own embedded timing) rather than through this
+NTP-anchoring path — this doc doesn't trace that Playback-side source further, since by the time
+`CanvasTagPlayer` sees it, the two paths have already converged on the same `TimestampData` shape.
+
 | Call site | When | Source of the timestamp |
 | --- | --- | --- |
 | `decoderWorkerMessage()`'s `'decoded'` case (`:230`) | Every decoded H264/H265/VP8/VP9/AV1 frame, as soon as the worker message arrives | `data.time` — the same `streamData.timeStamp` object `onVideoData()` structured-cloned into the worker and got echoed back unchanged |
@@ -311,12 +342,58 @@ dispatch of any kind:
 
 `setTimeStampCallback(func)` (`:459`) is the registration point — wired from `MediaRouter.ts:850`
 exactly the same way as `VideoTagPlayer`'s (`self.player.setTimeStampCallback((ts) =>
-self.sendTimeStamp(ts))`), so everything from `MediaRouter.sendTimeStamp()` upward to
-`RTSPOverWebSocket`'s dispatched `'timestamp'` event (`RTSPOverWebSocket.ts:352`/`:4376`) is
-identical between the two tag modes — only *how the callback gets invoked in the first place*
-differs. The `mode` tagging bug fix documented in `onVideoData()`'s Method Analysis entry above
-(`streamData.timeStamp.mode = this.playmode`) applies to all three of these call sites at once,
-since it's set once on the shared object before any of them run.
+self.sendTimeStamp(ts))`). The `mode` tagging bug fix documented in `onVideoData()`'s Method
+Analysis entry above (`streamData.timeStamp.mode = this.playmode`) applies to all three of these
+call sites at once, since it's set once on the shared object before any of them run.
+
+**`MediaRouter.sendTimeStamp()` (`:772-777`)** — the callback `CanvasTagPlayer` actually calls into:
+
+```ts
+private sendTimeStamp(timeStamp: unknown): void {
+  if (this.timeStampCallback !== null) {
+    this.lastRenderingTime = timeStamp;
+    this.timeStampCallback(timeStamp, this.stepFlag);
+  }
+}
+```
+
+Two effects, not one: it forwards to `MediaRouter`'s *own* registered `timeStampCallback` (the one
+`RTSPOverWebSocket.ts:352` wired up, next), **and** it stashes the raw timestamp as
+`this.lastRenderingTime` first — a side channel with nothing to do with the `RTSPOverWebSocket`
+event path below. `lastRenderingTime` is read exactly once elsewhere, at `MediaRouter.ts:965`
+(`self.player.controlStepPlay(self.lastRenderingTime, self.stepCmd)`): step-play (single-frame
+forward/backward) resumes from whatever timestamp the *last rendered frame* actually carried, not
+from any independently-tracked playback position — this is the only reason `sendTimeStamp()` needs
+to remember it at all.
+
+**`RTSPOverWebSocket.onRTSPOverWebSocketTimestamp()` (`:4392-4458`)** — `MediaRouter`'s
+`timeStampCallback` field, registered from `RTSPOverWebSocket.ts:352`
+(`time: (...args: unknown[]) => this.onRTSPOverWebSocketTimestamp(args[0])`, part of the same
+callbacks object `StreamPlayer` wires up for `codec`/`error`/`resize`/etc.). Exact steps:
+
+1. Unwraps the input: accepts either a bare `{timestamp, timestamp_usec, ...}` object or one nested
+   one level under a `.timeStamp` property (both shapes reach this method from different callers —
+   see `:4738`'s backup-mode call site for the nested case).
+2. `curDate = new Date(timestamp.timestamp * 1000 + timestamp.timestamp_usec)` — the UTC instant —
+   stored as `this._currentTimestamp` (ISO string).
+3. `timestamp.timezone = this.GMT * 60` (minutes), then, since `GMT` always defaults to `0` and so
+   is always present: `localTimestamp = new Date(curDate.valueOf() + (timestamp.timezone / 60) *
+   3600 * 1000)`, stored as `this._localTimestamp` (ISO string) — the same UTC instant shifted to
+   the device's own local wall clock.
+4. Dispatches the public, consumer-facing `'timestamp'` `CustomEvent`
+   (`01-elements-interface-exceptions.md`'s events reference) with this exact detail shape:
+
+   | Field | Value |
+   | --- | --- |
+   | `mode` | `timestamp.mode` — `'live'`/`'playback'`, the tag applied back in `onVideoData()` |
+   | `clock` | `timestamp.timestamp * 1000 + timestamp.timestamp_usec` — the raw UTC instant, in milliseconds |
+   | `timestamp` | `this._currentTimestamp` — the same instant, as an ISO string |
+   | `timezone` | `timestamp.timezone` (minutes) if set, else `this.GMT` |
+   | `local` | `localTimestamp.toISOString()` — the GMT-shifted instant |
+   | `speed` | `this.info.media.requestInfo.scale` — the currently-requested playback speed, unrelated to the timestamp itself but piggybacked on the same event |
+
+5. If a debug `timestampElement` is configured, also mirrors `localTimestamp.toISOString()` into
+   its `textContent` — a live on-page clock display, independent of the dispatched event.
 
 ```mermaid
 flowchart LR
@@ -357,10 +434,16 @@ sequenceDiagram
     end
 
     VTP->>MR: (registered via player.setTimeStampCallback((ts) => self.sendTimeStamp(ts)))
+    MR-->>MR: sendTimeStamp(): this.lastRenderingTime = timeStamp (read later by controlStepPlay())
     MR->>MR: this.timeStampCallback(timeStamp, this.stepFlag)
-    Note over MR: (registered from RTSPOverWebSocket.ts:352,<br/>time: (...args) => this.onRTSPOverWebSocketTimestamp(args[0]) -- identical to file 05 from here on)
+    Note over MR: (registered from RTSPOverWebSocket.ts:352,<br/>time: (...args) => this.onRTSPOverWebSocketTimestamp(args[0]))
     MR->>RWS: onRTSPOverWebSocketTimestamp(time)
+    RWS-->>RWS: unwrap time.timeStamp if nested, else use time directly
+    RWS-->>RWS: curDate = new Date(timestamp*1000 + timestamp_usec) -> this._currentTimestamp
+    RWS-->>RWS: timestamp.timezone = GMT*60
+    RWS-->>RWS: localTimestamp = curDate plus timezone offset -> this._localTimestamp
     RWS-->>RWS: this.dispatch('timestamp', {mode, clock, timestamp, timezone, local, speed})
+    Note over RWS: also mirrors localTimestamp into this.timestampElement.textContent, if configured
 ```
 
 - **Call Stack.** See the diagram above and "Decoded frame → canvas draw pipeline"'s own sequence
@@ -728,7 +811,7 @@ sequenceDiagram
     YUV->>YUV: drawScene()
     YUV->>GL: gl.drawArrays(TRIANGLE_STRIP, 0, 4)
     GL-->>GL: fragment shader samples Y/U/V, applies YUV2RGB matrix, rasterizes quad
-    Note over GL: visible pixels on the &lt;canvas&gt; element
+    Note over GL: visible pixels on the canvas element
 ```
 
 - **RFC / Standard References.** WebGL 1.0 / GLSL ES 1.00 (Khronos/W3C). The YUV→RGB matrix
