@@ -3127,10 +3127,24 @@ export class RTSPOverWebSocket extends HTMLElement {
    * order, so it always sits on top of the video's own native `controls`
    * bar, hiding it, whenever controls are on. Hide the container while
    * controls are showing (nothing else currently needs it visible at the
-   * same time as controls) and restore it once controls are off again. */
+   * same time as controls) and restore it once controls are off again.
+   *
+   * The ONVIF metadata overlay (`this.onvifOverlay`, see
+   * docs/player/10-onvif-metadata-overlay.md) is a second `position:
+   * absolute` sibling with this exact same property, added after this
+   * method already existed — real bug, reported live: once the "ONVIF
+   * Event" toggle is on, its overlay div sits above the native controls bar
+   * the same way `videoContainerElement` does, which visually swallows the
+   * controls bar's own overflow "more options" popup even though the
+   * overlay itself is `pointer-events: none`. `setSuppressed()` forces it
+   * hidden while controls are showing without touching the user's own
+   * on/off preference (`setVisible()`), so it reappears on its own the
+   * moment controls are turned back off. */
   private applyVideoContainerVisibility(): void {
-    if (this.videoContainerElement === undefined || this.videoContainerElement === null) return;
-    this.videoContainerElement.style.display = this._controls ? 'none' : '';
+    if (this.videoContainerElement !== undefined && this.videoContainerElement !== null) {
+      this.videoContainerElement.style.display = this._controls ? 'none' : '';
+    }
+    this.onvifOverlay?.setSuppressed(this._controls);
   }
 
   /** Refreshes the context menu's Audio group (mute toggle switch + 1-5

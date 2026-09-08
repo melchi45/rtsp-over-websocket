@@ -2,7 +2,7 @@
 
 *Test cases for the Player and Server, each mapped to the [SRS.md](SRS.md) requirement(s) it verifies.*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim
+**Version:** 1.1.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -13,6 +13,7 @@
 | 2026-09-04 | Added §13 (ONVIF metadata overlay) |
 | 2026-09-04 | Corrected TC-PLY-112 (Transformation is NOT applied) and updated TC-PLY-113/114/115 for the SVG -> `<div>` rendering surface change |
 | 2026-09-07 | Added TC-SRV-022c/022d for the new `digestAlgorithm` session field (SRS.md REQ-SRV-010/REQ-SRV-043) |
+| 2026-09-08 | Added TC-PLY-120/121 for REQ-PLY-117 (overlay must not obscure the native controls bar) |
 
 ---
 
@@ -169,3 +170,5 @@ Legend: **Auto** = covered by an existing automated test · **Manual** = exercis
 | TC-PLY-117 | REQ-PLY-115 | A `meta` event carrying `VideoAnalytics` data has been received | Open the context menu | "ONVIF Event" toggle row is present, in the Off (hidden) position by default | Manual |
 | TC-PLY-118 | REQ-PLY-115 | As TC-PLY-117, overlay objects currently rendered | Click the toggle to On, then back to Off | Overlay becomes visible then hidden again; toggle visual state (`createSwitch`'s controller) matches each click | Manual |
 | TC-PLY-119 | REQ-PLY-116 | — | `createSwitch({ initialValue: false, onChange })` | Returns `{ element, getValue, setValue, destroy }`; `element` contains track+thumb structure; `getValue()` reflects `initialValue`; a simulated click fires `onChange` and flips `getValue()` | Auto — `components/ui/switch/Switch.test.ts` (jsdom) |
+| TC-PLY-120 | REQ-PLY-117 | Overlay visible (`setVisible(true)`) | Call `setSuppressed(true)`, then `setSuppressed(false)` | Overlay is force-hidden while suppressed; on `setSuppressed(false)` it becomes visible again on its own (no `setVisible()` re-call needed) — and a user preference of `setVisible(false)` stays hidden through the same suppress/unsuppress cycle | Auto — `OnvifOverlay.test.ts` |
+| TC-PLY-121 | REQ-PLY-117 | Native `controls` on, "ONVIF Event" toggle On, overlay currently drawing at least one box near the bottom of the video | Observe the native controls bar, including its overflow "more options" popup if the bar is narrow enough to show one | The controls bar (and its "more options" popup, if opened) remain fully visible/clickable — not covered by the overlay | Manual |

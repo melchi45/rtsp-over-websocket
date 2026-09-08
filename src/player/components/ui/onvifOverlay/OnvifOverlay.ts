@@ -35,6 +35,21 @@ interface RenderedRect {
 export class OnvifOverlay {
   private readonly container: HTMLDivElement;
 
+  /** The user's own ON/OFF preference (the "ONVIF Event" switch), independent
+   *  of `suppressedByControls` below -- see `setVisible()`/`setSuppressed()`. */
+  private visible = false;
+  /** True while the native `<video controls>` bar is showing. This container
+   *  is `position: absolute`, so -- same as `RTSPOverWebSocket`'s own
+   *  `videoContainerElement` (see `applyVideoContainerVisibility()`'s doc
+   *  comment) -- it paints above the video's native controls (including the
+   *  overflow "more options" popup) regardless of DOM order or its own
+   *  `pointer-events: none`, whenever it isn't `hidden`. Forcing it hidden
+   *  while controls are showing, regardless of the user's own switch state,
+   *  keeps that popup from being visually swallowed; `setVisible()` isn't
+   *  touched by this so the user's preference is restored the moment
+   *  controls are turned back off. */
+  private suppressedByControls = false;
+
   constructor(hostElement: HTMLElement) {
     this.container = document.createElement('div');
     this.container.setAttribute('class', 'onvif-overlay');
@@ -70,7 +85,21 @@ export class OnvifOverlay {
   }
 
   setVisible(visible: boolean): void {
-    this.container.hidden = !visible;
+    this.visible = visible;
+    this.applyHidden();
+  }
+
+  /** See `suppressedByControls`'s own doc comment above. Called from
+   *  `RTSPOverWebSocket.applyVideoContainerVisibility()`, alongside its
+   *  existing `videoContainerElement` handling, every time `controls` is
+   *  toggled. */
+  setSuppressed(suppressed: boolean): void {
+    this.suppressedByControls = suppressed;
+    this.applyHidden();
+  }
+
+  private applyHidden(): void {
+    this.container.hidden = !this.visible || this.suppressedByControls;
   }
 
   destroy(): void {

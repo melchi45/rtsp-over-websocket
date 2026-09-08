@@ -3,7 +3,7 @@
 *Detailed, testable requirements for the Player and Server, with requirement IDs referenced from [TC.md](TC.md)'s
 test cases.*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim
+**Version:** 1.1.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -15,6 +15,7 @@ test cases.*
 | 2026-09-04 | Added §4.10 (ONVIF metadata overlay) — REQ-PLY-110 through REQ-PLY-116 |
 | 2026-09-04 | Corrected REQ-PLY-112 — real device data proved `Transformation` must NOT be applied to `Shape` coordinates, reversing the requirement's original direction |
 | 2026-09-07 | REQ-SRV-010/REQ-SRV-043 updated for the new optional `digestAlgorithm` (`'MD5'`/`'SHA-256'`) session field — lets the demo server's own RTSP Digest bridge exercise the player's RFC 7616 SHA-256 path, since no real camera available for testing offers it. See `MEMORY.md`. |
+| 2026-09-08 | Added REQ-PLY-117 — the overlay must not visually obscure the native `<video controls>` bar (including its overflow "more options" popup) while controls are showing, per a live bug report. |
 
 ---
 
@@ -181,6 +182,10 @@ section) into `{ xml, json }` and dispatches it as the public `meta` event. This
 - **REQ-PLY-116**: The toggle control itself MUST be implemented as a standalone, reusable
   component under `src/player/components/ui/`, not inline markup construction — see
   `docs/player/10-onvif-metadata-overlay.md` for its API.
+- **REQ-PLY-117**: While the native `<video controls>` bar is showing, the overlay MUST NOT
+  visually obscure it — including its browser-native overflow "more options" popup — regardless of
+  the overlay's own show/hide toggle state (REQ-PLY-115). The overlay MUST become visible again on
+  its own, without requiring the toggle to be re-flipped, once controls are turned back off.
 
 ## 5. Server requirements (`src/server`)
 

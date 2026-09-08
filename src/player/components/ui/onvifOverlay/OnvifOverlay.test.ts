@@ -133,6 +133,33 @@ describe('OnvifOverlay', () => {
     expect(host.querySelectorAll('div.onvif-overlay-box')).toHaveLength(1);
   });
 
+  // Regression test for a real bug: this container is `position: absolute`,
+  // appended after `this.video` in RTSPOverWebSocket -- the same stacking
+  // shape videoContainerElement already had a fix for -- so once the "ONVIF
+  // Event" toggle was on, it visually swallowed the native <video controls>
+  // bar's overflow "more options" popup. setSuppressed() must be able to
+  // force it hidden independent of the user's own setVisible() preference,
+  // and that preference must survive being suppressed and later unsuppressed.
+  it('setSuppressed hides the overlay regardless of setVisible, and setVisible\'s own preference survives it', () => {
+    const host = document.createElement('div');
+    const overlay = new OnvifOverlay(host);
+    const div = host.querySelector('div.onvif-overlay') as HTMLDivElement;
+
+    overlay.setVisible(true);
+    expect(div.hidden).toBe(false);
+
+    overlay.setSuppressed(true); // native controls just turned on
+    expect(div.hidden).toBe(true);
+
+    overlay.setSuppressed(false); // native controls turned back off
+    expect(div.hidden).toBe(false); // setVisible(true) preference is restored, no re-toggle needed
+
+    overlay.setVisible(false);
+    overlay.setSuppressed(true);
+    overlay.setSuppressed(false);
+    expect(div.hidden).toBe(true); // user's own OFF preference is respected once controls clear
+  });
+
   it('destroy() removes the overlay <div> from the host', () => {
     const host = document.createElement('div');
     const overlay = new OnvifOverlay(host);

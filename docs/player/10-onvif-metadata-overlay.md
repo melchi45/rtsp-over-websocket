@@ -3,12 +3,13 @@
 *Per-class reference for the ONVIF `VideoAnalytics` bounding-box/label overlay and the reusable
 toggle-switch UI component it's shown/hidden with.*
 
-**Version:** 1.1.11 · **Author:** Youngho Kim · **Milestone:** M-4
+**Version:** 1.1.12 · **Author:** Youngho Kim · **Milestone:** M-4
 
 **History**
 
 | Date | Change |
 | --- | --- |
+| 2026-09-08 | Bug fix: with native `<video controls>` on, the browser's own overflow "more options" popup stopped appearing once the "ONVIF Event" toggle was on. Root cause: `OnvifOverlay`'s mounted `<div>` is `position: absolute`, a sibling appended after `this.video` — the same stacking shape `RTSPOverWebSocket`'s pre-existing `videoContainerElement` already had a fix for (a positioned element paints above a plain-flow sibling regardless of DOM order, so it visually sits on top of the native controls bar whenever it isn't `hidden`; `pointer-events: none` only stops it intercepting clicks, not covering the popup visually). `OnvifOverlay` gained a second, independent `setSuppressed(suppressed)` on top of the existing user-facing `setVisible(visible)` — shown only when both allow it — and `RTSPOverWebSocket.applyVideoContainerVisibility()` now also calls `this.onvifOverlay?.setSuppressed(this._controls)` alongside its existing `videoContainerElement` handling, at all three of its call sites. See `setVisible(visible)`'s Method Analysis entry below and `MEMORY.md`'s matching entry. |
 | 2026-09-04 | `RTSPOverWebSocket.stop()` now hides the ONVIF overlay (`this.onvifOverlay?.setVisible(false)`) — requested directly by the user, so a stopped session doesn't leave a stale bounding box visible. See `setVisible(visible)`'s Method Analysis entry above. |
 | 2026-09-04 | Bug fix: `parseOnvifVideoAnalyticsFrame` no longer applies `tt:Transformation` to `BoundingBox`/`CenterOfGravity` — a real device capture proved that inverse-divide corrupted already-pixel-space coordinates (see `parseOnvifVideoAnalyticsFrame`'s Method Analysis below and `MEMORY.md`) |
 | 2026-09-04 | `OnvifOverlay` rendering surface changed from SVG (`<rect>`/`<text>`) to plain positioned `<div>`s, per explicit user request — see its Structure/Method Analysis/RFC References sections below |
@@ -175,6 +176,7 @@ export class OnvifOverlay {
   constructor(hostElement: HTMLElement); // mounts its own <div class="onvif-overlay">, absolutely positioned, as hostElement's child
   render(input: OnvifOverlayRenderInput): void;
   setVisible(visible: boolean): void;
+  setSuppressed(suppressed: boolean): void;
   destroy(): void;
 }
 ```
@@ -211,6 +213,21 @@ DESIGN §2.7's "Rendering surface" for the rationale.
   video frame, and would reappear immediately if the "ONVIF Event" toggle were flipped again before
   a new session's first metadata frame arrived, since `onvifLastFrame` itself isn't cleared on
   stop.
+- **`setSuppressed(suppressed)`** — sets a second, independent `suppressedByControls` flag and
+  recomputes `hidden` the same way (`hidden = !visible || suppressedByControls`). Real bug, found
+  live: this container is `position: absolute`, appended as a sibling after `this.video` — the same
+  stacking shape `RTSPOverWebSocket`'s `videoContainerElement` already had a dedicated fix for (see
+  that class's `applyVideoContainerVisibility()`) — so whenever it isn't `hidden` it paints above
+  the video's native `controls` bar regardless of DOM order, `z-index`, or its own
+  `pointer-events: none` (which only stops it *intercepting* clicks, not *covering* the bar
+  visually). Once the "ONVIF Event" toggle was on, this visually swallowed the native controls
+  bar's own overflow "more options" popup. `RTSPOverWebSocket.applyVideoContainerVisibility()` now
+  calls `this.onvifOverlay?.setSuppressed(this._controls)` alongside its existing
+  `videoContainerElement` handling, at all three of that method's own call sites (the `controls`
+  attribute changing, `updateRendering()`, and the context menu's Controls toggle) — this is
+  intentionally kept separate from `setVisible()`/the `visible` flag so the user's own "ONVIF
+  Event" preference is untouched and the overlay reappears on its own the moment controls are
+  turned back off, without the user having to re-toggle it.
 - **`destroy()`** — removes the mounted `<div class="onvif-overlay">` from the DOM. Called from
   `RTSPOverWebSocket`'s teardown path alongside its other per-instance cleanup.
 

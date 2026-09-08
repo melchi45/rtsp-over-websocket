@@ -4874,3 +4874,50 @@ listing an encoder's own `AVOptions` (here: `-huffman`, `-force_duplicated_matri
 whenever a codec-specific muxer/RTP error mentions something the general `videoEncoderArgs()`
 flags (`-pix_fmt`, `-preset`, etc.) don't already cover — several of this codebase's other codec
 branches (AV1/VP9's `-strict experimental`, H.264/H.265's `repeat-headers`) were found the same way.
+
+## ONVIF overlay swallowed the native `<video controls>` bar's "more options" popup once the toggle was on (fixed)
+
+Reported directly by the user (`wisenet-camera-discovery`'s player, Korean): "video tag 에서 control
+을 on 시키고 옵션 더보기가 표시가 안됩니다. Onvif event 를 RTSPOverWebSocket 에 overlay 한 이후
+발생하는 현상 입니다." (turning on the video tag's controls, the "more options" [overflow] popup
+doesn't show — happens after the ONVIF event overlay was wired into `RTSPOverWebSocket`.)
+
+Root cause, found by re-reading `RTSPOverWebSocket.applyVideoContainerVisibility()`'s own doc comment
+rather than guessing: `videoContainerElement` (the rewind/forward tap-notification overlay) already
+had a documented, fixed bug with the exact same shape — a `position: absolute` sibling of `this.video`
+paints above a plain-flow (`position: static`) sibling *regardless of DOM order*, so it always sits on
+top of the video's own native `controls` bar whenever it isn't hidden. That method already hides
+`videoContainerElement` while `controls` is on for exactly this reason. `OnvifOverlay`'s own mounted
+`<div>` (added later, for the ONVIF Event feature — see the "ONVIF overlay drawing stole main-thread
+time" entry above) has the identical DOM shape (`position: absolute`, appended as a further sibling
+after `this.video`) but was never added to that hide-while-controls-showing logic — so once the user
+turned the "ONVIF Event" toggle on, its overlay div started swallowing the same part of the native
+controls bar `videoContainerElement` used to, specifically the overflow "more options" popup.
+`pointer-events: none` (already present, load-bearing for not blocking context-menu clicks) does not
+help here — it only stops the overlay *intercepting* clicks, not *visually covering* what's under it
+in paint order.
+
+**Fixed**: `OnvifOverlay` now tracks two independent booleans instead of a single `hidden` write —
+`visible` (the user's own "ONVIF Event" toggle preference, unchanged `setVisible()` semantics) and a
+new `suppressedByControls` (`setSuppressed()`), with `container.hidden = !visible ||
+suppressedByControls`. `RTSPOverWebSocket.applyVideoContainerVisibility()` now calls
+`this.onvifOverlay?.setSuppressed(this._controls)` alongside its existing `videoContainerElement`
+line, so all three of that method's existing call sites (the `controls` attribute changing,
+`updateRendering()`, and the context menu's Controls toggle) cover the overlay too, automatically.
+Keeping the two flags separate (rather than just forcing `setVisible(false)` while controls are on)
+means the user's own preference survives the controls toggle — the overlay reappears on its own the
+moment controls are turned back off, with no need to re-flip the "ONVIF Event" switch. See
+`docs/player/10-onvif-metadata-overlay.md`'s History and `docs/SRS.md`'s new REQ-PLY-117 for the full
+writeup.
+
+**Verified**: `npx tsc -b` clean; `npx vitest run` (`OnvifOverlay.test.ts` plus the full player suite)
+passes, including a new regression test asserting `setSuppressed(true)`/`setSuppressed(false)`
+force-hides/restores the overlay independent of, and without disturbing, whatever `setVisible()` was
+last called with.
+
+**How to apply**: when a class documents *why* a specific sibling element needs special hide/show
+handling (a comment like `applyVideoContainerVisibility()`'s), treat that as a checklist to re-run
+against every *later* sibling added with the same positioning — not just a one-time fix scoped to the
+element that happened to trigger it. A second `position: absolute` sibling added months later for an
+unrelated feature (the ONVIF overlay) silently re-triggered the exact same class of bug the comment
+already described in detail.

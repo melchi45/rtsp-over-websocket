@@ -4,7 +4,7 @@
 sequence diagrams, and the specific algorithms behind the Server's transcode/bridge/keyframe-gate logic and the
 Player's custom-element/StreamPlayer wiring.*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim · **Milestone:** —
+**Version:** 1.1.1 · **Author:** Youngho Kim · **Milestone:** —
 
 **History**
 
@@ -18,6 +18,7 @@ Player's custom-element/StreamPlayer wiring.*
 | 2026-09-04 | Add §2.7 (ONVIF metadata overlay) |
 | 2026-09-04 | §2.7 coordinate mapping fix: `tt:Transformation` is no longer applied to `Shape` coordinates — a real device capture proved the inverse-divide formula corrupted already-pixel-space coordinates |
 | 2026-09-04 | §2.7 rendering surface changed from SVG to plain positioned `<div>`s, per explicit user request |
+| 2026-09-08 | §2.7: bug fix — the ONVIF overlay's `position: absolute` container was visually swallowing the native `<video controls>` bar's overflow "more options" popup once the "ONVIF Event" toggle was on, the same stacking issue `videoContainerElement` already had a fix for; `OnvifOverlay` now also suppresses itself while `controls` is on (`setSuppressed()`) |
 
 ---
 
@@ -460,6 +461,25 @@ carry a small, low-frequency set of objects (not a per-video-frame-rate signal),
 elements cost nothing meaningful here — and `<div>`s additionally avoid the hand-measured
 `APPROX_CHAR_WIDTH`-style text-metrics math the SVG version needed to size its label background
 rect up front, since a `<div>`'s width/height auto-size to its text content.
+
+**Native-controls stacking.** `OnvifOverlay`'s mounted `<div>` is `position: absolute`, a sibling of
+`this.video` appended after it in `RTSPOverWebSocket`'s wrapper — the exact same DOM shape as that
+element's pre-existing `videoContainerElement` (rewind/forward tap-notification overlays). Per
+`applyVideoContainerVisibility()`'s own doc comment, a positioned element always paints above a
+plain-flow (`position: static`) sibling regardless of DOM order or `z-index`, so whenever the
+overlay isn't `hidden` it sits on top of the video's own native `controls` bar — including its
+overflow "more options" popup — the same way `videoContainerElement` does while controls are
+showing. `pointer-events: none` (see "Rendering surface" above) stops it from *intercepting*
+clicks, but does not stop it from *visually covering* that popup. Real bug, reported live: once the
+"ONVIF Event" toggle was turned on, enabling native `controls` made the overflow "more options"
+popup stop appearing. `OnvifOverlay` now tracks two independent booleans — `visible` (the user's own
+ON/OFF preference, set by `setVisible()`) and `suppressedByControls` (set by `setSuppressed()`) —
+and is only actually shown (`container.hidden = false`) when both allow it. `applyVideoContainerVisibility()`
+calls `this.onvifOverlay?.setSuppressed(this._controls)` alongside its existing
+`videoContainerElement` handling, at all three of its own call sites (the `controls` attribute
+changing, `updateRendering()`, and the context menu's Controls toggle), so the overlay is forced
+hidden exactly while `controls` is on and reappears on its own — without the user having to
+re-toggle the "ONVIF Event" switch — the moment controls are turned back off.
 
 **Toggle component.** `src/player/components/ui/switch/Switch.ts` (`createSwitch(options)`) is a
 new, standalone, reusable factory — not markup progressively enhanced in place, since this
