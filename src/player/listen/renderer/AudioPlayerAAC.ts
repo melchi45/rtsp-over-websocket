@@ -191,8 +191,40 @@ export class AudioPlayerAAC extends AudioPlayer {
     return this.saveVol;
   }
 
+  // Real bug, found live auditing src/player for memory leaks: this used to be a genuine no-op
+  // (faithfully porting the legacy file's own commented-out `audio = null;`), but `audioInit()`
+  // above creates a real `<audio>` element appended directly to `document.body` (never removed),
+  // a `MediaSource` with five event listeners, a `SourceBuffer` with one more, and a Blob URL via
+  // `URL.createObjectURL(mediaSource)` (never revoked) -- none of which the legacy no-op, or this
+  // port's faithful copy of it, ever released. Every AAC audio session (one `AudioPlayerAAC`
+  // instance per `MediaRouter.createAudioPlayer()` call) permanently leaked one `<audio>` DOM node
+  // plus its MediaSource/SourceBuffer/Blob-URL chain -- unlike `MjpegSession`'s or
+  // `AudioPlayerGxx.terminate()`'s own equivalent teardown (`audioContext.close()` +
+  // `audioDecoder.close()`), which are both real. `AudioPlayerGxx`'s correctly-implemented
+  // `terminate()` is the pattern this now matches.
   terminate(): void {
-    // legacy: `audio = null;` is commented out — a genuine no-op, preserved.
+    if (this.sourceBuffer !== null) {
+      this.sourceBuffer.removeEventListener('updateend', this.sourceUpdatedCallback);
+      this.sourceBuffer = null;
+    }
+    if (this.mediaSource !== null) {
+      this.mediaSource.removeEventListener('sourceopen', this.sourceOpenedCallback);
+      this.mediaSource.removeEventListener('sourceclose', this.sourceCloseCallback);
+      this.mediaSource.removeEventListener('sourceended', this.sourceEndedCallback);
+      this.mediaSource.removeEventListener('error', this.sourceErrorCallback);
+      this.mediaSource.removeEventListener('abort', this.sourceAbortCallback);
+      this.mediaSource = null;
+    }
+    if (this.audio !== null) {
+      this.audio.removeEventListener('error', this.audioErrorCallback);
+      this.audio.pause();
+      if (this.audio.src) {
+        window.URL.revokeObjectURL(this.audio.src);
+      }
+      this.audio.removeAttribute('src');
+      this.audio.parentNode?.removeChild(this.audio);
+      this.audio = null;
+    }
   }
 
   setBufferingFlag(videoTime: number | string, videoStatus: string): void {

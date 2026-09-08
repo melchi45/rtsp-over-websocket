@@ -1095,6 +1095,22 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
 
     try {
+      // Real bug, found live auditing src/player for memory leaks:
+      // `updateMetaImage()` only ever revokes the *previous* meta-image Blob URL when a *new* one
+      // arrives, so the final one from a given session was never revoked -- a Blob URL survives
+      // its referencing `<img>` element's own removal/GC (per spec, only `revokeObjectURL()` or
+      // document unload actually frees it), so a page that dynamically adds/removes
+      // `<rtsp-over-websocket>` elements (a multi-camera dashboard, say) leaked one Blob per
+      // element every time meta-image was ever used in that element's session.
+      const imgElement = this.querySelector('#metaimage_img_' + this.id) as HTMLImageElement | null;
+      if (imgElement && imgElement.src) {
+        window.URL.revokeObjectURL(imgElement.src);
+      }
+    } catch (error) {
+      console.error('RTSPOverWebSocket: failed to revoke meta-image Blob URL on disconnectedCallback', error);
+    }
+
+    try {
       if (typeof window !== 'undefined' && window.document.removeEventListener) {
         window.document.removeEventListener('webkitfullscreenchange', this.boundExitHandler, false);
         window.document.removeEventListener('mozfullscreenchange', this.boundExitHandler, false);

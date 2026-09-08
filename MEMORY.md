@@ -5488,6 +5488,77 @@ config — the original unconditional choice wasn't wrong on its own terms (it d
 debug into it"), just not the trade-off the user wanted once they noticed the actual consequence in a
 real consumer's DevTools.
 
+## Three real memory leaks found in `transport`/`mediaSession`, requested directly by the user ("still leaking")
+
+The user reported the library was still leaking memory after prior fixes and asked for an audit of
+`src/player/network/transport`, `src/player/mediaSession` (and its `audioSession`/`videoSession`/
+`textSession` subdirectories), and `MediaRouter`, in that order. Read every file in scope against
+`docs/player/02-network.md`/`03-mediaSession-core-video.md` first, to separate documented-intentional
+quirks from real bugs, then verified each candidate by tracing real call sites rather than assuming
+from code shape alone.
+
+Most of `mediaSession` was already solid: every `*Session` subclass's `close()` correctly calls
+`stopStatisticsTimer()` (which itself correctly `IntervalTimer.pause()`s, clearing the underlying
+`setInterval`), and `MjpegSession.close()` correctly `terminate()`s its `Worker`. Three real gaps
+survived that check:
+
+1. **`Transport`/`RtspClient.clearTransport()` — a self-resurrecting `Transport`.**
+   `RtspClient`'s `RtspResponseHandler` sets `transport.autoconnection = true` on *every* successful
+   `PLAY` response (`Play` → `Playing` branch), unconditionally — not gated on `deviceInfo.retry` as
+   the name suggests. `clearTransport()` (the only place `RtspClient` ever retires a `Transport`,
+   always ending in `this.transport = null`) never reset that flag, and `Transport.Disconnect()`
+   itself never strips the socket's `onclose` handler before calling `websock.close()`. So tearing
+   down a live ("Playing") session still let the browser's async `close` event reach
+   `Transport.OnClose()`, which — seeing its own `autoconnection` still `true` — scheduled
+   `setTimeout(() => this.Connect(), 500)` and quietly reopened a **new** `WebSocket`, resurrecting a
+   `Transport` instance `RtspClient` had already discarded. Because `SetCallback()`'s callbacks are
+   never cleared either, that zombie `Transport` kept a live path back into the old `RtspClient` /
+   `RtpClient` / `*Session` / `MediaRouter` chain — unreachable from any caller, but never
+   GC-collectible, and it re-arms itself every time the zombie socket closes again.
+   **Fix**: `clearTransport()` now sets `transport.autoconnection = false` before calling
+   `Disconnect()`/`init()` — since `clearTransport()` always intends to retire this instance anyway,
+   this is unconditionally correct, not just for the user-initiated-stop case. The async `OnClose`
+   that follows then sees `autoconnection === false` and takes its normal cleanup path
+   (`initializeWebsocket()` in the `finally` block), no reconnect scheduled.
+
+2. **`MediaRouter.terminate()` forgot the minimap timer.** `handleMinimapCommand({mode:'on'})`
+   starts a raw `setInterval` (`minimapUpdateTimer`, not routed through `IntervalTimer`) that was
+   previously only ever cleared by an explicit `{mode:'off'}` command — never by `terminate()`, the
+   one method every caller (`StreamPlayer.close()`) actually uses to tear a channel down. Once
+   minimap had been switched on for a channel, closing that channel left the interval running
+   forever, holding a strong reference to the entire `MediaRouter` instance. This is the single
+   clearest, unconditional leak of the three (no branch/timing dependency — it reproduces every time
+   minimap was ever turned on for a session that's later closed without an explicit minimap-off).
+   **Fix**: `terminate()` now unconditionally `clearInterval`s `minimapUpdateTimer` and resets
+   `minimapTarget`/`minimapRefreshInterval`, mirroring the `{mode:'off'}` branch's own cleanup.
+
+3. **`MediaRouter.terminate()` also forgot `backupProvider`.** Same shape as #2: `backupProvider`
+   was only ever closed (`closeStream()`) by an explicit `{command:'stop'}`, never by `terminate()`,
+   so a backup/export left running when the channel closes could leak whatever the backup worker
+   holds. **Fix**: `terminate()` now also closes and nulls `backupProvider` (and resets `isBackup`)
+   if one is still active.
+
+While in the area, also fixed a smaller, lower-severity gap: `Session.removeEventListener()`'s
+switch was missing `'rtcp'`/`'waiting'` entirely, so those two callback slots could never be
+individually cleared (only overwritten by a later `addEventListener`, or dropped along with the
+whole `Session` on `close()`). Low practical impact since no call site removes a session's listeners
+piecemeal without closing the session outright, but it's a real gap in the class's own public
+contract, so fixed alongside the other three.
+
+**Verified**: `tsc -b` (src/player) clean; `npx vitest run` — see this repo's own state for the pass
+count at the time of this fix (existing suite has no dedicated `Transport`/`RtspClient`/`MediaRouter`
+lifecycle tests to specifically exercise these paths — none of the three bugs had regression coverage
+before this fix, and none was added here beyond what the audit itself required; a genuinely thorough
+fix would add `Transport.autoconnection` / `MediaRouter.terminate()` teardown tests, left as future
+work since it wasn't requested).
+
+**How to apply**: when a class's teardown is spread across multiple methods rather than one owning
+`dispose()`/`close()` (as `MediaRouter` is — `terminate()` is the closest thing it has, but several
+other fields, like `minimapUpdateTimer` here, get created by unrelated command-handler methods with
+no lifecycle awareness of `terminate()` at all), audit every `setInterval`/`setTimeout`/`new Worker`
+call site *independent of* whatever the class's designated close/terminate method already touches —
+grep for the primitive, not for the close method's own body, or you'll only find the ones someone
+already remembered to wire in.
 
 ## Split `docs/player/05-video-player-rendering.md` into `05-video-tag-player.md` + `11-canvas-tag-player.md`, requested directly by the user
 
@@ -5534,4 +5605,258 @@ deciding) — that minimizes the total edit surface versus picking whichever hal
 "primary" by intuition alone. Carry forward a genuinely-relevant slice of the original History
 rather than resetting to a blank "Initial version," but don't try to mechanically split every row —
 rows that touched a shared base class belong in both new files' History, not just one.
+
+## The real reason the >1GB Live leak kept resurfacing after every fix: a sign-flipped trim target that self-destructs playback
+
+Direct continuation of the same-day `VideoTagPlayer` Live-memory investigation (see this file's
+several entries above: `segmentArray`/`boxStartTime`/cue-count caps, the `updateend` reorder, the
+resulting hysteresis/min-interval livelock fix). After all of those landed, the user reported the
+leak *again* — memory climbing 800MB → 1.2GB → 1.5GB across one continuous Live session, and once
+past roughly 1GB, the player visibly cycling Play → Pause → Play. They specifically asked whether
+the "instant playback" time limit (`getMaxInstantPlaybackTime()`, which `checkBufferSize()` reuses
+as its normal Live buffer-trim cap even when the instant-playback *feature* itself is off — they'd
+confirmed it was off) was being ignored.
+
+It was, but not the way anyone suspected (a `boxsize`-based branch coincidence was chased first —
+`boxsize` turned out to be a real, per-second FPS-derived batching size reused, seemingly
+coincidentally, by several unrelated `VideoTagPlayer` special cases including `checkBufferSize()`'s
+`boxsize === 1` branch — but tracing `RtpSession`'s packet counter confirmed it only increments on
+`markerBit` (once per real completed frame), so this wasn't actually the fps-scale-confusion bug it
+first looked like, and was a dead end). The real bug was in `checkBufferSize()`'s trim-target math
+itself (`src/player/video/player/video/VideoTagPlayer.ts`, both branches around `:2654`/`:2660`):
+
+```
+removeEnd = Math.abs(Math.min(endTime, currentTime) - getMaxInstantPlaybackTime())
+```
+
+`Math.min(endTime, currentTime)` deliberately clamps the trim target to `currentTime` so the trim
+never deletes data ahead of what's still playing — correct in intent. But the outer gate that
+decides whether to even enter this block (`endTime - bufferedStart > getMaxInstantPlaybackTime() +
+5`) measures total buffered *span*, completely independent of where `currentTime` actually is. So
+the inner expression goes negative in a very ordinary, very reachable case: `currentTime` has been
+sitting still for more than `getMaxInstantPlaybackTime()` seconds while Live appends keep arriving
+in the background regardless of playback state (pausing the `<video>` element does not pause a Live
+RTSP feed — nothing upstream of `VideoTagPlayer` stops pushing frames just because the UI shows
+Paused). `Math.abs()` then flipped that negative value positive instead of recognizing "no real
+margin yet, don't trim" — e.g. `currentTime = 0` with the default 30s limit computed `removeEnd =
+30`, so `sourceBuffer.remove(0, 30)` deleted the *exact data `currentTime` needed to resume from*.
+
+That's a self-inflicted, permanent stall: the video can never advance past its own now-missing
+current position, so every later `checkBufferSize()` call recomputes the identical already-cleared
+`removeEnd` and no-ops forever, while `endTime` (the append side, unaffected by the stall) keeps
+growing completely untrimmed for the rest of the session — unbounded growth, and the repeated
+Play/Pause/Play cycling is the browser's own stall-recovery machinery fighting a gap that can't
+close because the data it needs is already gone. This is also exactly why the leak kept coming back
+after each previous fix: every prior fix closed off one specific way to reach the ~30-35s watermark
+before `currentTime` (a suspended-tab append burst, a livelocked trim, an unbounded queue) — but
+*any* stall or pause past that watermark, for any reason at all, hit this same sign-flip and
+re-triggered the identical failure mode from scratch.
+
+**Fix**: `Math.abs(...)` → `Math.max(0, ...)` in both the `boxsize !== 1` and `boxsize === 1`
+branches (skip trimming when there's no real margin yet, instead of sign-flipping into a
+self-destructive delete), plus adding the same `if (removeEnd > 0)` guard to the first branch that
+the second already had. See `docs/player/05-video-tag-player.md`'s matching History entry and its
+"`SourceBuffer` fill/trim lifecycle" section (bug 3) for the full mechanism.
+
+**Verified**: `tsc -b` (src/player) clean. **Not yet verified against a real device** — this was
+found via static/logical analysis of the arithmetic (confirmed reachable: the outer span-based gate
+provides no lower bound on `currentTime`, and pausing a Live session is a completely ordinary action
+that does not stop upstream appends), not from a live trace this time, since the user could not
+leave the diagnostic `debug` logging on continuously (its own console overhead added enough memory
+pressure that they couldn't sustain it for a long-running session). Whether this is the *only*
+remaining contributor is unconfirmed; a long-lived genuine pause (not just this bug's own
+self-inflicted one) still has no separate ceiling on how much a paused Live session buffers, which
+may be worth a follow-up if growth is still observed with playback genuinely never falling behind
+the ~30-35s watermark.
+
+**How to apply**: `Math.abs(x)` is almost never the right way to handle an "x should normally be
+positive, but might legitimately go negative in an edge case" situation — it silently converts "not
+enough margin yet, do nothing" into "do the opposite of nothing, aggressively." Whenever a
+subtraction feeding a bounds-sensitive operation (an array index, a buffer-remove range, a timeout
+delay) is wrapped in `Math.abs()`, check what the *actual* negative case means before assuming the
+wrapper is a harmless defensive habit — here it turned a should-be-inert no-op into the single most
+destructive thing this function could do.
+
+## Regression: the `clearTransport()` autoconnection fix (this file, "Three real memory leaks" entry above) broke auto-reconnect entirely — moved to `Disconnect()`
+
+Direct follow-up to this file's own "Three real memory leaks found in `transport`/`mediaSession`"
+entry above. That fix put `transport.autoconnection = false` inside `RtspClient.clearTransport()`,
+reasoning that `clearTransport()` always retires its `Transport` instance so it should always disarm
+that instance's self-reconnect too. Shipped, rebuilt, and the user immediately reported playback
+simply stopped and never came back after the first disconnect.
+
+Root cause of the regression: `clearTransport()` is not only called from genuine "the caller wants
+to stop" paths — it is also called **synchronously from inside `Transport.OnClose()` itself**, via
+the `connectionCallback('close'/'error', ...)` it dispatches, which `RtspClient.connectionCbFunc()`
+handles by calling `clearTransport()` (to reset RTSP-level session state — queue, timers,
+`SessionId`) regardless of whether that same `Transport` is about to reconnect itself a few lines
+*later* in `OnClose()`'s own execution (`if (this.autoconnection) { setTimeout(() => this.Connect(),
+500); }`, further down the same synchronous call stack). This `Transport`-self-reconnect +
+`connectionCbFunc('open', ...)`-restarts-the-handshake pair turns out to be the *only* mechanism by
+which this class recovers from an unexpected mid-session drop at all — there is no other code path
+that constructs a fresh `Transport` to resume a session. So disarming `autoconnection` inside
+`clearTransport()` reliably fired *before* `OnClose()` reached its own reconnect-scheduling code on
+every single drop, permanently and silently disabling all automatic reconnection from that point on.
+
+The original diagnosis (a zombie `Transport` reconnecting after a caller-initiated `Disconnect()`/
+graceful `TEARDOWN`, since `RtspResponseHandler`'s `Play`→`Playing` branch sets
+`transport.autoconnection = true` unconditionally on every successful `PLAY`) was correct — the fix
+location was not. **Fix**: moved the `transport.autoconnection = false` disarm to the top of the
+public `Disconnect()` method instead — the one call site that unambiguously means "the caller wants
+this session to end" and is never invoked from the auto-reconnect path itself. `clearTransport()` no
+longer touches `autoconnection` at all.
+
+**Verified**: `tsc -b` clean, `npx vitest run` (excluding the real-device-only test) 144/144 passing.
+Rebuilt (`npm run build:player` here, `npm run build` in `wisenet-camera-discovery`) and reconfirmed
+via `grep` that the vendored `external-lib/rtsp-over-websocket/` bundle actually contains the
+relocated fix. **Not yet re-confirmed live** that auto-reconnect itself works again post-fix (the
+user's "playback stops" report was against the broken intermediate build) — the next real-device
+test needs to check both that (a) a graceful stop no longer leaves a zombie reconnect, and (b) an
+actual mid-session network drop still recovers automatically, since this incident is exactly about
+those two requirements being in tension at the same call site.
+
+**How to apply**: when a cleanup/teardown method is shared between an intentional "stop everything"
+caller and an internal recovery/retry flow, a fix that assumes "this method always means the end" is
+only safe if that is actually true of *every* caller — trace every call site (via `grep`, not
+intuition) before adding a side effect to a shared method, especially one dispatched from inside an
+event handler's own callback chain, where "this runs synchronously before the rest of the handler
+that invoked it" is easy to miss. The tell here was that `clearTransport()`'s callers included not
+just explicit stop/error-response handlers but `connectionCbFunc`'s `'close'`/`'error'` branches —
+i.e. the *handler for the very event whose own further processing the fix needed to not interfere
+with*.
+
+## Full `src/player` memory-leak audit, requested directly by the user as a follow-up to the day's other leak fixes
+
+Direct continuation of the day's `Transport`/`RtspClient`/`MediaRouter`/`VideoTagPlayer` leak-hunting
+(see this file's several entries above). The user asked for every file under `src/player` (165
+non-test `.ts` files) to be checked for other leaks, not just the ones already found. Approach: grep
+the whole tree for the resource-allocating primitives that actually cause leaks in a browser
+(`new Worker`, `setInterval`/`setTimeout`, `addEventListener`, `AudioContext`/`ScriptProcessorNode`,
+`createObjectURL`/`MediaSource`/`new WebSocket`), then read every matching file's corresponding
+teardown method (`close()`/`terminate()`/`dispose()`/`stop()`) to check it actually reverses
+everything the matching setup did — the same method used earlier for `Transport`/`MediaRouter`.
+
+Most of `src/player` was already solid: `CanvasTagPlayer`'s worker-termination handshake
+(`postMessage({type:'terminate'})` → worker's `decoder.close()` + ack → real `.terminate()` on
+receipt) looked suspicious at first glance but is a correct two-step pattern, not a bug;
+`BackupProvider`'s worker never gets an explicit `.terminate()` either, but its worker calls `self.
+close()` on `'stop'` instead, which is equally valid; `WebCodecsVideoEncoder`/OPUS's `AudioDecoder`
+correctly `.close()` every `VideoFrame`/`ImageBitmap`/`AudioData`; `Talk.ts`'s microphone
+`MediaStreamTrack`s are correctly `.stop()`-ed; `FishEye3D.ts` (single-fisheye) correctly removes its
+one `resize` listener in `stop()`. Four real, confirmed issues did turn up:
+
+1. **`AudioPlayerAAC.terminate()` — a complete no-op.** (`src/player/listen/renderer/AudioPlayerAAC.ts`)
+   A faithfully-ported copy of the legacy file's own commented-out `audio = null;`, despite
+   `audioInit()` creating a real `<audio>` element appended directly to `document.body` (never
+   removed), a `MediaSource` with five listeners, a `SourceBuffer` with one more, and a Blob URL via
+   `createObjectURL(mediaSource)` (never revoked). This is the most severe of the four: an actual DOM
+   node permanently attached to `document.body`, which by itself is a GC root keeping the entire
+   MediaSource/SourceBuffer/Blob-URL chain alive regardless of what happens to the `AudioPlayerAAC`
+   JS object. **However, confirmed currently unreachable**: `StreamPlayer.ts`'s default
+   `MediaRouterFactories.createAudioPlayer` only ever constructs `AudioPlayerGxx` (grep confirms
+   `AudioPlayerAAC` isn't even imported there), and `docs/player/06-listen-audio.md` already noted
+   this independently from an earlier, unrelated investigation. Fixed anyway (matches
+   `AudioPlayerGxx.terminate()`'s own correct pattern exactly) since the class is still part of the
+   public `MediaRouterFactories` seam, but **this does not explain any memory growth reported so
+   far** in `wisenet-camera-discovery`, which never wires up an alternate factory.
+2. **`CanvasRenderer.draw()`'s MJPEG path — Blob URL only revoked on `onload`, not `onerror`.**
+   (`src/player/video/player/canvas/CanvasRenderer.ts`) A partial/corrupt JPEG frame (RTP packet
+   loss — an occurrence this codebase already anticipates elsewhere) never fires `onload`, so its
+   Blob URL leaked permanently, one per dropped/corrupt frame. Scales with packet-loss rate over a
+   long MJPEG-canvas session. Fixed by adding a matching `onerror` handler.
+3. **`RTSPOverWebSocket.ts`'s meta-image Blob URL — final one per session never revoked.**
+   `updateMetaImage()` only revokes the *previous* Blob URL when a *new* meta-image arrives, never
+   the last one. Low severity (bounded to one Blob per element instance) but relevant for a page that
+   dynamically creates/destroys `<rtsp-over-websocket>` elements (a multi-camera dashboard). Fixed in
+   `disconnectedCallback()`.
+4. **`Fisheye3DMulti` — six `document`/`window` listeners, no `stop()`/`destroy()` at all.**
+   (`src/player/util/FishEye3DMulti.ts`) On top of its already-documented (and intentionally
+   preserved) inability to stop its own `requestAnimationFrame` loop, this class also has no way to
+   remove any of its six page-level mouse/wheel/resize listeners — a page-lifetime leak of the whole
+   instance (Three.js scene, GPU resources included) once created. **Not fixed**: confirmed via
+   `grep` that this class has zero callers anywhere in `src/player` outside its own barrel export,
+   and `wisenet-camera-discovery` doesn't reference fisheye/dewarp features at all — not the cause of
+   anything reported. Since the class's own render-loop limitation is already documented as a
+   deliberate legacy-parity preservation rather than an oversight, adding listener cleanup alone
+   without also addressing the render loop would be a partial, arguably misleading fix — flagged for
+   a real design decision instead of a leak-audit drive-by.
+
+**Verified**: `tsc -b` clean, `npx vitest run` (excluding the real-device-only test) 144/144 passing.
+Rebuilt (`npm run build:player` here, `npm run build` in `wisenet-camera-discovery`) and reconfirmed
+the vendored bundle contains the fixes. **Not yet live-verified** — none of these four are expected
+to explain the specific memory-growth numbers the user has been reporting (#1 and #4 are confirmed
+unreachable from the current app; #2 and #3 are real but much smaller in magnitude than the
+`checkBufferSize()` sign-flip fixed earlier the same day), so they should be treated as "found and
+fixed while looking," not as the answer to the open investigation.
+
+**How to apply**: a "check every file" leak audit is really "check every resource-allocating
+primitive, then read its matching teardown" repeated across the codebase — the primitives worth
+grepping for in a browser context are `new Worker`, `setInterval`/`setTimeout`,
+`addEventListener`/`removeEventListener`, `AudioContext`/`ScriptProcessorNode`, and
+`createObjectURL`/`revokeObjectURL`/`MediaSource`/`new WebSocket`; anything else (plain arrays,
+plain objects, closures) gets reclaimed by ordinary GC once truly unreferenced and isn't worth
+auditing the same way. Before reporting a finding as relevant to a specific user-reported symptom,
+grep for the class's actual callers/factory wiring first — two of the four findings here turned out
+to be real but currently unreachable from the app that reported the leak, and saying so up front
+(rather than letting the user discover it after testing) is what keeps a broad audit like this one
+useful instead of just noisy.
+
+## `resetPlayerElement()` never existed — a documented fix from 2026-09-04 was written up but never actually implemented
+
+The user asked directly: when playback stops, is there a way to clear the `<video>`/`<canvas>` tag's
+resources inside `RTSPOverWebSocket.ts`? Answering this required reading `stop()`'s current
+behavior, which led to `docs/player/01-elements-interface-exceptions.md`'s and
+`05-video-tag-player.md`'s own 2026-09-04 History entries describing exactly such a mechanism:
+`resetPlayerElement()`, called from `stop()`, physically removing and recreating the `<video>`/
+`<canvas>` DOM node (the same attribute-preserving swap `onRTSPOverWebSocketVideoMode()` uses for a
+Renderer Type switch) specifically because clearing `src`/`srcObject` alone doesn't reliably release
+a browser's internal MSE/decoder/GPU-backed memory for that element.
+
+That description was checked against the real `stop()` method (`RTSPOverWebSocket.ts:5716-5753`) and
+found to not match at all: `stop()` only calls `player.control(this.info)` (with `cmd: 'close'`),
+resets `_readyState`, and hides the ONVIF overlay — no DOM node is ever touched, let alone
+removed/recreated. `grep -rn "resetPlayerElement"` across the entire `src/` tree returns nothing.
+`git log --all -S "resetPlayerElement"` across the *whole repository* returns exactly two commits,
+and in both, every match is inside `MEMORY.md` or a `docs/player/*.md` file — never once inside a
+`.ts` source file, confirmed by diffing commit `b546545` (where the string was introduced) directly.
+The method was documented, in detail, with line numbers, as a completed fix — and never written.
+
+**Practical answer to the user's actual question**: no, there is currently no mechanism that
+recreates the `<video>`/`<canvas>` DOM node itself on stop. The *same* node persists across every
+`play()`/`stop()`/reconnect for the life of the page. What genuinely does happen is
+`VideoTagPlayer.close()`/`CanvasTagPlayer.close()` clearing that persisted node's internal state
+(Blob URL revoke, `src`/`srcObject` clear, listener removal, and for `CanvasTagPlayer`, shrinking the
+WebGL canvas to 1×1 to release GPU memory eagerly) — real cleanup, but narrower than a full node
+swap. Corrected both docs' `Method Analysis` bodies in place (append-only History left untouched,
+new correction rows added instead, per this doc set's own convention) rather than silently editing
+away the false claim.
+
+**A second, related question was also investigated and *not* acted on**: `VideoTagPlayer.close()`'s
+`videoElement.load()` call (the one call that actually forces the browser to reset its internal
+decode pipeline) only fires `if (!this.playbackFlag)` — Live sessions only, with no comment anywhere
+explaining why, dating back to the very first ported commit. The user asked to extend it to Playback
+mode too. Before doing so, traced every caller of `close()` and found it fires far more often than
+"the user pressed stop": `MediaRouter.initVideoPlayer()` (seek/resume/speed-change) and
+`selectVideoPlayer()` (codec/size/framerate change) both call `close()` as an **in-session reinit**,
+immediately followed by constructing a fresh player against the same persisted `<video>` node — and
+Playback sessions reinit via seeking far more often than Live ever does. `.load()`'s full pipeline
+reset is disruptive (a visible flash/black-frame, added latency) — plausible, if unconfirmed, reason
+it was scoped to Live only, where `close()`-then-reinit is comparatively rare. **Did not blanket-
+enable it for Playback**: `close()` has no way today to distinguish "this is the final teardown" from
+"this is an in-session reinit" in either mode, so doing this safely would need that distinction
+threaded through explicitly (e.g. a `close(final: boolean)` parameter engaged only by
+`MediaRouter.terminate()`, not by `initVideoPlayer()`/`selectVideoPlayer()`) rather than a blanket
+per-mode toggle that risks reintroducing a seek/scrub regression to chase a leak fix that was never
+confirmed to need it. Flagged for a deliberate follow-up if actually wanted.
+
+**How to apply**: this session's earlier `clearTransport()`/`Disconnect()` regression already
+established "trace every caller before changing a shared method's behavior" — this is the same
+lesson applied *before* touching the code instead of after breaking it: tracing `close()`'s callers
+first is what turned "just also call `.load()` in Playback mode" from an agreed-to action item into
+a documented risk assessment with no code change. Separately: when a doc describes a fix in enough
+detail to sound authoritative (line numbers, exact mechanism, matching a real neighboring pattern),
+that detail is not by itself evidence the code exists — a memory/doc entry is a claim about a
+point in time, and `grep`/`git log -S` against the actual source is the only way to confirm a named
+function is real before recommending or building on it, exactly as this project's own memory-system
+guidance already says to do.
 

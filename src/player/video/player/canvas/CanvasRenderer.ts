@@ -215,6 +215,13 @@ export class CanvasRenderer {
           callback();
         }
       };
+      // Real bug, found live auditing src/player for memory leaks: only `onload` revoked the
+      // Blob URL -- a partial/corrupt JPEG frame (RTP packet loss, anticipated elsewhere in this
+      // codebase, e.g. WebCodecsVideoEncoder.ts's own createImageBitmap() error handling) never
+      // fires `onload` at all, so its Blob URL leaked permanently, one per dropped/corrupt frame.
+      image.onerror = () => {
+        window.URL.revokeObjectURL(image.src);
+      };
       image.src = window.URL.createObjectURL(new Blob([frameData.buffer as ArrayBuffer]));
       this.captureframeData = image;
     } else {

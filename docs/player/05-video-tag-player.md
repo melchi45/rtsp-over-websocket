@@ -8,7 +8,7 @@ it owns, and the `VTTCue`-based timestamp channel that ultimately surfaces as `R
 split out to [11-canvas-tag-player.md](11-canvas-tag-player.md) on 2026-09-08 — see this file's own
 History and that file's Context note for why.*
 
-**Version:** 1.2.11 · **Author:** Youngho Kim
+**Version:** 1.2.13 · **Author:** Youngho Kim
 
 **History**
 
@@ -48,6 +48,9 @@ History and that file's Context note for why.*
 | 2026-09-08 | Found and fixed the real reason `checkBufferSize()`'s 30s trim wasn't actually capping growth during exactly the Efficiency-Mode-recovery scenario the fix above targeted — reported by the user as memory still jumping ~200MB (600MB -> 800MB) on recovery even with `pushSegment()`'s cap in place. Root cause: `sourceBufferEventListener`'s `'updateend'` case called `appendSegmentToSourceBuffer()` *before* `videoUpdating()` (which is what actually invokes `checkBufferSize()`) — see the new "`SourceBuffer` fill/trim lifecycle" section below for the full fixed ordering and its own follow-up livelock. See `MEMORY.md`. |
 | 2026-09-08 | Fixed a real regression the `videoUpdating()`-before-`appendSegmentToSourceBuffer()` reorder (immediately above) itself introduced: a genuine livelock where a near-no-op `remove()`'s own completion fired another `'updateend'`, re-triggering another near-no-op `remove()`, indefinitely — see the new "`SourceBuffer` fill/trim lifecycle" section below for the full mechanism and the two-part fix (`CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS` + `MIN_CHECK_BUFFER_SIZE_TRIM_INTERVAL_MS`). See `MEMORY.md`. |
 | 2026-09-08 | Split out of the former combined `05-video-player-rendering.md`: `CanvasTagPlayer`/`CanvasRenderer`/`StepBufferList`/the `webgl/` package moved to new [11-canvas-tag-player.md](11-canvas-tag-player.md) (see its own History for what it carried forward). This file keeps the shared `VideoPlayer` abstract base and is now `VideoTagPlayer`-only, and gained five new deep-dive sections requested directly by the user: "Video/Audio sample → `SourceBuffer` pipeline", "Audio encoder selection: WASM vs. WebCodecs", "`SourceBuffer` fill/trim lifecycle", "Seeking", and "Timestamp cue → `RTSPOverWebSocket` flow". Also folded several of the History rows above's inline mechanism descriptions into those new sections rather than duplicating them — the rows above now cross-reference the sections instead. No behavior change — pure documentation reorganization/expansion. See `docs/player/README.md`'s updated index and this repo's root `MEMORY.md`. |
+| 2026-09-08 | Added dedicated call-stack `sequenceDiagram`s, requested directly by the user, to three sections that previously only had a structural `flowchart`: "Video/Audio sample → `SourceBuffer` pipeline" gained one diagram covering *both* the video and audio entry points converging on `appendBuffer()` (previously only the class-level "Call Stack" section covered this, and only the video side); "Audio encoder selection" gained two — one per transcode path (WASM's Worker round trip vs. WebCodecs' synchronous-decode/async-encode call order), since the two paths' actual participants/timing differ enough that one shared diagram would blur the distinction; "Timestamp cue → `RTSPOverWebSocket` flow"'s single combined diagram was split into a dedicated "enqueue" (cue creation/`addCue()`) diagram and a dedicated "dequeue" (`onCueEnter`/polling → `reportCueTimestamp()` → `RTSPOverWebSocket`) diagram. No behavior change — pure documentation addition. |
+| 2026-09-08 | Fixed the real reason the same Live memory leak resurfaced *again* despite every fix above (`segmentArray`/`boxStartTime`/cue-count caps, the `updateend` reorder, the hysteresis/min-interval livelock guards) — reported live as memory still climbing (800MB → 1.2GB → 1.5GB across a single continuous session) and, once past roughly 1GB, the player visibly cycling Play → Pause → Play. Root cause, in `checkBufferSize()`'s trim-target calculation (`:2654`/`:2660`): `Math.abs(Math.min(endTime, currentTime) - getMaxInstantPlaybackTime())` is negative whenever `currentTime` hasn't reached `getMaxInstantPlaybackTime()` seconds yet — which the outer gate (`endTime - bufferedStart > getMaxInstantPlaybackTime() + 5`, measuring total buffered *span*, entirely independent of `currentTime`) does nothing to rule out. This is routinely true whenever `currentTime` has been sitting still for more than `getMaxInstantPlaybackTime()` seconds while Live appends keep arriving in the background regardless — e.g. the video was `pause()`d for a while (appends never stop for Live just because the `<video>` element is paused), or playback stalled/fell behind for any other reason. `Math.abs()` flipped that negative value positive instead of treating it as "no real margin yet, don't trim": e.g. `currentTime = 0` with the 30s default computed `removeEnd = 30`, so `sourceBuffer.remove(0, 30)` deleted the *exact* data still needed to resume from `currentTime` — a self-inflicted, permanent stall (the video can never advance past its own now-missing current position), after which every later `checkBufferSize()` call recomputes the same already-cleared `removeEnd` and no-ops forever while `endTime` (unaffected by the stall) keeps growing completely untrimmed for the rest of the session. Any transient stall/pause past the ~30-35s watermark was therefore enough to turn itself permanent and start the same unbounded-growth pattern all over again, explaining why the leak kept resurfacing after each of the fixes above closed off a different specific trigger for reaching that watermark. Fixed by clamping to 0 (`Math.max(0, ...)`, skip trimming — nothing safe to remove yet) instead of flipping the sign, in both the `boxsize !== 1` and `boxsize === 1` branches, and adding the same `if (removeEnd > 0)` guard to the first branch that the second already had. See `MEMORY.md`. |
+| 2026-09-08 | **Correction to this file's 2026-09-04 entry above** ("The actual DOM-level `<video>` element reset needed to reclaim browser-internal MSE/decoder memory was added one layer up, in `RTSPOverWebSocket.ts`'s new `resetPlayerElement()`"): no `resetPlayerElement()` exists anywhere in this codebase (confirmed via `grep`, prompted by a direct user question about how `<video>`/`<canvas>` resources get cleared on stop). The DOM-level reset described is real, just not where that entry says — it's inline in this class's own `close()` (`:3236-3265`), documented in the new "Teardown" bullet above. While investigating, also found and documented (not fixed — see that same bullet) that `close()`'s `videoElement.load()` call is Live-only (`if (!this.playbackFlag)`), with no comment anywhere explaining why; a proposed fix to also call it in Playback mode was not applied once tracing `close()`'s actual callers showed it fires on every in-session reinit (seek/resume/speed-change via `MediaRouter.initVideoPlayer()`, codec/size change via `selectVideoPlayer()`), not just final teardown — Playback reinits via seeking far more often than Live does, and `.load()`'s full pipeline reset is disruptive enough (visible flash, added latency) that blanket-enabling it for Playback risked a real, user-visible seek/scrub regression instead of the requested leak fix. See `01-elements-interface-exceptions.md`'s matching correction and `MEMORY.md`. |
 
 ---
 
@@ -325,6 +328,43 @@ flowchart TD
     AB -.->|"browser MSE demux/decode (internal)"| VE["&lt;video&gt; element pixels/audio"]
 ```
 
+**Call stack — video and audio, both converging on `SourceBuffer.appendBuffer()`.** The flowchart
+above shows the shape of the pipeline; this sequence diagram shows the actual call order, including
+the `'updateend'`-driven drain loop that keeps `segmentArray` moving one append at a time (MSE only
+ever allows one `appendBuffer()` in flight):
+
+```mermaid
+sequenceDiagram
+    participant MR as MediaRouter
+    participant VTP as VideoTagPlayer
+    participant M4 as mp4Generator (vendor)
+    participant SB as SourceBuffer (MSE)
+
+    par video frame
+        MR->>VTP: onVideoData(playMode, streamData, videoInfo)
+        VTP->>VTP: ingestVideoSample() -> createVideoSample()<br/>(NAL length-prefixing, frameDuration/CTS calc, pushBoxStartTime())
+        Note over VTP: once boxsize samples queued (Live) /<br/>every I-frame boundary (Playback)
+        VTP->>VTP: createVideoSegment() / createSegment() (dual-track, Playback)
+    and audio frame
+        MR->>VTP: onAudioData(streamData, audioinfo)
+        VTP->>VTP: createAudioSample(streamData, audioinfo, chunkCodec)<br/>(AAC/OPUS direct, G711/G726 encoder-selected -- see Audio encoder selection below)
+        VTP->>VTP: createAudioSegment() / createSegment() (dual-track, Playback)
+    end
+
+    VTP->>M4: mediaSegment(seq, [boxInfo], frameData) / dualTrackMediaSegment(seq, [vBox,aBox], [vData,aData])
+    M4-->>VTP: moof+mdat Uint8Array
+    VTP->>VTP: pushSegment(segment) (:2403, caps segmentArray at MAX_SEGMENT_QUEUE_LENGTH)
+    VTP->>VTP: appendSegmentToSourceBuffer() (:2410)
+    alt sourceBuffer idle and attached
+        VTP->>SB: sourceBuffer.appendBuffer(segment)
+        SB-->>VTP: 'updateend' event (sourceBufferEventListener, :585)
+        VTP->>VTP: videoUpdating() (checkBufferSize trim -- see fill/trim lifecycle below)
+        VTP->>VTP: appendSegmentToSourceBuffer() again (drains next queued segment, video or audio)
+    else sourceBuffer.updating === true
+        Note over VTP,SB: no-op this call -- the in-flight append's own 'updateend'<br/>is what re-invokes appendSegmentToSourceBuffer() next
+    end
+```
+
 - `createVideoSample()`/`createAudioSample()` accumulate per-track sample queues
   (`videoSamples`/`audioSamples`); once enough have queued (Live: `boxsize` video samples;
   Playback: every I-frame boundary once more than one sample is buffered), `createVideoSegment()`/
@@ -398,6 +438,54 @@ flowchart TD
     FAIL -.-> WASM
 ```
 
+**Call stack — WASM path (`audioEncoderMode='wasm'`, or `'auto'` fallback).** A round trip through
+the `audiotranscoderWorker` Web Worker; the reply is asynchronous, arriving as a `'transcoded'`
+`postMessage` on a later JS-thread turn, not synchronously within the same call:
+
+```mermaid
+sequenceDiagram
+    participant VTP as VideoTagPlayer
+    participant W as audiotranscoderWorker (Worker thread)
+
+    VTP->>VTP: createAudioSample(streamData, audioinfo, 'G711'/'G726')
+    Note over VTP: webCodecsAudioEncoder not configured/ready -> falls through
+    alt audiotranscoderWasmReady
+        VTP->>W: postMessage({type:'transcode', data: streamData})
+        Note over W: AssemblyTranscoder (vendored WASM) decodes G711/G726 PCM,<br/>re-encodes to AAC, off the main thread
+        W-->>VTP: postMessage({type:'transcoded', data: {...AAC frameData}})
+        VTP->>VTP: audiotranscoderWorkerMessage() 'transcoded' case (:2869)
+        VTP->>VTP: createAudioSample(data, audioInfo, 'AAC') (re-entry -- joins the normal AAC muxing path)
+    else not yet initialized (audiotranscoderWasmReady === false)
+        VTP->>VTP: frame dropped (initAudiotranscoderWasm() not yet called for this session)
+    end
+```
+
+**Call stack — WebCodecs path (`audioEncoderMode='webcodecs'`, or `'auto'` when `AudioEncoder` is
+supported).** No Worker at all — `pcmDecoder.decode()` runs synchronously on the main thread;
+`webCodecsAudioEncoder.encode()` is fire-and-forget, with its own output arriving asynchronously via
+the encoder's `onEncodedChunk` callback:
+
+```mermaid
+sequenceDiagram
+    participant VTP as VideoTagPlayer
+    participant PCM as pcmDecoder (G711AudioDecoder / G726xAudioDecoder)
+    participant WCE as WebCodecsAudioEncoder
+    participant AE as browser AudioEncoder (WebCodecs)
+
+    VTP->>VTP: createAudioSample(streamData, audioinfo, 'G711'/'G726')
+    Note over VTP: webCodecsAudioEncoder.isConfigured && pcmDecoder ready
+    VTP->>PCM: pcmDecoder.decode(streamData.frameData)
+    PCM-->>VTP: PCM Float32Array
+    VTP->>VTP: webCodecsAudioPendingFrames.push({timestampUs, streamData})
+    VTP->>WCE: webCodecsAudioEncoder.encode({pcm, timestampUs})
+    WCE->>AE: encoder.encode(new AudioData(...)) (fire-and-forget)
+    AE-->>WCE: output callback, async, later JS-thread turn
+    WCE-->>VTP: onEncodedChunk(result) -> onWebCodecsAudioEncodedChunk(result) (:3600)
+    VTP->>VTP: match result.timestampUs against webCodecsAudioPendingFrames (FIFO-desync-safe)
+    VTP->>VTP: createAudioSample(data, audioInfo, 'AAC') (re-entry -- joins the normal AAC muxing path)
+    Note over WCE,AE: onError/onUnsupported -> handleWebCodecsAudioEncoderFailure()<br/>-> falls back to the WASM path above from the next frame on
+```
+
 - **WASM path** (`audiotranscoderWorker`, the original `AssemblyTranscoder`-backed Worker) —
   `initAudiotranscoderWasm()` (`:3588-`) sends the exact same `postMessage({type:'init', ...})`
   this branch always sent, now factored into its own idempotent-safe-to-call-again method (used both
@@ -440,6 +528,34 @@ flowchart TD
 - **Teardown** — `close()` calls `closeWebCodecsAudioEncoder()` (`:3615-`, closes the encoder, clears
   pending frames, resets `pcmDecoder`/`webCodecsAudioEncoderFailed`) alongside resetting
   `audiotranscoderWasmReady = false` and posting `{type: 'terminate'}` to `audiotranscoderWorker`.
+- **`<video>` element reset (`close()`, `:3236-3265`)** — this is the actual DOM-level `<video>`
+  reset a 2026-09-04 History entry above mis-described as living in a `RTSPOverWebSocket.ts`
+  `resetPlayerElement()` method — no such method exists anywhere in this codebase (confirmed via
+  `grep`, 2026-09-08); the real logic is inline here instead, one layer lower than that entry
+  claims. Runs whenever `videoElement` is non-null: revokes the `MediaSource` Blob URL
+  (`URL.revokeObjectURL(videoElement.src)`, called twice — once before, once after the block below,
+  both harmless no-ops on an already-revoked URL), clears `src`/`srcObject`, removes every
+  TextTrack cue and its `oncuechange` handler, calls `removeAllEventListener()` (the custom
+  `sourceBuffer`/`mediaSource`/element listener set), nulls every native `on*` handler
+  (`onpause`/`oncanplay`/`onwaiting`/`ondurationchange`/`onloadeddata`/`onprogress`/`onseeking`/
+  `onseeked`/`ontimeupdate`/`onstalled`/`oncanplaythrough`/`onemptied`), and resets
+  `style.background`. **`videoElement.load()` — the one call that actually forces the browser to
+  reset its internal decode pipeline — is only made `if (!this.playbackFlag)`, i.e. Live sessions
+  only.** Not yet explained anywhere why Playback is excluded (this line dates to the initial
+  ported commit, `fdd4548`, with no comment either here or in the port) — but `close()` is called
+  far more than just at final teardown: `MediaRouter.initVideoPlayer()` (seek/resume/speed-change)
+  and `selectVideoPlayer()` (codec/size/framerate change) both call it as part of an **in-session
+  reinit**, immediately followed by constructing a fresh player against the *same* persisted
+  `<video>` DOM node — and Playback sessions reinit via seeking far more often than Live ever does.
+  `.load()`'s full pipeline reset is disruptive (a visible flash/black-frame, added latency) if
+  fired on every one of those, which is the likely (unconfirmed) reason it's Live-only: Live's own
+  `close()`-then-reinit calls are comparatively rare, so paying that cost every time is tolerable
+  there but was presumably judged not to be for a per-seek reinit in Playback. **Investigated
+  2026-09-08 at the user's request** (a proposed "just also call `.load()` in Playback mode" fix
+  was *not* applied for this reason) — `close()` has no way to distinguish "this is the final
+  teardown" from "this is an in-session reinit" for either mode today; making `.load()` fire only
+  on the former (in both modes) would need that distinction threaded through explicitly (e.g. a
+  `close(final: boolean)` parameter) rather than a blanket per-mode toggle. See `MEMORY.md`.
 
 #### `SourceBuffer` fill/trim lifecycle
 
@@ -495,6 +611,17 @@ flowchart TD
   meaningful regression. `checkBufferSize()` itself is called from `videoUpdating()`
   (`:2675-`, both Live and Playback branches), which in turn is triggered from `onDurationChange()`
   and every `sourceBuffer` `'updateend'` (see "Seeking" below for the full trigger list).
+  3. *Negative trim target got sign-flipped into a self-destructive trim.* The actual `remove(0,
+     removeEnd)` target is `min(endTime, currentTime) - getMaxInstantPlaybackTime()` — deliberately
+     clamped to `currentTime` so the trim never deletes data ahead of what's still playing. That
+     expression goes negative whenever `currentTime` hasn't reached `getMaxInstantPlaybackTime()`
+     seconds yet (Live appends never stop just because the `<video>` element is `pause()`d, so the
+     outer span-based gate above can still be true while `currentTime` itself is small or frozen).
+     `Math.abs()` used to flip that negative value positive instead of skipping the trim — e.g.
+     `currentTime = 0` computed `removeEnd = getMaxInstantPlaybackTime()` and deleted the exact data
+     `currentTime` needed to resume, permanently stalling playback at that position while `endTime`
+     kept growing untrimmed for the rest of the session. Fixed to `Math.max(0, ...)` (skip trimming
+     instead of sign-flipping) in both branches, with the same `if (removeEnd > 0)` guard on both.
 - **Full teardown (not re-creation).** `close()` (`:3138-`) calls `removeSourceBuffer()` on the
   `mediaSource` if one exists, then `endOfStream()` only if `readyState === 'open'` (a real fixed
   bug: the guard used to check `!== 'ended'`, which still let a `'closed'` `MediaSource` — reachable
@@ -540,10 +667,35 @@ to the outside world (ultimately, `RTSPOverWebSocket`'s public `'timestamp'` DOM
 objects purely as a timestamp-delivery/event-scheduling mechanism synced to `<video>` playback
 position, not as real subtitle text (each cue's `text` is JSON).
 
+**Call stack — enqueue (cue creation).** Runs synchronously inside every `createVideoSegment()`/
+`createSegment()` call, right after muxing — one `VTTCue` gets `addCue()`d onto the timestamp
+`TextTrack` per video sample in the box just muxed:
+
 ```mermaid
 sequenceDiagram
     participant CVSeg as createVideoSegment()/createSegment()
     participant UVT as updateVideoTimestamp() (:1616)
+    participant Cue as new VTTCue
+    participant TT as TextTrack (timestampTextTrackId)
+
+    CVSeg->>UVT: updateVideoTimestamp(boxSamples)
+    loop each sample in boxSamples
+        UVT->>UVT: compute [startTime,endTime) from baseVideoTime + frameDuration
+        UVT->>Cue: new VTTCue(startTime, endTime, JSON.stringify(sample.timeStamp))
+        UVT->>Cue: cue.onenter = makeOnCueEnter()
+        UVT->>Cue: cue.onexit = makeOnCueExit()
+        UVT->>TT: textTracks[timestampTextTrackId].addCue(cue)
+        Note over TT: cues accumulate in chronological order --<br/>enqueue is pure append, no ordering/dedup logic here
+    end
+```
+
+**Call stack — dequeue (cue consumption → `RTSPOverWebSocket`).** Two independent triggers can pull
+a cue back out and report it — the browser's own native dispatch, or this class's own
+`requestAnimationFrame` poll — but both converge on the exact same `reportCueTimestamp()` call, and
+from there the call stack up through `MediaRouter` to `RTSPOverWebSocket` is identical either way:
+
+```mermaid
+sequenceDiagram
     participant TT as TextTrack (timestampTextTrackId)
     participant Cue as VTTCue
     participant RCT as reportCueTimestamp() (:919)
@@ -551,21 +703,16 @@ sequenceDiagram
     participant MR as MediaRouter.sendTimeStamp() (:772)
     participant RWS as RTSPOverWebSocket.onRTSPOverWebSocketTimestamp() (:4376)
 
-    CVSeg->>UVT: updateVideoTimestamp(boxSamples)
-    UVT->>UVT: compute [startTime,endTime] per sample from baseVideoTime + frameDuration
-    UVT->>Cue: new VTTCue(startTime, endTime, JSON.stringify(sample.timeStamp))
-    UVT->>Cue: cue.onenter = makeOnCueEnter(); cue.onexit = makeOnCueExit()
-    UVT->>TT: textTracks[timestampTextTrackId].addCue(cue)
-
-    alt native "time marches on" reaches the cue in time
-        TT->>Cue: onenter fires (browser-driven)
+    alt native 'time marches on' reaches the cue in time
+        TT->>Cue: onenter fires (browser-driven, ~250ms native dispatch cadence)
         Cue->>RCT: reportCueTimestamp(cue, 'onCueEnter')
     else cue's whole lifetime falls inside one dispatch gap (esp. Playback at high speed)
-        Note over TT: startTimestampCuePolling()'s requestAnimationFrame loop,<br/>independent of any TextTrack-native event
-        TT->>RCT: checkTimestampCueAtCurrentTime() finds cue where startTime<=currentTime<endTime
+        Note over TT: startTimestampCuePolling()'s requestAnimationFrame loop (~60Hz),<br/>independent of any TextTrack-native event
+        TT->>RCT: checkTimestampCueAtCurrentTime() finds cue where currentTime falls in [startTime, endTime)<br/>(scans track.cues from the end, stops at lastReportedCue)
     end
 
-    RCT->>RCT: parse cue.text, set type:'timestamp'/channelId/currentTimeDiff/videoSize
+    RCT->>RCT: parse cue.text back to TimestampData, then set type/channelId/currentTimeDiff/videoSize fields
+    RCT->>RCT: lastReportedCue = cue (dedup + polling's own early-stop)
     RCT->>VTP: this.timeStampCallback(timeStamp)
     VTP->>MR: (registered via player.setTimeStampCallback((ts) => self.sendTimeStamp(ts)))
     MR->>MR: this.timeStampCallback(timeStamp, this.stepFlag)
@@ -574,7 +721,7 @@ sequenceDiagram
     RWS->>RWS: compute _currentTimestamp/_localTimestamp (GMT-shifted)
     RWS-->>RWS: this.dispatch('timestamp', {mode, clock, timestamp, timezone, local, speed})
 
-    Note over TT,Cue: onCueExit fires when "time marches on" passes the cue's endTime -> track.removeCue(this)<br/>(the normal removal path -- a seek that skips clean over [startTime,endTime) orphans the cue instead;<br/>see makeOnCueChange()'s cap in the Structure section above for that safety net)
+    Note over TT,Cue: separately, onCueExit fires when 'time marches on' passes the cue's endTime -> track.removeCue(this)<br/>(the normal removal/dequeue-without-reporting path, a seek that skips clean over [startTime,endTime)<br/>orphans the cue instead -- see makeOnCueChange()'s cap in the Structure section above for that safety net)
 ```
 
 - **Where the cue comes from.** `updateVideoTimestamp(boxSamples)` (`:1616-1665`, called from

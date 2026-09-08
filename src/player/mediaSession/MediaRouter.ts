@@ -218,7 +218,7 @@ export interface VideoPlayerLike {
   setDebugConfig?(config: DebugConfig | null, componentName: string): void;
   /** See `RTSPOverWebSocket.ts`'s `audioencodermode` attribute/property and
    *  `VideoTagPlayer.ts`'s `setAudioEncoderMode()`/
-   *  `docs/player/05-video-player-rendering.md` -- selects the WASM vs.
+   *  `docs/player/05-video-tag-player.md` -- selects the WASM vs.
    *  WebCodecs G.711/G.726-to-AAC transcoding path. Plain `string`, same
    *  loose-typing convention as `codec`/`audioCodecHint` above (the real
    *  `'auto' | 'wasm' | 'webcodecs'` union lives only where it's actually
@@ -1436,6 +1436,27 @@ export class MediaRouter {
     if (this.audioTalker !== null) {
       this.audioTalker.terminate();
       this.audioTalker = null;
+    }
+
+    // Not tied to `player` -- a `setInterval` started by handleMinimapCommand()
+    // survives independently of it and otherwise keeps this whole MediaRouter
+    // (and everything it references) alive forever once minimap was ever
+    // switched on for this channel, since only an explicit `minimap: 'off'`
+    // command used to clear it.
+    if (this.minimapUpdateTimer) {
+      clearInterval(this.minimapUpdateTimer);
+      this.minimapUpdateTimer = null;
+    }
+    this.minimapTarget = null;
+    this.minimapRefreshInterval = DEFAULT_MINIMAP_REFRESH_INTERVAL;
+
+    // Same reasoning as above: a backup/export in progress must not outlive
+    // the channel just because the caller never sent an explicit
+    // `backup: { command: 'stop' }` before tearing down.
+    if (this.backupProvider !== null) {
+      this.backupProvider.closeStream();
+      this.backupProvider = null;
+      this.isBackup = false;
     }
     if (this.rtpClientCallback !== null) {
       this.rtpClientCallback('close', '');

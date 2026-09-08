@@ -2650,14 +2650,40 @@ export class VideoTagPlayer extends VideoPlayer {
       if (Math.abs(endTime - bufferedStart) > this.getMaxInstantPlaybackTime() + CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS) {
         const now = performance.now();
         if (!sourceBuffer.updating && now - this.lastCheckBufferSizeTrimAt >= MIN_CHECK_BUFFER_SIZE_TRIM_INTERVAL_MS) {
+          // Real bug, found live investigating the >1GB Live leak resurfacing despite every fix
+          // above: `Math.min(endTime, currentTime) - getMaxInstantPlaybackTime()` is negative
+          // whenever `currentTime` (or `endTime`) hasn't reached `getMaxInstantPlaybackTime()`
+          // seconds yet -- which the outer `if` above does NOT rule out on its own (that gate
+          // measures total buffered *span*, `endTime - bufferedStart`, completely independent of
+          // where `currentTime` actually is). This reliably happens whenever `currentTime` has
+          // been sitting still for more than `getMaxInstantPlaybackTime()` seconds while new data
+          // keeps appending in the background -- e.g. the video was `pause()`d for a while (a
+          // perfectly normal, common user action; Live appends never stop just because playback
+          // is paused), or playback stalled/fell behind for any other reason. The old
+          // `Math.abs(...)` blindly flipped that negative value positive instead of treating it
+          // as "no real margin yet, don't trim" -- e.g. `currentTime = 0` (paused right at start)
+          // with `getMaxInstantPlaybackTime() = 30` computed `removeEnd = 30`, so
+          // `sourceBuffer.remove(0, 30)` deleted the *exact* data still needed to resume playback
+          // from `currentTime`. That leaves the video permanently unable to advance past its own
+          // (now-missing) current position -- a stall that neither resolves nor gets detected as
+          // "nothing left worth keeping" by this same trim logic, since `currentTime` staying
+          // frozen means every subsequent call recomputes the same already-cleared `removeEnd`
+          // and no-ops -- while `endTime` (the append side, unaffected by the stall) keeps growing
+          // completely untrimmed for the rest of the session: exactly the "memory keeps climbing,
+          // and once it's a couple hundred MB in, the player starts cycling Play -> Pause -> Play"
+          // pattern reported live. Fixed by clamping to 0 (skip trimming, nothing to safely remove
+          // yet) instead of flipping the sign, in both branches, mirroring the `boxsize === 1`
+          // branch's own pre-existing `if (removeEnd > 0)` guard (now applied uniformly).
           if (this.boxsize !== 1) {
-            const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime());
-            // eslint-disable-next-line no-console
-            this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - bufferedStart).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
-            sourceBuffer.remove(0, removeEnd);
-            this.lastCheckBufferSizeTrimAt = now;
+            const removeEnd = Math.max(0, Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime());
+            if (removeEnd > 0) {
+              // eslint-disable-next-line no-console
+              this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - bufferedStart).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
+              sourceBuffer.remove(0, removeEnd);
+              this.lastCheckBufferSizeTrimAt = now;
+            }
           } else {
-            const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime()) - 60;
+            const removeEnd = Math.max(0, Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime()) - 60;
             if (removeEnd > 0) {
               // eslint-disable-next-line no-console
               this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - bufferedStart).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);

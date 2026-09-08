@@ -3,7 +3,7 @@
 *Per-class reference for the general-purpose helpers under `src/player/util/` that don't belong to any other
 subsystem's documentation — data structures, timing, and math utilities.*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim
+**Version:** 1.1.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -16,6 +16,7 @@ subsystem's documentation — data structures, timing, and math utilities.*
 | 2026-09-04 | `createDebugLogger()` now returns a `DebugLogger` (four independently-gated methods -- `debug`/`info`/`warning`/`error`, per new `LogLevel` type) instead of one bare function; added `NOOP_DEBUG_LOGGER` (the shared default) and `isLevelEnabled()`. Every one of the ~44 call sites across `02`–`07` that used to call the bare function directly now calls `.debug(...)` on it -- a mechanical migration, no behavior change to *what* those specific calls do, only to how they're gated (see the new "Level filtering" bullet below). Requested directly by the user. |
 | 2026-09-04 | Added `MEDIA_SESSION_GROUPS` and the group-alias branch in `isDebugEnabled()` -- `debug["mediaSession"]`'s string array now also accepts `"videoSession"`/`"audioSession"`/`"textSession"`/`"rtpSession"`/`"rtcpSession"` alongside individual class names. See the "Method Analysis" entry below and `03-mediaSession-core-video.md`'s matching History row for the live-verification detail. |
 | 2026-09-04 | `DEFAULT_LOG_LEVEL` changed from `'info'` to `'warning'` — reported directly by the user as "too many logs" after live-camera testing (`'info'` meant enabling any component produced a steady stream of per-frame output, since every call site is `debug`/`info` severity and none are `warning`/`error` yet). Practical effect: enabling a component with no explicit `level` now shows nothing at all by default, not just "less." See `04-mediaSession-audio-text.md` for the matching `G711Session`/`G726Session`/`OPUSSession` reclassification. |
+| 2026-09-08 | Full-`src/player` memory-leak audit: found (not fixed — see `Fisheye3DMulti`'s own updated Method Analysis above for why) that `Fisheye3DMulti` has no `stop()`/`destroy()` at all, so its six `document`/`window` listeners are never removable, on top of its already-documented unstoppable render loop. Confirmed unused by `wisenet-camera-discovery` (the app whose reports drove this audit), so not the cause of any leak reported so far. See `MEMORY.md` for the full audit writeup covering every file checked. |
 
 ---
 
@@ -535,6 +536,19 @@ flowchart LR
   - `animate` never records its `requestAnimationFrame` id, so — unlike `Fisheye3D`, which has `start()`/
     `stop()` around a stored `animateId` — this class has **no way to stop its render loop** once started; this
     is called out explicitly in an inline comment as a preserved legacy limitation, not an omission.
+  - **Confirmed by the 2026-09-08 full-`src/player` memory-leak audit**: this class also has no `stop()`/
+    `destroy()` method at all (`Fisheye3D.stop()` has no counterpart here), so none of its six `document`/
+    `window` listeners (`mousedown`/`mousemove`/`mouseup`/`dblclick`/`mousewheel`/`MozMousePixelScroll`/
+    `resize`) are ever removable either — a page-lifetime leak of the whole instance (and its `THREE.Scene`/
+    `WebGLRenderer`/GPU resources) once created, on top of the un-stoppable render loop above. **Not fixed**:
+    confirmed via `grep` that `FishEye3DMulti` has zero callers anywhere in `src/player` outside `util/index.ts`'s
+    barrel export, and `wisenet-camera-discovery` (the consumer app whose memory-growth reports drove this
+    audit) doesn't reference fisheye/dewarp at all — so this is real but not the cause of any leak reported so
+    far, and given the class's own existing "no way to stop the render loop" limitation is explicitly documented
+    as an intentional legacy-parity preservation rather than an oversight, adding a `stop()` here on top of that
+    would be a partial, possibly-misleading fix (stops leaking listeners while the render loop it would need to
+    also cancel stays documented as unstoppable) — left for a deliberate decision on this class's actual contract
+    rather than a leak-audit side effect. See `MEMORY.md`.
   - A confirmed real bug is preserved in `onWindowResize`: it references a bare `container` identifier that
     was only ever a function-local `var container` inside `init()` in the legacy source — a sibling method
     like `onWindowResize` cannot see it — so calling `onWindowResize` throws the same `ReferenceError` the

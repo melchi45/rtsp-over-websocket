@@ -9,7 +9,7 @@ for a `canvas`-mode session is routed to an entirely separate subsystem
 `05-video-player-rendering.md` on 2026-09-08 — see [05-video-tag-player.md](05-video-tag-player.md)
 for the sibling `<video>`-tag/MSE pipeline and its own History for the full split rationale.*
 
-**Version:** 1.1 · **Author:** Youngho Kim
+**Version:** 1.2.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -20,6 +20,8 @@ for the sibling `<video>`-tag/MSE pipeline and its own History for the full spli
 | 2026-09-04 | (Carried forward, shared with [05-video-tag-player.md](05-video-tag-player.md)'s matching entry.) Added `debug`-gated `console.log` tracing (`util/debugLog.ts`, `debug["video"]`) — `VideoPlayer` (the shared abstract base this class and `VideoTagPlayer` both extend, see file 05) gained `setDebugConfig(config, componentName)` + `protected debugLog`/`debugConfig`; `MediaRouter.selectVideoPlayer()` supplies the literal component name (`'CanvasTagPlayer'`) it just built. `CanvasTagPlayer` forwards its `debugConfig` to the `CanvasRenderer`/`StepBufferList` it constructs in `init()`; `CanvasRenderer` (own `debug` setter, new `init()` trace) forwards further to whichever `Drawer` it builds (`YUVWebGLCanvas` via `WebGLCanvas.setDebugConfig()`, or `Image2DCanvas`'s no-op stub — MJPEG's 2D path has nothing worth tracing yet); `StepBufferList` migrated its own "Temporary diagnostic (2026-09-02)" `push()` log onto the same gate. |
 | 2026-09-04 | (Carried forward.) Live-refresh: reported directly by the user, a `debug` config change made *during* an already-running stream had no visible effect on this file's classes either. `CanvasTagPlayer` now overrides `setDebugConfig()` to also re-push into `renderer`/`stepVideoList` if either already exists (previously only wired at `init()` time); `CanvasRenderer`'s own `set debug()` now also re-pushes into `drawer`/`mapDrawer` if either already exists, recomputing the `Image2DCanvas`-vs-`YUVWebGLCanvas` name from its own `codecType` field the same way the original construction-time wiring does. `VideoTagPlayer` needed no equivalent override — it has no child components holding their own debug logger, unlike `CanvasTagPlayer`. See `03-mediaSession-core-video.md`'s matching History entry and `MEMORY.md` for the complete per-class breakdown. |
 | 2026-09-08 | Split out of the former combined `05-video-player-rendering.md` into this new file, requested directly by the user alongside a matching deep-dive expansion for `VideoTagPlayer` (see [05-video-tag-player.md](05-video-tag-player.md)). Gained two new sections at the same depth as file 05's: "Decoded frame → canvas draw pipeline" (the full `decoderWorker`/MJPEG-timeout → `StepBufferList`/`PlaybackBufferManager` → `CanvasRenderer.draw()` → WebGL/2D pixel-upload chain) and "Buffering, frame-drop, and the step-play 'seeking' equivalent" — explicit about why this class has neither a `SourceBuffer` nor a `currentTime` to seek at all, and what actually plays that role here. No behavior change — pure documentation reorganization/expansion. See `docs/player/README.md`'s updated index and this repo's root `MEMORY.md`. |
+| 2026-09-08 | Added a call-stack `sequenceDiagram` for the timestamp-callback path (previously only a `flowchart`), requested directly by the user alongside matching diagrams in file 05 — explicitly framed against file 05's cue-based enqueue/dequeue split, since this class has no queue at all: all three call sites invoke `timeStampCallback(...)` synchronously in the same tick the timestamp becomes available. Also added explicit notes to "Decoded frame → canvas draw pipeline" and "No `SourceBuffer`, no audio" cross-referencing file 05's new `SourceBuffer`-append and audio-transcoding call-stack diagrams — this class has no MSE append queue to fill and no audio path to transcode, so neither has a counterpart diagram here. No behavior change — pure documentation addition. |
+| 2026-09-08 | Full-`src/player` memory-leak audit (same day as file 05's `checkBufferSize()` fix, requested as a follow-up): `CanvasRenderer.draw()`'s MJPEG branch only revoked its per-frame Blob URL from `image.onload` — a partial/corrupt JPEG frame (RTP packet loss, an expected occurrence this codebase already anticipates elsewhere, e.g. `WebCodecsVideoEncoder.ts`'s own `createImageBitmap()` error handling) never fires `onload` at all, so its Blob URL leaked permanently, one per dropped/corrupt frame — a leak that scales directly with packet-loss rate over a long MJPEG session. Fixed by adding a matching `image.onerror` that also revokes the URL. `CanvasTagPlayer.close()`'s own teardown (worker `postMessage({type:'terminate'})` → worker's `decoder.close()` + ack → `decoderWorkerMessage('terminated')`'s real `.terminate()`) was audited too and found correct — a two-step handshake, not a bug, despite superficially resembling one. See `MEMORY.md` for the full audit writeup covering every file checked. |
 
 ---
 
@@ -193,7 +195,7 @@ sequenceDiagram
 
     MR->>CTP: onVideoData(playMode, streamData, videoInfo)
     CTP->>CTP: checkPlayer() (spawn decoderWorker if needed, non-MJPEG)
-    CTP->>CTP: tag streamData.timeStamp.mode; checkFrameDrop() (MJPEG)
+    CTP->>CTP: tag streamData.timeStamp.mode, then checkFrameDrop() (MJPEG)
 
     alt H264/H265/VP8/VP9/AV1
         CTP->>DW: postMessage({type:'decode', frameData, frameType, width, height, currentFps})
@@ -209,7 +211,7 @@ sequenceDiagram
     CR->>YUV: drawer.drawCanvas(data)
     Note over YUV: H264/H265/VP8/VP9/AV1: slice into Y/U/V, upload 3 textures, GPU YUV2RGB shader<br/>MJPEG: ctx.drawImage() directly, no shader
     YUV-->>YUV: visible pixels on the &lt;canvas&gt; element
-    CTP->>CTP: timeStampCallback(data.time / streamData.timeStamp) -- see "Timestamp callback" below
+    CTP->>CTP: timeStampCallback(data.time / streamData.timeStamp) -- see Timestamp callback below
 ```
 
 - `onVideoData()` (`:335-390`) is the single entry point for every codec; which branch it takes
@@ -235,6 +237,17 @@ sequenceDiagram
 - **Resolution/format**: the decoder worker hands back one flat planar I420/YUV420P buffer (Y plane
   followed by U then V — confirmed by `YUVWebGLCanvas.drawCanvas()`'s single-buffer-slicing logic,
   see below), not three separate arrays.
+- **No MSE `SourceBuffer` equivalent to "fill".** The sequence diagram above *is* the closest thing
+  this class has to [05-video-tag-player.md](05-video-tag-player.md)'s "Video/Audio sample →
+  `SourceBuffer` pipeline" call stack — there is no `appendBuffer()`/`'updateend'` drain loop here at
+  all; `renderer.draw()` paints a frame the moment it's decoded (or, MJPEG, the moment the `Image`
+  finishes loading), with no intermediate append queue. `PlaybackBufferManager`/`StepBufferList`
+  (documented in their own sections below) are the only buffering this tier does, and neither is an
+  MSE concept — see "Buffering, frame-drop, and the step-play 'seeking' equivalent" below.
+- **No audio-transcoding call stack.** [05-video-tag-player.md](05-video-tag-player.md)'s "Audio
+  encoder selection: WASM vs. WebCodecs" section (WASM `audiotranscoderWorker` vs. native
+  `WebCodecsAudioEncoder`) has no counterpart here — `CanvasTagPlayer` never receives audio data at
+  all (see "No `SourceBuffer`, no audio" below), so there is nothing to transcode.
 
 - **Call Stack.** See the pipeline diagram above (H264/H265/VP8/VP9/AV1 branch) — the decoder-worker
   round trip is the defining feature of this path versus `VideoTagPlayer`'s synchronous, worker-free
@@ -312,6 +325,42 @@ flowchart LR
     MjpegDraw["CanvasRenderer.draw() image.onload callback (MJPEG)"] -->|"streamData.timeStamp"| TSC
     TSC --> MR["MediaRouter.sendTimeStamp()"]
     MR --> RWS["RTSPOverWebSocket.onRTSPOverWebSocketTimestamp() -> dispatch('timestamp', ...)"]
+```
+
+**Call stack — no enqueue/dequeue, a direct call every time.** Unlike
+[05-video-tag-player.md](05-video-tag-player.md)'s `VTTCue`/`TextTrack` mechanism (a real
+enqueue-now/dequeue-later split, since a cue can sit in the `TextTrack` for a while before
+`onenter`/polling reports it), each of this class's three call sites invokes
+`this.timeStampCallback(...)` **synchronously, in the same tick the timestamp becomes available** —
+there is nothing to enqueue, so the "dequeue" side is just the very next statement:
+
+```mermaid
+sequenceDiagram
+    participant DW as decoderWorker (Worker thread)
+    participant CTP as CanvasTagPlayer
+    participant CR as CanvasRenderer
+    participant VTP as CanvasTagPlayer.timeStampCallback
+    participant MR as MediaRouter.sendTimeStamp() (:772)
+    participant RWS as RTSPOverWebSocket.onRTSPOverWebSocketTimestamp() (:4376)
+
+    alt H264/H265/VP8/VP9/AV1 (worker round trip)
+        DW-->>CTP: postMessage({type:'decoded', data:{frame, time, ...}})
+        CTP->>CTP: decoderWorkerMessage('decoded') (:230)
+        CTP->>VTP: timeStampCallback(data.time) -- called immediately, no queue
+    else early-return / frame-drop path
+        CTP->>CTP: onVideoData() (:374)
+        CTP->>VTP: timeStampCallback(streamData.timeStamp) -- called immediately, no queue
+    else MJPEG
+        CTP->>CR: renderer.draw(frameData, videoInfo, callback)
+        Note over CR: new Image(), then image.onload (async, but not a queue --<br/>a one-shot browser image-decode callback)
+        CR->>VTP: callback() -> timeStampCallback(streamData.timeStamp) (:382)
+    end
+
+    VTP->>MR: (registered via player.setTimeStampCallback((ts) => self.sendTimeStamp(ts)))
+    MR->>MR: this.timeStampCallback(timeStamp, this.stepFlag)
+    Note over MR: (registered from RTSPOverWebSocket.ts:352,<br/>time: (...args) => this.onRTSPOverWebSocketTimestamp(args[0]) -- identical to file 05 from here on)
+    MR->>RWS: onRTSPOverWebSocketTimestamp(time)
+    RWS-->>RWS: this.dispatch('timestamp', {mode, clock, timestamp, timezone, local, speed})
 ```
 
 - **Call Stack.** See the diagram above and "Decoded frame → canvas draw pipeline"'s own sequence

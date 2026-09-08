@@ -115,8 +115,15 @@ export class Session {
       case 'audio':
         this.eventAudioCallback = null;
         break;
+      case 'rtcp':
+        this.eventRtcpCallback = undefined;
+        break;
       case 'statistics':
         this.eventStatisticsCallback = null;
+        break;
+      case 'waiting':
+        this.eventWaitingCallback = undefined;
+        this.eventWaitingTimeout = undefined;
         break;
     }
   }

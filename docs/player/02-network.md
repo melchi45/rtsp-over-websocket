@@ -3,7 +3,7 @@
 *Per-class reference for `src/player/network`: RTSP-over-WebSocket signaling, transport, and the SUNAPI HTTP
 client, with concrete method behavior, wire framing, and RFC citations.*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim
+**Version:** 1.1.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -19,9 +19,11 @@ client, with concrete method behavior, wire framing, and RFC citations.*
 | 2026-09-02 | Fix TEARDOWN belt-and-suspenders disconnect trigger racing the real response: it polled every 500ms and force-`clearTransport()`'d as soon as that first tick found `currentState` still `'Playing'`, regardless of whether the actual `200 OK` had arrived yet — on a slower TEARDOWN (observed live on recording/playback sessions) this tore the transport down before the real response could be processed, so no `200 OK` was ever seen for it. Now a single 5s `setTimeout` (`teardownWatchdogHandler`), cancelled from `clearTransport()` itself as soon as the response-driven path (or any other path) completes teardown first, so it never fires once the real response has already been handled |
 | 2026-09-04 | `RtspClient`/`Transport`/`AttributeService`/`SunapiClient`/`SunapiManager`/`SunapiRestClient` each gained a `debug`/`set debug()` gate (`util/debugLog.ts`, see `01-elements-interface-exceptions.md`'s new `debug` attribute and `08-util.md`) — `debug["network"]` in the JSON config, `true` for all six or an array of specific class names. `RtspClient`'s existing 11 `console.log('[RtspClient] ...')` calls and `AttributeService`'s 17 `console.log(...)` calls were migrated onto the new gated `this.debugLog(...)` (real `console.error` calls, in both files, are untouched); `Transport` gained new `Connect()`/`Disconnect()` trace points. `RtspClient` forwards the config to the `Transport` it constructs internally (`Connect()`, `transport.debug = this.debugConfig`) — `StreamPlayer`'s constructor is what actually sets `rtspClient.debug` in the first place (see `01`). `XmlParser` was deliberately **not** instrumented — its own doc comment states it's pure, stateless parsing helpers, and adding mutable debug state would work against that. |
 | 2026-09-04 | `RtspClient.set debug()` now also re-applies to `this.transport` immediately if one already exists (previously only reached the *next* `Transport` `Connect()` constructs) — live-refresh, requested directly by the user after finding a mid-stream `debug` change had no visible effect. See `01`/`03`'s matching History entries and `MEMORY.md` for the full per-class breakdown across the whole propagation chain. |
+| 2026-09-08 | Fix a memory leak: `clearTransport()` now sets `transport.autoconnection = false` before disconnecting/`init()`-ing it, since `RtspResponseHandler` sets `transport.autoconnection = true` on every successful `PLAY` and `clearTransport()` always retires that `Transport` instance — previously an armed `Transport` could schedule its own `setTimeout(() => this.Connect(), 500)` reconnect from `OnClose()` *after* `RtspClient` had already discarded it, reopening a `WebSocket` and keeping the whole `RtspClient`/`RtpClient`/`*Session`/`MediaRouter` chain unreachable but not GC-collectible. See `03`'s matching entry (`MediaRouter.terminate()`/`Session.removeEventListener()` fixes from the same audit) and `MEMORY.md`. |
 | 2026-09-04 | `DigestGenerator`/`RtspClient` RTSP Digest auth rewritten to actually follow **RFC 7616** (per RFC 7826 §19.1.1's explicit instruction), not RFC 2617: fixed four real bugs found by checking RFC 7616's text directly (including its §3.9.1 worked example) — an unquoted-vs-quoted `algorithm=` challenge-parsing mismatch that silently hid any real SHA-256 offer behind an MD5 fallback, an all-or-nothing `Qop`/`Algorithm`/`Opaque` gate where the three are actually independent fields, the qop-formula-selection gate having the same bug, and unquoted `algorithm`/`qop`/`nc` in the `Authorization` response being sent quoted. Also fixed: multi-challenge selection now follows RFC 7616 §3.7 (first-understood-challenge-in-server-order, via new `SUPPORTED_DIGEST_ALGORITHMS`/`selectSupportedQop()` in `RtspClient.ts`) instead of "last challenge line wins"; a challenge's `qop` value (a quoted comma-separated list) is now parsed into a single chosen token instead of echoed back raw. New unit tests in `DigestGenerator.test.ts` verify against RFC 7616's own worked example. Live-verified against the real Wisenet camera used elsewhere in this doc's History — same successful MD5-based connection as before (this camera's own challenge has no `algorithm=` at all, so it exercises the "default to MD5, independent Qop/Opaque handling" path, not the new SHA-256 path — see `MEMORY.md`). |
 | 2026-09-07 | Found and fixed a real regression the above `Qop`-independence fix introduced for `RtspClient.ts`'s SUNAPI-delegated digest path specifically: a device's own `digestauth` helper endpoint doesn't necessarily honor the `Qop`/`Nc`/`Cnonce` hints it's given, and two real devices were confirmed live to disagree on this (one honors them, one silently doesn't) — new `resolveDigestHashType()`/`computeDigestResponseCandidates()` exports on `DigestGenerator.ts` let `RtspClient.ts` detect, per response, which formula a given device's endpoint actually used and shape the final `Authorization` header to match, rather than assuming either universally. Also fixed, unrelated pre-existing bug found along the way: `src/index.html`'s "Connect via SUNAPI Manager" flow set `.username` but never `.password` on the player element after a successful SUNAPI login, so every RTSP-level digest retry silently used an empty password. See `MEMORY.md` for the full live-verification trace (real MD5 hashes computed by hand and compared against both real devices' actual responses). |
 | 2026-09-07 | `SunapiClient.ts` (SUNAPI REST digest auth — a separate code path from the RTSP-side rewrite two rows above) rewritten for real RFC 7616 compliance, requested directly by the user: was still genuinely RFC 2617-only, with its own independent instance of the exact "unconditional qop" bug the RTSP-side entry above already found and fixed once — hashing the literal string `"null"` in place of `qop` for any qop-less challenge, never noticed here only because no caller had hit one yet. `formulateResponse` gained an `algorithm` parameter and MD5/SHA-256 selection via `DigestGenerator.ts`'s exported `resolveDigestHashType()` (previously hardcoded MD5), and now only uses the qop-based response formula when `qop` is actually present. `buildDigestAuthHeader` now emits `algorithm=`/`opaque=` (the latter parsed into `DigestCache` all along but never actually sent — a real compliance gap independent of the qop bug) and only emits `cnonce`/`nc`/`qop` together when `qop` is present. `getAuthInfoInWwwAuthenticate`'s own hand-rolled comma-split challenge parser is replaced with a call to `DigestGenerator.ts`'s `parseWWWAuthenticate()` (the same parser `RtspClient.ts` already uses), fixing two more bugs as a side effect: `algorithm` was never parsed at all, and a challenge's `qop` value legitimately containing a comma (`qop="auth,auth-int"`, RFC 7616 §3.3, one quoted value) broke the naive `split(',')`. `DigestCache` gained an `algorithm: string | null` field. Not yet live-verified against a real device on either new branch (qop-less, SHA-256) — only the unchanged qop-based-MD5 path, already exercised by every successful SUNAPI login elsewhere in this History, is confirmed; see `01-elements-interface-exceptions.md`'s matching Player/React History if a live SUNAPI login flow is what surfaced the need for this. |
+| 2026-09-08 | **Correction to this file's earlier same-day entry above** ("Fix a memory leak: `clearTransport()` now sets `transport.autoconnection = false`..."): that fix was placed in the wrong method and had to be reverted the same day after the user reported playback simply stopped and never resumed. `clearTransport()` is invoked synchronously *from within* `Transport.OnClose()`'s own `connectionCallback('close'/'error', ...)` dispatch (`connectionCbFunc`'s `'close'`/`'error'` branches, see below) as part of the legitimate, intentional network-drop auto-reconnect flow — disarming `autoconnection` there ran *before* that same `OnClose()` call reached its own `if (this.autoconnection) setTimeout(() => this.Connect(), 500)` reconnect-scheduling code a few lines later in the same call stack, so it permanently disarmed the retry any time `clearTransport()` happened to run mid-drop, breaking automatic recovery entirely. The original leak (a zombie reconnect surviving a caller-initiated `Disconnect()`/graceful `TEARDOWN`) was real and is now fixed correctly in `Disconnect()` itself instead — the one call site that unambiguously means "the caller wants this session to end," never invoked from the auto-reconnect path. `clearTransport()` itself no longer touches `autoconnection` at all. See the `Method Analysis` entries above (now corrected in place, per this doc's own convention of keeping Method Analysis current while History stays append-only) and `MEMORY.md` for the full incident writeup. |
 
 ---
 
@@ -299,18 +301,49 @@ recent history — see `retryWithCredentials()` below).
   events. On `'open'`: resets `CSeq = 1`, clears the RTSP queue, sets state back to
   `Options`→`Describe`, **resets `unahtuorizedCount = 0`** (documented as necessary so a stale
   count from a previous failed connection doesn't make the very first, protocol-mandatory 401 on
-  the new connection look already-exhausted), and issues `OPTIONS`. On `'error'`/`'close'`:
-  large branchy logic mapping websocket/backup states to specific `errorCode`s (`0x0601`/`0x0602`
-  for backup end/error, `0x0005`/`0x0008`/`0x0001`/`0x0002` for various reconnect/refuse/normal-
-  close cases) — see source for the exact matrix; not repeated here since it's pure error-code
-  plumbing, not protocol structure.
-- `Disconnect(response?)` — if connected and mid-session (`Playing`/`Pause`/`Setup`), issues
-  `TEARDOWN` (server-visible graceful stop); otherwise calls `clearTransport()` directly. Always
-  clears both interval timers and resets `unahtuorizedCount`/`SessionId`.
+  the new connection look already-exhausted), and issues `OPTIONS` — this is also how a
+  `Transport`'s own internal `autoconnection` self-reconnect (`OnClose()`'s `setTimeout(() =>
+  this.Connect(), 500)`, see `Transport`'s own entry below) actually resumes a session after an
+  unexpected drop: the *same* `Transport` instance's socket reopens, fires `'open'` again, and this
+  handler restarts the RTSP handshake from `OPTIONS` on it — there is no other code path in this
+  class that constructs a fresh `Transport` to recover from a mid-session drop. On `'error'`/
+  `'close'`: large branchy logic mapping websocket/backup states to specific `errorCode`s
+  (`0x0601`/`0x0602` for backup end/error, `0x0005`/`0x0008`/`0x0001`/`0x0002` for various
+  reconnect/refuse/normal-close cases) — see source for the exact matrix; not repeated here since
+  it's pure error-code plumbing, not protocol structure — then, if a `transport` still exists, calls
+  `clearTransport()` to reset RTSP-level session state (queue/timers/`SessionId`) regardless of
+  whether that same `Transport` is about to reconnect itself a few lines later inside its own
+  `OnClose()` (this method runs synchronously *inside* that `OnClose()` call, invoked via the
+  `connectionCallback` it dispatches before reaching its own reconnect-scheduling code — see
+  `Disconnect()`'s note below for why disarming `autoconnection` must not happen in that shared
+  `clearTransport()` call).
+- `Disconnect(response?)` — first unconditionally sets `transport.autoconnection = false` if a
+  `transport` exists (fixed 2026-09-08, see History — this is the one unambiguous "the caller wants
+  this session to end" entry point). Then: if connected and mid-session (`Playing`/`Pause`/`Setup`),
+  issues `TEARDOWN` (server-visible graceful stop); otherwise calls `clearTransport()` directly.
+  Always clears both interval timers and resets `unahtuorizedCount`/`SessionId`. The
+  `autoconnection` disarm matters because `RtspResponseHandler`'s `Play`→`Playing` branch sets
+  `transport.autoconnection = true` on *every* successful `PLAY` (irrespective of
+  `deviceInfo.retry`) — without disarming it here, a graceful `TEARDOWN` still ends in
+  `transport.Disconnect()` (via `clearTransport()`, below), which closes the `WebSocket` without
+  stripping its `onclose` handler, so `Transport.OnClose()` still fires and, seeing
+  `autoconnection` still `true`, schedules `setTimeout(() => this.Connect(), 500)` and silently
+  reopens a new `WebSocket` after this `RtspClient` already believes the session is torn down — a
+  zombie reconnect, unreachable by the caller but not GC-collectible.
+  **This fix must live here, not inside `clearTransport()` itself** (a first attempt put it there
+  and had to be reverted the same day — see History): `clearTransport()` is also invoked
+  *synchronously from within* `Transport.OnClose()`'s own `connectionCallback('close'/'error', ...)`
+  dispatch (`connectionCbFunc`'s `'close'`/`'error'` branches both call it, see below) as part of
+  the legitimate, intentional network-drop auto-reconnect flow — disarming `autoconnection` inside
+  `clearTransport()` runs *before* that same `OnClose()` call reaches its own reconnect-scheduling
+  code a few lines later in the same call stack, permanently breaking automatic recovery from any
+  transient disconnect (confirmed live: playback simply never resumed after the first drop).
 - `clearTransport()` — the actual teardown: issues a last `TEARDOWN` if still `Playing`, disconnects
   the transport (or just `init()`s it if not open), clears the RTSP queue, closes and drops
   `rtpClient`, clears both interval timers, and resets `isConnected`/`SDPinfo`/`Authentication`/
-  `transport`/`currentState('Teardown')`/`nextState('Options')`/`CSeq`.
+  `transport`/`currentState('Teardown')`/`nextState('Options')`/`CSeq`. Deliberately does **not**
+  touch `transport.autoconnection` — see `Disconnect()`'s entry above for why that disarm has to
+  live there instead.
 - `ControlStream(controlInfo)` — public API for playback control (`resume`/`seek`/`forward`/
   `backward`/`pause`/`speed`/`backup`), each mapping to a `PLAY` or `PAUSE` request with
   mode-specific `Scale`/`Range`/`Rate-Control`/`Immediate`/`Frames: intra` headers built via the

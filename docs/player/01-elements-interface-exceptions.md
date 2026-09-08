@@ -3,7 +3,7 @@
 *Per-class reference for the public custom element (`elements/`), its per-channel orchestration layer
 (`interface/`), the React wrapper (`react/`), and the error hierarchy (`exceptions/`).*
 
-**Version:** 1.7.2 · **Author:** Youngho Kim
+**Version:** 1.7.4 · **Author:** Youngho Kim
 
 **History**
 
@@ -56,6 +56,8 @@
 | 2026-09-07 | Follow-up, same day: the embedded credentials form above was a wrong shape per the user's direct follow-up feedback — they wanted `Player.tsx` to forward **every** `RTSPOverWebSocket.ts` dispatched event to the consumer (not just `error`, and not interpret it internally), and the SUNAPI login flow reachable through that same consumer-facing interface too ("RTSPOverWebSocket의 모든 listener를 확인하고 Player.tsx에 해당 Listener interface를 수신하겠다고 등록", "Sunapi도 interface를 통하도록 해줘"). Redesigned: `Constant.ts` gained a 33-callback `RTSPOverWebSocketEventListeners` interface (one `onXxx` per `dispatch()` call site in `RTSPOverWebSocket.ts`, with typed detail shapes) plus a `PlayerHandle { retryAuthentication(username, password) }` type and the exported `SUNAPI_CREDENTIALS_REQUIRED_ERROR_CODE`/`WRONG_CREDENTIALS_ERROR_CODE` constants; `Player.tsx` became a `forwardRef<PlayerHandle, PlayerProps>`, registers all 33 native listeners and forwards each verbatim via a `listenersRef` (kept live every render so a fresh `listeners` prop reaches the DOM listeners attached once at mount), removed `loginError` state and the embedded form entirely, and unified the SUNAPI login into one `connectSunapi(username, password, shouldPlay)` `useCallback` used by both the mount-time initial connect and the exposed `retryAuthentication` (which also handles the `useSunapi: false` case by calling the element's own `retryAuthentication()` directly). `react/index.ts`'s `mountReactPlayer()` now takes a third `listeners` parameter and returns `{ unmount, retryAuthentication }` (via an internal `React.createRef<PlayerHandle>()`) instead of a bare unmount function — a real breaking change for any existing caller destructuring its old bare-function return value. `src/index.html`'s React panel updated to match: a new `react-credentials` section/wiring, passing `listeners: {onStateChange, onError}` into `mountReactPlayer()` instead of the old direct `playerEl.addEventListener(...)` on the mounted DOM element, and calling the returned `retryAuthentication()` on submit. See `react/Constant.ts`'s and `react/Player.tsx`'s Method Analysis sections below for the full design. |
 | 2026-09-07 | Added a "Usage Example" to the `Player` section above, requested directly by the user — two runnable snippets (a real React consumer using `<Player ref>`/`listeners`/`PlayerHandle.retryAuthentication`, and a plain-script consumer using `mountReactPlayer()`) covering the redesign from the entry immediately above. |
 | 2026-09-08 | Added an `audioencodermode` attribute/property (`'auto'` default, `'wasm'`, `'webcodecs'`), same shape as `debug` above — validated in `attributeChangedCallback`'s new `'audioencodermode'` case (throws `RTSPOverWebSocketError 0x0414` on an unrecognized value, same as `codec`'s whitelist), stored on `info.audioEncoderMode` (new `StreamPlayerInfo` field) and `_audioEncoderMode`, and live-pushed to `this.player`/`this.backupplayer` (if either exists) via the new `pushAudioEncoderModeToRunningPlayers()` — the exact `pushDebugConfigToRunningPlayers()` pattern, so a mid-stream change takes effect immediately, not just on the next `play()`/reconnect. Selects `VideoTagPlayer.ts`'s G.711/G.726-to-AAC transcoding implementation (existing WASM `AssemblyTranscoder` vs. the new native WebCodecs `AudioEncoder` alternative) — requested directly by the user as a way to A/B test whether the WASM path (found in an earlier investigation to have no backpressure and to share a `SourceBuffer`/append queue with video) contributes to reported playback-stutter/`DEMUXER_UNDERFLOW` symptoms on real hardware. See `05-video-tag-player.md`'s matching History entry and "Audio encoder selection: WASM vs. WebCodecs" section, and `MEMORY.md`, for the full design. |
+| 2026-09-08 | Full-`src/player` memory-leak audit: `disconnectedCallback()` now also revokes the last meta-image Blob URL (`#metaimage_img_<id>`'s `src`) if one exists. `updateMetaImage()` only ever revoked the *previous* Blob URL when a *new* meta-image arrived, never the final one from a session — a Blob URL outlives its `<img>` element's own removal/GC (only `revokeObjectURL()` or document unload actually frees it per spec), so a page that dynamically adds/removes `<rtsp-over-websocket>` elements (a multi-camera dashboard) leaked one Blob per element every time meta-image was ever used in that element's session. Low severity (bounded to one Blob per element instance, not accumulating across reconnects within it) but a real, easy, safe fix alongside the same day's other leak fixes. See `MEMORY.md` for the full audit writeup covering every file checked. |
+| 2026-09-08 | **Correction to two 2026-09-04 entries above** describing a `resetPlayerElement()` that removes/recreates the `<video>`/`<canvas>` DOM node on `stop()`: prompted by a direct user question about how element resources actually get cleared on stop, `grep` across the full source tree and `git log -S resetPlayerElement` across the entire repo history both confirm **this method was never actually implemented** — the string exists only in `MEMORY.md` and two docs files (added in commit `b546545`), never in any `.ts` source, in that commit or any other. `stop()`'s `Method Analysis` entry above is corrected in place (per this doc's own convention of keeping Method Analysis current while History stays append-only) to describe what the method actually does. See `05-video-tag-player.md`'s matching correction and `MEMORY.md` for the full incident writeup. |
 
 ---
 
@@ -572,26 +574,24 @@ their exact location rather than fixed silently (file header comment,
   new StreamPlayer(...)` if absent, and finally calls `player.control(this.info)`. **No longer
   throws up front for missing username/password** (see the 401-handling section below) — a long
   comment at `:4078-4090` explains the redesign explicitly.
-- `stop()` (`:5472-5504`) — regenerates the URL if needed, sets `cmd:'close'`, resets `playSpeed`
+- `stop()` (`:5716-5753`) — regenerates the URL if needed, sets `cmd:'close'`, resets `playSpeed`
   to 1x for playback sessions (unless this is an error-triggered stop, tracked via
-  `_withErrorStop`), calls `player.control(info)`, sets `_readyState = STOPPED`, then calls the new
-  `resetPlayerElement()` (`:5429-5470`) — reported live: memory kept climbing past 1GB during a long
-  session and never dropped back down after `stop()`, even though `VideoTagPlayer.close()`'s own
-  cleanup (revoke object URL, clear `src`/`srcObject`, `removeSourceBuffer`/`endOfStream`) was
-  running correctly. Browsers don't reliably reclaim a `<video>` element's internal MSE/decoder/
-  GPU-backed memory from clearing `src` alone — the node itself has to actually leave the DOM.
-  `resetPlayerElement()` removes the current `<video>`/`<canvas>` node and replaces it with a fresh
-  one carrying the same id/`rtsp-channel-id`/`rtsp-channel-mapped-id`/style/class/controls — the
-  same swap `onRTSPOverWebSocketVideoMode()` already does for a canvas↔video Renderer Type switch,
-  just keyed off `this.video` directly rather than a `document.getElementById()` lookup. Safe to run
-  synchronously immediately after `player.control(info)`, before its async TEARDOWN/close chain
-  finishes: `VideoTagPlayer.close()` operates on its own captured element reference (set once at
-  `play()` time, never re-queried from the DOM), so it still tears down the old, now-detached node
-  correctly regardless of this swap; the next `play()` re-queries the DOM by the preserved
-  attributes (`MediaRouter.selectVideoElement()`) and picks up the new node. Also hardened
-  `VideoTagPlayer.close()` itself (`05-video-tag-player.md`'s History) to drop its own large
-  queued-sample arrays and `mediaSource` reference rather than leaving them until the instance is
-  GC'd. Not yet verified against a real device for actual memory-usage impact. See `MEMORY.md`.
+  `_withErrorStop`), calls `player.control(info)`, sets `_readyState = STOPPED`, hides any leftover
+  ONVIF overlay. **Correction, 2026-09-08** (prompted by a direct user question about how `<video>`/
+  `<canvas>` element resources get cleared on stop): this file's own 2026-09-04 History entries
+  below describe a `resetPlayerElement()` supposedly called from here — physically removing and
+  recreating the `<video>`/`<canvas>` DOM node to force the browser to release its internal
+  MSE/decoder/GPU-backed memory. **No such method exists anywhere in this codebase, and `stop()`
+  above never did any such thing** — confirmed via `grep` across the full source tree and `git log
+  -S resetPlayerElement` across the *entire* repo history: the string only ever appears inside
+  `MEMORY.md` and two `docs/player/*.md` files, added in commit `b546545`, with no matching source
+  change in that commit or any other. The DOM node itself is never swapped: the *same*
+  `<video>`/`<canvas>` element persists across every `play()`/`stop()`/reconnect for the life of the
+  page. All that actually happens on stop is `VideoTagPlayer.close()`/`CanvasTagPlayer.close()`
+  clearing that persisted node's *internal* state (documented in `05-video-tag-player.md`'s/
+  `11-canvas-tag-player.md`'s own "Teardown" sections) — real, but a narrower guarantee than what
+  the incorrect entries below describe. See `MEMORY.md` for the corrected History and how this was
+  found.
 - `pause()` / `resume()` (`:4627-4778`) — device/GMT-aware `rangeClock` recomputation (nvr playback
   mode only — camera is a documented no-op here, see the `generateRTSPURL()` fix note above),
   state-consistency checks (throws `0x1004` if already in the target state), `player.control(info)`.

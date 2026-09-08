@@ -2114,6 +2114,27 @@ export class RtspClient {
 
   Disconnect(response?: RtspDisconnectCallback): void {
     this.debugLog.debug('Disconnect() called -> currentState:', this.currentState, ' transport readyState:', this.transport?.readyState);
+    // Real bug, found live: a caller-initiated stop must disarm this transport's own
+    // self-reconnect (`autoconnection`, set true on every successful PLAY -- see
+    // RtspResponseHandler's Play->Playing branch -- regardless of `deviceInfo.retry`) here,
+    // at the one place that unambiguously means "the caller wants this session to end."
+    // Without this, a graceful TEARDOWN (this method's own Playing/Pause/Setup branch below)
+    // still ends in `transport.Disconnect()` (via the response-driven `clearTransport()` call,
+    // see its own doc comment), which closes the WebSocket without stripping its `onclose`
+    // handler -- so `Transport.OnClose()` still fires and, seeing `autoconnection` still `true`,
+    // schedules `setTimeout(() => this.Connect(), 500)` and quietly reopens a new WebSocket
+    // after this RtspClient has already discarded the transport, leaking a zombie connection.
+    // MUST NOT be done inside `clearTransport()` itself instead -- that method is also invoked
+    // synchronously from *within* `Transport.OnClose()`'s own `connectionCallback('close'/
+    // 'error', ...)` dispatch (`connectionCbFunc`'s `'close'`/`'error'` branches both call it) as
+    // part of the legitimate, intentional network-drop auto-reconnect flow; disarming
+    // `autoconnection` there would run *before* that same `OnClose()` call reaches its own
+    // reconnect-scheduling code a few lines later in the same synchronous call stack, permanently
+    // breaking automatic recovery from any transient disconnect (confirmed live: playback simply
+    // never resumed after the first drop once this fix was tried there instead).
+    if (typeof this.transport !== 'undefined' && this.transport !== null) {
+      this.transport.autoconnection = false;
+    }
     this.responseDisconnectCallback = response ?? null;
     if (typeof this.transport !== 'undefined' && this.transport !== null && this.transport.readyState === Transport.OPEN) {
       if (this.currentState === 'Playing' || this.currentState === 'Pause' || this.currentState === 'Setup') {
