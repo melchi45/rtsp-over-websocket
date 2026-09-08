@@ -4,7 +4,7 @@
 — structure, method analysis, call stacks, RFC/standard references, and relations/data flow, one file per
 subsystem.*
 
-**Version:** 1.1.0 · **Author:** Youngho Kim
+**Version:** 1.1.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -116,7 +116,7 @@ sections; this is a quick index of which standard governs which part of the wire
 | RFC 3551 (RTP A/V Profile) | Static payload types for G.711/G.726, RTP transport for those codecs | 03, 04, 06 |
 | RFC 3640 (MPEG-4 generic / AAC RTP payload) | `AACSession` AU-header parsing | 04, 06 |
 | RFC 7587 (Opus RTP payload) / RFC 6716 (Opus codec) | `OPUSSession`, `OPUSAudioDecoder` (delegates to the browser's native WebCodecs `AudioDecoder`) | 04, 06 |
-| ITU-T G.711 / G.726 | Codec bitstream itself (not an RFC) | 04, 06 |
+| ITU-T G.711 / G.726 | Codec bitstream itself (not an RFC); `VideoTagPlayer`'s `audioEncoderMode='webcodecs'` tier decodes it via the same pure-JS `G711AudioDecoder`/`G726xAudioDecoder` file 06 uses, then re-encodes to AAC via the browser's native WebCodecs `AudioEncoder` (`WebCodecsAudioEncoder`) instead of the WASM `AssemblyTranscoder` | 04, 05, 06 |
 | W3C Media Source Extensions + ISO/IEC 14496-12 (ISOBMFF/fMP4) | `VideoTagPlayer`'s muxing into a `SourceBuffer`; box-level detail in `mp4Generator` | 05, 09 |
 | WebGL (Khronos/W3C) | `WebGLCanvas`/`YUVWebGLCanvas` rendering path | 05 |
 | Microsoft RIFF/AVI (no IETF/ITU standard) | `AviFormatWriter`/`AviFileWriter` local recording | 07 |

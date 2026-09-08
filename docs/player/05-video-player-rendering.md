@@ -3,7 +3,7 @@
 *Per-class reference for the rendering hierarchy that turns a decoded (or, for MJPEG, still-encoded JPEG) video
 frame into visible pixels: the canvas/WebGL pipeline and the `<video>`-tag/MSE pipeline.*
 
-**Version:** 1.2.1 · **Author:** Youngho Kim
+**Version:** 1.2.2 · **Author:** Youngho Kim
 
 **History**
 
@@ -36,6 +36,7 @@ frame into visible pixels: the canvas/WebGL pipeline and the `<video>`-tag/MSE p
 | 2026-09-07 | Follow-up, same investigation, same session: after the fix above, the user re-tested again and still saw the identical two errors, just no longer via the `close()`/`Disconnect` stack. Rather than continue chasing the exact upstream timing (multiple overlapping `close()`/reconnect cycles across `MediaRouter.selectVideoPlayer()`'s several `player.close()` call sites are the likely source, but the precise interleaving wasn't pinned down), hardened the two actual failure sites directly — the same defensive-guard pattern this file already uses at `setSourceBuffer()`'s `readyState !== 'open'` check. New private `isSourceBufferAttached()` (`:2065-2071`) checks `this.mediaSource.sourceBuffers` actually still contains `this.sourceBuffer`. `appendSegmentToSourceBuffer()` now returns early if not attached, before ever calling `appendBuffer()`. `videoUpdating()`'s own pre-existing guard (`typeof sourceBuffer.buffered === 'undefined'`) turned out not to catch this case at all — accessing `.buffered` on a detached `SourceBuffer` throws `InvalidStateError` per the MSE spec rather than returning `undefined`, so the guard itself was throwing, landing in the generic catch-all and surfacing as the misleading "fail to detect the video tag element" — replaced with the same `isSourceBufferAttached()` call. |
 | 2026-09-07 | Follow-up, same investigation, same session: the fix above stopped the errors, but the user then reported the `.32` camera's H.265 stream no longer played at all (silently — no console errors). Root cause: `isSourceBufferAttached()`'s `Array.prototype.includes.call(this.mediaSource.sourceBuffers, this.sourceBuffer)` — `SourceBufferList` is a browser host object, not a real `Array`, and borrowing `Array.prototype.includes` onto it apparently always evaluated to `false` regardless of true membership in the browser used, so `appendSegmentToSourceBuffer()` silently no-op'd on every single call, breaking playback outright with nothing ever appended. Notably this camera (`.32`) is the first Opus-audio camera this investigation touched (the original G.711-audio camera the bug was found against never exercised this new guard's false-negative path, since — per the user — `.32`/`.39`'s only relevant difference across both H.264 and H.265 is Opus vs. G.711 audio). Replaced `isSourceBufferAttached()` with `isSourceBufferDetached()` (`:2074-2082`), which asks the browser directly (`try { void sourceBuffer.buffered } catch { detached }`) instead of reimplementing membership tracking against a host object — `.buffered`'s spec-mandated `InvalidStateError`-on-detached behavior (see the 2026-09-07 entry two above) is exactly the ground truth needed, with no membership-list semantics to get wrong. Not yet re-verified live against the reporting H.265/Opus camera. |
 | 2026-09-07 | Follow-up, new session: the user reported the identical symptom again ("video doesn't play for OPUS-audio connections") after the fix above, still silent with no console errors. Re-verifying against the real H.265 camera wasn't available, so this was reproduced instead end-to-end against this repo's own YouTube-transcode demo server (`src/server`) with a **fresh, non-reconnect** H.264+Opus session — ruling out both H.265 and the whole `close()`/reconnect investigation above as the actual cause: the black-screen/silent-failure symptom reproduced identically on a brand-new connection. Root cause, found by forcing the demo's `attachShadow()` calls open and reading `videoElement.error` directly (normally invisible — see the masking bug below): `CHUNK_DEMUXER_ERROR_APPEND_FAILED: "audio object type 0x40 does not match what is specified in the mimetype"`. The 2026-08-11-era `init()` fix (see `setAudioInfo()`'s entry above) pre-seeds `opusActive` from `audioCodecHint` so the *first* `SourceBuffer` is created with the right `'opus'` MIME codecs string regardless of video/audio arrival order — but it never seeded the parallel field, `this.audioInfo`, which controls what `createInitSegment()` actually *writes* into the init segment's audio `stsd` entry (`mp4Generator.js`'s `opusSample()`/`dOps()` vs. `audioSample()`/`esds()`). `audioInfo` stays at its class-field default (`codecType: 'AAC'`) until a real `onAudioData()` call runs `setAudioInfo()`'s Opus branch — so if the first video I-frame (and therefore the first `createInitSegment()` call, from `onVideoData()`) arrives before the first real Opus RTP packet does (the common case for a live H264/H265 stream, not a rare race), the init segment declares `opus` in the `SourceBuffer`'s MIME type while its `stsd` box still contains an AAC `esds` (object type `0x40`) — an internally-inconsistent init segment Chrome's demuxer rejects outright, closing the `MediaSource`. Fixed by seeding `this.audioInfo` with provisional Opus-shaped values (`:2534-2567`) alongside `opusActive` in `init()`, mirroring the shape `setAudioInfo()`'s own Opus branch builds; `opusActiveIsHintOnly` (already existing, see above) still forces the first real Opus `setAudioInfo()` call to overwrite these provisional values with the real `channelCount`/`sampleRate` once known. **Second, independent bug found in the same investigation**: this failure was completely silent because `mediaSourceEventListener`'s `'error'`/`'sourceclose'`/`'sourceended'` cases and `videoElementEventListener`'s `'error'` case were both just `default: break` — no MSE decode/pipeline error of *any* kind (not just this one) ever reached `errorCallback` or the console, which is why the reconnect-detachment investigation two entries above had nothing to go on either. `videoElementEventListener` now reports the `<video>` element's `MediaError` via `errorCallback` (`0x0908`) when a real `'error'` event fires — safe from false positives since `videoElement.error` is only ever set on a genuine pipeline failure, never during normal `close()`. Verified live (well, against the demo server): black screen with OPUS reproduced on the pre-fix build, then confirmed fixed after rebuilding — `video.currentTime` advancing, `readyState: 4`, `error: null`, `MediaSource.readyState: 'open'`, identical visual output to the AAC control case. |
+| 2026-09-08 | Added an alternative G.711/G.726-to-AAC transcoding path: `WebCodecsAudioEncoder` (`worker/audioEncoder/`, new) encodes PCM (decoded via the pure-JS `G711AudioDecoder`/`G726xAudioDecoder` `src/player/listen/decoder/` already has for the unrelated "Listen" feature — no WASM on the decode side either) to AAC via the browser's native WebCodecs `AudioEncoder`, structurally mirroring the MJPEG tier's `WebCodecsVideoEncoder`. Selectable via `RTSPOverWebSocket.ts`'s new `audioencodermode` attribute/property (`'auto'` default, `'wasm'`, `'webcodecs'` — see `01-elements-interface-exceptions.md`), threaded through `StreamPlayer`/`MediaRouter` (`VideoPlayerLike.setAudioEncoderMode?`) down to `VideoTagPlayer.setAudioEncoderMode()`, and changeable dynamically while a session is already running (mirrors `debug`'s live-refresh pattern, not just "read once at `play()`"). The existing WASM `AssemblyTranscoder`/`audiotranscoderWorker` path is unchanged and remains the default fallback whenever WebCodecs is unsupported/unconfigurable for the current runtime (`'auto'`) or errors mid-session (`'webcodecs'`) — both paths converge on the same `createAudioSample(data, audioInfo, 'AAC')` re-entry point, so every downstream muxing/timing decision is fully shared. Requested directly by the user as a way to A/B test whether the WASM Worker round-trip (found, in an earlier investigation this same session, to have no backpressure and to share one `SourceBuffer`/`segmentArray` append queue with video — a plausible contributor to reported `DEMUXER_UNDERFLOW`/playback-stutter symptoms) is actually the bottleneck on real hardware; not yet verified against a real device (this repo's WSL2 dev sandbox can't reach real camera UDP/RTSP traffic — see `README.md`'s networking note). See `VideoTagPlayer`'s new "Audio encoder selection" Method Analysis section and `MEMORY.md` for the full design rationale (notably: output stays AAC either way, deliberately not switched to Opus, to keep this a pure implementation swap with no `SourceBuffer`-codec-family side effects). |
 
 ---
 
@@ -702,7 +703,10 @@ flowchart TD
     `dropMean: Mean`, `videoTimestampIntervalQueue: CircularTypedArrayQueue<number>`.
   - **Workers**: `audiotranscoderWorker: Worker | null` — spawned unconditionally in the
     constructor (`:298-299`) via an injectable `AudiotranscoderWorkerFactory`, used to transcode
-    G711/G726 audio to AAC in-browser (Opus and real AAC need no transcode).
+    G711/G726 audio to AAC in-browser (Opus and real AAC need no transcode). `audioEncoderMode`
+    (`'auto'`/`'wasm'`/`'webcodecs'`, added 2026-09-08 — see "Audio encoder selection" below) can
+    route G.711/G.726 to `webCodecsAudioEncoder: WebCodecsAudioEncoder | null` instead, a
+    main-thread (no Worker) native `AudioEncoder` alternative.
   - No `CanvasRenderer`/WebGL/GL-primitive fields anywhere — confirmed by reading the whole file;
     its only rendering surface is the native `<video>` element itself.
   Inheritance: `VideoPlayer <|-- VideoTagPlayer`.
@@ -852,6 +856,59 @@ flowchart TD
     `init()` (`:2534-2567`) now also seeds `this.audioInfo` with provisional Opus-shaped values
     (mirroring this method's own Opus branch) whenever `opusActive` is pre-seeded true, so the
     very first init segment is internally consistent regardless of arrival order.
+  - **Audio encoder selection (WASM vs. WebCodecs), added 2026-09-08.** `setAudioInfo()`'s
+    G711/G726 branch no longer unconditionally initializes the WASM `audiotranscoderWorker` --
+    it now calls `setupPcmDecoder()` (constructs a `G711AudioDecoder`/`G726xAudioDecoder`, the
+    same pure-JS decoders `src/player/listen/decoder/` already has for the unrelated "Listen"
+    Web Audio feature -- no WASM involved decoding either path) and
+    `reconcileAudioEncoderForCurrentMode()`, which picks between the two transcoding paths based
+    on `audioEncoderMode` (`'auto'` default / `'wasm'` / `'webcodecs'`, set via
+    `setAudioEncoderMode()` -- see `RTSPOverWebSocket.ts`'s `audioencodermode` attribute/property
+    in `01-elements-interface-exceptions.md`, threaded down through `StreamPlayer`/`MediaRouter`'s
+    `VideoPlayerLike.setAudioEncoderMode?`):
+    - `'wasm'`, or `'auto'` with no `AudioEncoder` support: calls `initAudiotranscoderWasm()` --
+      the exact same `postMessage({type:'init', ...})` this branch always sent before this change,
+      now just factored into its own method (`AssemblyTranscoder`'s own `'init'` handling is
+      already idempotent, so calling it again later from a mode-switch fallback is safe).
+    - `'webcodecs'`, or `'auto'` with `AudioEncoder` support: calls `setupWebCodecsAudioEncoder()`,
+      constructing a `WebCodecsAudioEncoder` (`worker/audioEncoder/`, new -- structurally mirrors
+      `WebCodecsVideoEncoder`: constructor throws if `typeof AudioEncoder === 'undefined'`,
+      `configure()` verifies `AudioEncoder.isConfigSupported()` for a fixed 8000Hz-mono
+      `'mp4a.40.2'` config before constructing the real encoder, `encode()` is fire-and-forget with
+      output arriving later via `onEncodedChunk`). WASM is deliberately left uninitialized in this
+      branch -- avoiding that cost entirely is this mode's whole point, not just avoiding using it
+      once ready. A real, accepted gap: a G.711/G.726 frame arriving in the brief window before
+      `WebCodecsAudioEncoder.isConfigured` turns true (the async `isConfigSupported()`/`configure()`
+      round trip) is dropped by `createAudioSample()`'s dispatch (below) rather than falling back to
+      an uninitialized WASM worker.
+
+    `createAudioSample()`'s G711/G726 branch dispatches per-frame: if `webCodecsAudioEncoder` is
+    non-null, `isConfigured`, and `pcmDecoder` is ready, decodes the raw payload to PCM and calls
+    `webCodecsAudioEncoder.encode({pcm, timestampUs})` (a caller-assigned monotonic `timestampUs`,
+    tracked in `webCodecsAudioPendingFrames` alongside the *original* streamData -- same
+    FIFO-desync-safe pattern as the MJPEG tier's `mjpegPendingFrames`); otherwise, if
+    `audiotranscoderWasmReady` (a new field tracking whether `initAudiotranscoderWasm()` has
+    actually run this session, since `audioEncoderMode` alone can't distinguish "WASM chosen" from
+    "WASM chosen but not initialized yet"), posts to the WASM worker exactly as before; otherwise
+    drops the frame (the async-warm-up gap above). `onWebCodecsAudioEncodedChunk()` (the async
+    replay half, mirroring `onMjpegEncodedChunk()`) re-enters the exact same
+    `createAudioSample(data, audioInfo, 'AAC')` call the WASM path's `audiotranscoderWorkerMessage()`
+    `'transcoded'` case already uses -- **the output codec stays AAC either way**, deliberately not
+    switched to Opus, so this feature is a pure "which implementation produced these AAC bytes"
+    swap with zero `SourceBuffer`-codec-family/muxing changes; every downstream decision (`esds`
+    box construction, `sourceBufferAudioIsOpus`, `realAacActive`) is fully shared between both
+    paths. `setAudioEncoderMode()` supports a live mid-session switch (mirrors `setDebugConfig()`'s
+    live-refresh pattern): a WASM `transcode` request already in flight is left to complete
+    normally rather than force-cancelled. `WebCodecsAudioEncoder`'s `onError`/`onUnsupported`
+    callbacks both route to `handleWebCodecsAudioEncoderFailure()`, which closes it, marks
+    `webCodecsAudioEncoderFailed` (skips retrying WebCodecs for the rest of the session unless the
+    mode is explicitly changed again), and lazily brings up WASM at that point -- so a runtime
+    WebCodecs failure recovers audio on the very next frame instead of staying silent. `close()`
+    now also calls the new `closeWebCodecsAudioEncoder()` alongside `closeMjpegEncoder()`. Not yet
+    verified against a real device -- this was added specifically to let the user A/B test whether
+    the WASM Worker round trip (found, in an earlier investigation, to have no backpressure and to
+    share one `SourceBuffer`/`segmentArray` append queue with video) is a real contributor to
+    reported `DEMUXER_UNDERFLOW`/playback-stutter symptoms on real hardware. See `MEMORY.md`.
   - `videoElementEventListener('error')` (`:495-`) — **real bug, found live (2026-09-07)**: every
     case here besides `'resize'` used to fall through to `default: break`, including `'error'` —
     so any `<video>` element pipeline failure (a rejected MSE append, a decode error, not specific
@@ -1205,9 +1262,11 @@ flowchart LR
     VideoTagPlayer -->|"initSegment / mediaSegment / dualTrackMediaSegment"| mp4Generator["vendor/mp4Generator"]
     VideoTagPlayer -->|"appendBuffer"| SourceBuffer["SourceBuffer (MSE, browser-native)"]
     SourceBuffer -->|"decode (browser-internal)"| VideoElement["&lt;video&gt; element"]
-    VideoTagPlayer -->|"G711/G726 transcode"| AudiotranscoderWorker["audiotranscoderWorker"]
+    VideoTagPlayer -->|"G711/G726 transcode (audioEncoderMode='wasm'/'auto' fallback)"| AudiotranscoderWorker["audiotranscoderWorker"]
     VideoTagPlayer -->|"encode() (MJPEG only)"| WebCodecsVideoEncoder["worker/videoEncoder/WebCodecsVideoEncoder"]
     WebCodecsVideoEncoder -->|"onEncodedChunk (async)"| VideoTagPlayer
+    VideoTagPlayer -->|"encode() (G711/G726, audioEncoderMode='webcodecs'/'auto')"| WebCodecsAudioEncoder["worker/audioEncoder/WebCodecsAudioEncoder"]
+    WebCodecsAudioEncoder -->|"onEncodedChunk (async)"| VideoTagPlayer
 ```
 
 ---

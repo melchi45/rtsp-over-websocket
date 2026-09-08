@@ -98,6 +98,16 @@ export interface StreamPlayerInfo {
   /** Per-component console.log tracing config -- see util/debugLog.ts. Read once here at
    *  construction time and forwarded to `mediaRouter`/`rtpClient`; not re-read afterward. */
   debug?: DebugConfig | null;
+  /** See `RTSPOverWebSocket.ts`'s `audioencodermode` attribute/property and
+   *  `MediaRouter.ts`'s `VideoPlayerLike.setAudioEncoderMode?`/
+   *  `docs/player/05-video-player-rendering.md` -- `'auto' | 'wasm' | 'webcodecs'`,
+   *  loosely typed as `string` at this layer (same convention as
+   *  `StreamPlayerMediaInfo`'s existing loosely-typed fields); the real
+   *  union only matters where it's actually consumed, in `VideoTagPlayer.ts`.
+   *  Read once here at construction time, same as `debug`, but -- also like
+   *  `debug` -- re-appliable afterward via `StreamPlayer`'s own `set audioEncoderMode()`
+   *  for a live mid-session change. */
+  audioEncoderMode?: string;
 }
 
 export interface StreamPlayerControlData {
@@ -158,6 +168,19 @@ export class StreamPlayer {
     if (this.rtpClient !== null) {
       this.rtpClient.debug = config;
     }
+  }
+
+  /** Same live-refresh shape as `debug` above -- see `RTSPOverWebSocket.ts`'s
+   *  `audioencodermode` attribute/property and `MediaRouter.ts`'s
+   *  `audioEncoderMode` accessor/`VideoPlayerLike.setAudioEncoderMode?`. Only
+   *  `mediaRouter` needs this (it's a `VideoTagPlayer`-only, G.711/G.726
+   *  transcoding concern -- `rtspClient`/`rtpClient` have no equivalent,
+   *  unlike `debug` which every layer forwards). */
+  set audioEncoderMode(mode: string) {
+    this.mediaRouter.audioEncoderMode = mode;
+  }
+  get audioEncoderMode(): string {
+    return this.mediaRouter.getAudioEncoderMode();
   }
   private isValidBackupCheck: boolean | null = null;
 
@@ -250,6 +273,9 @@ export class StreamPlayer {
     this.mediaRouter = new MediaRouter(mediaRouterFactories);
     this.mediaRouter.channelId = this.channelId;
     this.mediaRouter.debug = this._debugConfig;
+    if (typeof configInfo.audioEncoderMode !== 'undefined') {
+      this.mediaRouter.setAudioEncoderMode(configInfo.audioEncoderMode);
+    }
     if (typeof configInfo.device.deviceType !== 'undefined' && typeof configInfo.device.deviceType === 'string' && configInfo.device.deviceType.toLowerCase() !== 'camera') {
       this.mediaRouter.deviceType = configInfo.device.deviceType;
     }

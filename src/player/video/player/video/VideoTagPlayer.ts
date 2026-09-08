@@ -12,9 +12,24 @@ import { saveAs } from 'file-saver';
 import { initSegment, mediaSegment, dualTrackMediaSegment, type Mp4VideoTrackInfo, type Mp4AudioTrackInfo, type Mp4BoxInfo, type Mp4Sample, type Mp4TimeStamp } from '../../../vendor/mp4Generator';
 import { WebCodecsVideoDecoder } from '../../../worker/videoDecoder/WebCodecsVideoDecoder';
 import { WebCodecsVideoEncoder, type WebCodecsEncodedResult } from '../../../worker/videoEncoder/WebCodecsVideoEncoder';
+import { WebCodecsAudioEncoder, type WebCodecsAudioEncodedResult } from '../../../worker/audioEncoder/WebCodecsAudioEncoder';
+import { G711AudioDecoder, type G711Mime } from '../../../listen/decoder/G711AudioDecoder';
+import { G726xAudioDecoder } from '../../../listen/decoder/G726xAudioDecoder';
 import { defaultRealMseCodecString } from '../../../util/codecString';
 import { parseAvcConfigurationRecord, buildAvc1CodecString, type AvcConfigurationRecord } from '../../../util/avcConfigParser';
 import type { MediaStreamVideoTrackGenerator } from '../../../types/mediaStreamTrackGenerator';
+
+/** See `RTSPOverWebSocket.ts`'s `audioencodermode` attribute/property and
+ *  `docs/player/05-video-player-rendering.md`'s "Audio encoder selection"
+ *  entry -- `'auto'` prefers the native WebCodecs `AudioEncoder` path when
+ *  supported, falling back to the existing WASM `AssemblyTranscoder` path
+ *  otherwise; `'wasm'`/`'webcodecs'` force one or the other. */
+export type AudioEncoderMode = 'auto' | 'wasm' | 'webcodecs';
+
+interface WebCodecsAudioPendingFrame {
+  timestampUs: number;
+  streamData: AudioStreamData;
+}
 
 export type AudiotranscoderWorkerFactory = () => Worker;
 
@@ -78,6 +93,12 @@ const MJPEG_ENCODER_KEYFRAME_INTERVAL = 60;
 // real-time-oriented, matching this tier's live-playback intent rather than
 // buffering for eventual catch-up.
 const MJPEG_ENCODER_MAX_QUEUE_SIZE = 2;
+// G.711/G.726-transcoded-to-AAC audio is always fixed at 8000Hz mono (see
+// setAudioInfo()'s comment on this.audioInfo's hardcoded values for that
+// path) -- both the WASM AssemblyTranscoder path and the WebCodecsAudioEncoder
+// alternative below target this same fixed rate/channel count.
+const G711_G726_SAMPLE_RATE = 8000;
+const G711_G726_CHANNEL_COUNT = 1;
 
 /** One JPEG frame already handed to `mjpegEncoder.encode()`, awaiting that
  *  frame's own async `EncodedVideoChunk` output -- see
@@ -355,6 +376,34 @@ export class VideoTagPlayer extends VideoPlayer {
   private sourceBufferAudioIsOpus = false;
 
   private audiotranscoderWorker: Worker | null = null;
+  // True once `initAudiotranscoderWasm()` has actually sent the WASM worker
+  // an `'init'` message for the current session -- `createAudioSample()`'s
+  // fallback branch checks this instead of re-deriving "is WASM the active
+  // path" from `audioEncoderMode` (which alone can't tell "already
+  // initialized" apart from "chosen but not initialized yet", e.g. 'auto'
+  // while `webCodecsAudioEncoder` is still warming up -- see
+  // `reconcileAudioEncoderForCurrentMode()`).
+  private audiotranscoderWasmReady = false;
+  // See `setAudioEncoderMode()`/`setAudioInfo()`/`createAudioSample()` --
+  // selects between this WASM path (`audiotranscoderWorker` above) and the
+  // WebCodecs path below for G.711/G.726-to-AAC transcoding, controlled by
+  // `RTSPOverWebSocket.ts`'s `audioencodermode` attribute/property.
+  private audioEncoderMode: AudioEncoderMode = 'auto';
+  private webCodecsAudioEncoder: WebCodecsAudioEncoder | null = null;
+  // Once `WebCodecsAudioEncoder` reports unsupported/errored for this
+  // session, stop retrying it (mirrors `decideUseMjpegEncoder()`'s style of
+  // never re-probing mid-session) -- `setAudioInfo()`'s lazy WASM-worker
+  // fallback init below only needs to run once, the first time this flips.
+  private webCodecsAudioEncoderFailed = false;
+  // Lazily created in `setAudioInfo()` alongside the WASM worker init,
+  // reused across frames (not recreated per-sample) -- decodes raw
+  // G.711/G.726 RTP payloads to PCM via the same pure-JS decoders
+  // `src/player/listen/decoder/` already uses for the unrelated "Listen"
+  // (Web Audio) playback feature; no WASM involved on the decode side of
+  // the WebCodecs path either.
+  private pcmDecoder: G711AudioDecoder | G726xAudioDecoder | null = null;
+  private readonly webCodecsAudioPendingFrames: WebCodecsAudioPendingFrame[] = [];
+  private webCodecsAudioNextTimestampUs = 0;
   private createVideoSegmentTimeout: ReturnType<typeof setTimeout> | null = null;
   private createAudioSegmentTimeout: ReturnType<typeof setTimeout> | null = null;
   // NOTE: legacy's `transcodestart` is written (performance.now(), on the
@@ -1799,7 +1848,25 @@ export class VideoTagPlayer extends VideoPlayer {
 
   private createAudioSample(streamData: AudioStreamData, audioinfo: AudioInfo, chunkCodec: string): void {
     if (chunkCodec === 'G711' || chunkCodec === 'G726') {
-      (this.audiotranscoderWorker as Worker).postMessage({ type: 'transcode', data: streamData });
+      // See setAudioEncoderMode()/reconcileAudioEncoderForCurrentMode() --
+      // `webCodecsAudioEncoder.isConfigured` only turns true once its own
+      // async isConfigSupported()/configure() round trip finishes, so a
+      // frame arriving before that (or during the brief window right after
+      // a live mode switch away from it -- see handleWebCodecsAudioEncoderFailure())
+      // falls through to the `!streamData.frameData` guard below when
+      // `pcmDecoder`/`webCodecsAudioEncoder` aren't both ready, dropping this
+      // one frame rather than guessing.
+      if (this.webCodecsAudioEncoder !== null && this.webCodecsAudioEncoder.isConfigured && this.pcmDecoder !== null) {
+        const pcm = this.pcmDecoder.decode(streamData.frameData as ArrayLike<number>);
+        const timestampUs = this.webCodecsAudioNextTimestampUs;
+        this.webCodecsAudioNextTimestampUs += 1;
+        this.webCodecsAudioPendingFrames.push({ timestampUs, streamData });
+        this.webCodecsAudioEncoder.encode({ pcm, timestampUs });
+        return;
+      }
+      if (this.audiotranscoderWasmReady) {
+        (this.audiotranscoderWorker as Worker).postMessage({ type: 'transcode', data: streamData });
+      }
       return;
     }
 
@@ -2775,6 +2842,8 @@ export class VideoTagPlayer extends VideoPlayer {
       if (this.audiotranscoderWorker) {
         this.audiotranscoderWorker.postMessage({ type: 'terminate', data: null });
       }
+      this.audiotranscoderWasmReady = false;
+      this.closeWebCodecsAudioEncoder();
 
       if (this.mediaSource !== null && this.mediaSource !== undefined) {
         if (this.mediaSource.sourceBuffers.length > 0) {
@@ -3014,7 +3083,13 @@ export class VideoTagPlayer extends VideoPlayer {
     this.audioInfo.interleavedId = audioinfo.interleavedId;
     this.resetBaseDecodingTime();
     if (audioinfo.codecType === 'G711' || audioinfo.codecType === 'G726') {
-      (this.audiotranscoderWorker as Worker).postMessage({ type: 'init', data: { codecType: audioinfo.codecType, bitRate: audioinfo.bitrate } });
+      // Pure-JS PCM decode (see `pcmDecoder`'s own field comment) -- built
+      // unconditionally, regardless of `audioEncoderMode`, since it's free
+      // and lets a live `setAudioEncoderMode()` switch to 'webcodecs' mid-
+      // session (see that method) find a decoder already waiting instead of
+      // needing its own separate lazy-init path.
+      this.setupPcmDecoder(audioinfo.codecType, audioinfo.codecMime, audioinfo.bitrate);
+      this.reconcileAudioEncoderForCurrentMode();
     }
     const isRealAac = audioinfo.codecType === 'AAC';
     const isOpus = audioinfo.codecType === 'OPUS';
@@ -3085,6 +3160,160 @@ export class VideoTagPlayer extends VideoPlayer {
       this.audioSamples = [];
       this.createInitSegment();
     }
+  }
+
+  /** Selects which of the two G.711/G.726-to-AAC transcoding paths
+   *  (`audiotranscoderWorker` WASM, or `webCodecsAudioEncoder`) subsequent
+   *  frames use -- see `RTSPOverWebSocket.ts`'s `audioencodermode`
+   *  attribute/property, threaded down through `StreamPlayer`/`MediaRouter`
+   *  (`VideoPlayerLike.setAudioEncoderMode?`). Called once per session (via
+   *  `MediaRouter` right before `init()`, mirroring `audioCodecHint`) and
+   *  again any time the attribute/property changes while a session is
+   *  already running (mirrors `setDebugConfig()`'s live-push pattern) --
+   *  takes effect starting with the next G.711/G.726 frame; a WASM
+   *  `transcode` request already in flight when this is called is left to
+   *  complete normally rather than force-cancelled, same as this class
+   *  never cancels other in-flight async work on a setting change. */
+  setAudioEncoderMode(mode: string): void {
+    // `VideoPlayerLike.setAudioEncoderMode?` (MediaRouter.ts) takes a plain
+    // `string`, same loose-typing convention as that interface's existing
+    // `codec`/`audioCodecHint` fields -- narrowed to the real
+    // `AudioEncoderMode` union here, where it's actually consumed, instead
+    // of pulling a video-layer-specific type into the mediaSession layer.
+    // An unrecognized value (e.g. a future/typo'd `audioencodermode`
+    // attribute value RTSPOverWebSocket.ts's own whitelist should already
+    // have rejected before this is ever reached) is treated as 'auto'.
+    const normalizedMode: AudioEncoderMode = mode === 'wasm' || mode === 'webcodecs' ? mode : 'auto';
+    if (this.audioEncoderMode === normalizedMode) {
+      return;
+    }
+    this.audioEncoderMode = normalizedMode;
+    // A fresh mode change deserves a fresh attempt, even if a previous
+    // 'auto'/'webcodecs' attempt this session already gave up and fell back
+    // to WASM (e.g. the user explicitly re-selecting 'webcodecs' after it
+    // failed once shouldn't be permanently refused for the rest of the
+    // session).
+    this.webCodecsAudioEncoderFailed = false;
+    if (this.audioCodecInfo.codecType === 'G711' || this.audioCodecInfo.codecType === 'G726') {
+      this.reconcileAudioEncoderForCurrentMode();
+    }
+  }
+
+  /** Builds (or tears down) `webCodecsAudioEncoder` to match the current
+   *  `audioEncoderMode`, and lazily initializes the WASM worker the moment
+   *  it's actually needed -- called from `setAudioInfo()` (first G.711/G.726
+   *  frame of a session) and `setAudioEncoderMode()` (a live switch
+   *  mid-session). */
+  private reconcileAudioEncoderForCurrentMode(): void {
+    const wantsWebCodecs = !this.webCodecsAudioEncoderFailed && (this.audioEncoderMode === 'webcodecs' || (this.audioEncoderMode === 'auto' && typeof AudioEncoder !== 'undefined'));
+
+    if (wantsWebCodecs) {
+      if (this.webCodecsAudioEncoder === null) {
+        this.setupWebCodecsAudioEncoder();
+      }
+      // WASM is deliberately left uninitialized here -- that's the whole
+      // point of this mode (avoid the WASM/Worker-init cost entirely, not
+      // just avoid using it once ready). A brief window exists between this
+      // call and `webCodecsAudioEncoder.isConfigured` turning true (the
+      // async `AudioEncoder.isConfigSupported()`/`configure()` round trip)
+      // during which `createAudioSample()`'s G.711/G.726 branch has neither
+      // path ready and drops incoming frames -- an accepted, documented gap
+      // for this experimental mode (see docs/player/05-video-player-rendering.md),
+      // not a bug: adding a second, always-on WASM safety net for just this
+      // window would defeat the mode's own purpose.
+      return;
+    }
+
+    if (this.webCodecsAudioEncoder !== null) {
+      this.webCodecsAudioEncoder.close();
+      this.webCodecsAudioEncoder = null;
+      this.webCodecsAudioPendingFrames.length = 0;
+    }
+    this.initAudiotranscoderWasm();
+  }
+
+  private setupPcmDecoder(codecType: string, codecMime: string | undefined, bitrate: number): void {
+    if (codecType === 'G711') {
+      const decoder = new G711AudioDecoder();
+      decoder.mime = (codecMime as G711Mime | undefined) ?? 'PCMU';
+      this.pcmDecoder = decoder;
+    } else {
+      // Same bitrate-selects-ADPCM-variant convention as
+      // `AudioPlayerGxx.ts`'s own `new G726xAudioDecoder(Number(bitrate) as
+      // 16 | 24 | 32 | 40)` for the unrelated "Listen" feature.
+      this.pcmDecoder = new G726xAudioDecoder(bitrate as 16 | 24 | 32 | 40);
+    }
+  }
+
+  private setupWebCodecsAudioEncoder(): void {
+    this.webCodecsAudioEncoder = new WebCodecsAudioEncoder(G711_G726_SAMPLE_RATE, G711_G726_CHANNEL_COUNT, {
+      onEncodedChunk: (result) => this.onWebCodecsAudioEncodedChunk(result),
+      onError: (error) => {
+        // eslint-disable-next-line no-console
+        console.error('[VideoTagPlayer] WebCodecsAudioEncoder error -- falling back to the WASM transcoder:', error);
+        this.handleWebCodecsAudioEncoderFailure();
+      },
+      onUnsupported: () => {
+        // eslint-disable-next-line no-console
+        console.error(`[VideoTagPlayer] WebCodecsAudioEncoder: no supported AudioEncoder configuration for ${G711_G726_SAMPLE_RATE}Hz/${G711_G726_CHANNEL_COUNT}ch AAC -- falling back to the WASM transcoder`);
+        this.handleWebCodecsAudioEncoderFailure();
+      }
+    });
+  }
+
+  /** Reached from `WebCodecsAudioEncoder`'s `onError`/`onUnsupported` --
+   *  stops routing further G.711/G.726 frames to it for the rest of this
+   *  session (see `webCodecsAudioEncoderFailed`) and lazily brings up the
+   *  WASM path at that point, so audio recovers on the very next frame
+   *  instead of staying silent for the rest of the session. */
+  private handleWebCodecsAudioEncoderFailure(): void {
+    this.webCodecsAudioEncoderFailed = true;
+    this.webCodecsAudioEncoder?.close();
+    this.webCodecsAudioEncoder = null;
+    this.webCodecsAudioPendingFrames.length = 0;
+    this.initAudiotranscoderWasm();
+  }
+
+  /** `AssemblyTranscoder.ts`'s own `'init'` handling (`openDecoder()` if a
+   *  transcoder instance already exists, otherwise constructs one) is
+   *  already idempotent/safe to call more than once per session -- this can
+   *  be called both from `setAudioInfo()`'s first G.711/G.726 frame and
+   *  later, lazily, from a mode switch/fallback without needing its own
+   *  "already initialized" guard. */
+  private initAudiotranscoderWasm(): void {
+    (this.audiotranscoderWorker as Worker).postMessage({ type: 'init', data: { codecType: this.audioCodecInfo.codecType, bitRate: this.audioCodecInfo.bitrate } });
+    this.audiotranscoderWasmReady = true;
+  }
+
+  /** The async-replay half of the WebCodecs audio-encoder tier -- mirrors
+   *  `onMjpegEncodedChunk()`'s own FIFO-desync-safe matching, but re-enters
+   *  the exact same `createAudioSample(data, audioInfo, 'AAC')` call the WASM
+   *  path's `audiotranscoderWorkerMessage()` `'transcoded'` case already
+   *  uses, so every downstream muxing/timing decision is fully shared
+   *  between the two paths -- this tier only ever replaces *how* the AAC
+   *  bytes were produced. */
+  private onWebCodecsAudioEncodedChunk(result: WebCodecsAudioEncodedResult): void {
+    const pendingIndex = this.webCodecsAudioPendingFrames.findIndex((entry) => entry.timestampUs === result.timestampUs);
+    if (pendingIndex === -1) {
+      // eslint-disable-next-line no-console
+      console.error('[VideoTagPlayer] WebCodecsAudioEncoder output has no matching pending frame (timestampUs mismatch) -- dropping chunk');
+      return;
+    }
+    const [pending] = this.webCodecsAudioPendingFrames.splice(pendingIndex, 1);
+
+    if (!this.realAacActive && !this.opusActive) {
+      const streamData: AudioStreamData = { ...pending.streamData, codecType: 'AAC', frameData: result.frameData };
+      this.createAudioSample(streamData, this.audioInfo as unknown as AudioInfo, 'AAC');
+    }
+  }
+
+  private closeWebCodecsAudioEncoder(): void {
+    this.webCodecsAudioEncoder?.close();
+    this.webCodecsAudioEncoder = null;
+    this.webCodecsAudioPendingFrames.length = 0;
+    this.webCodecsAudioNextTimestampUs = 0;
+    this.webCodecsAudioEncoderFailed = false;
+    this.pcmDecoder = null;
   }
 
   setVideoInfo(videoinfo: VideoInfo, codecType: string): void {

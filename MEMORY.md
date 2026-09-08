@@ -4945,6 +4945,82 @@ treat its absolute numbers as a floor, not a ceiling, for anything involving rea
 `clientHeight`/`getBoundingClientRect`/etc.) — jsdom has no layout engine, so forced-reflow costs that
 are very real in an actual browser are invisible in that environment.
 
+## Added a WASM-vs-WebCodecs flag for G.711/G.726-to-AAC transcoding, to let the user A/B test the earlier `DEMUXER_UNDERFLOW` hypothesis on real hardware
+
+Direct follow-up to the ONVIF-overlay-overload entry above, same investigation thread: the user
+separately reported real-camera sessions using G.711 audio hitting frequent `DEMUXER_UNDERFLOW` on
+both the audio and (less often) video `SourceBuffer` tracks, with the `<video>` element cycling
+`kPause`/`kPlay`. Static analysis (no real device available in this WSL2 sandbox — see `README.md`'s
+networking note) found two real architectural facts worth recording, independent of whether they
+turn out to be *the* root cause:
+
+1. `VideoTagPlayer.ts`'s G.711/G.726 audio path posts every single RTP frame to a WASM
+   (`AssemblyTranscoder`) Worker with **no backpressure at all** (`createAudioSample()`'s
+   `audiotranscoderWorker.postMessage({type:'transcode', ...})`, unconditional). If per-frame
+   transcode latency ever exceeds the RTP arrival interval, the Worker's own message queue grows
+   unboundedly with no caller-visible signal.
+2. Video and audio segments share **one** `SourceBuffer` and **one** `segmentArray` append queue
+   (`createVideoSegment()`/`createAudioSegment()` both `push()` onto it; `appendSegmentToSourceBuffer()`
+   drains it one `appendBuffer()` at a time, MSE-serialized). A backlog on the audio side can
+   therefore delay video segments sitting behind it in the same queue — a plausible mechanism for
+   why the user's log showed occasional *video*-side underflow too, despite video not depending on
+   the G.711 transcoder at all.
+
+**User's request**: keep the existing WASM path completely intact (not remove/replace it), and add a
+way to switch to the browser's native WebCodecs `AudioEncoder` instead, controlled by a new
+`RTSPOverWebSocket.ts` attribute changeable dynamically (not just read once at connect).
+
+**Design decisions worth recording** (see `docs/player/05-video-player-rendering.md`'s matching
+History entry and "Audio encoder selection" section for the full mechanics):
+
+- **Output codec stays AAC on both paths — deliberately not switched to Opus.** WebCodecs' `AudioEncoder`
+  has broader native *Opus* encode support than AAC encode across browsers, and `VideoTagPlayer.ts`
+  already fully supports Opus as a native `SourceBuffer` audio family (`opusActive`/
+  `sourceBufferAudioIsOpus`) — so encoding to Opus instead would have been technically easier to get
+  running in more browsers. Rejected anyway: MSE forbids changing a `SourceBuffer`'s codecs string
+  after creation, so switching families would mean the new flag also changes *what the camera's
+  audio gets declared as* mid-architecture, not just *which code produces the AAC bytes* — a much
+  larger blast radius than the user actually asked for ("WASM 그대로 사용하고 flag로 WebCodecsAudioEncoder를
+  쓸지 결정"). Keeping AAC on both paths means the flag is a pure implementation swap: both
+  `initAudiotranscoderWasm()`'s WASM output and the new `WebCodecsAudioEncoder`'s output re-enter the
+  exact same `createAudioSample(data, audioInfo, 'AAC')` call, so every downstream muxing/timing
+  decision (`esds` box construction, `realAacActive`, etc.) is fully shared and unaffected by which
+  path produced the bytes.
+- **PCM decode for the WebCodecs path reuses existing code, avoiding WASM entirely on that side
+  too.** `src/player/listen/decoder/G711AudioDecoder.ts`/`G726xAudioDecoder.ts` already implement
+  G.711 (pure lookup-table math, genuinely trivial cost) and G.726 (ADPCM) decode to PCM in plain JS,
+  for the unrelated "Listen" (Web Audio) feature. `VideoTagPlayer.ts`'s new `pcmDecoder` field reuses
+  these directly rather than writing a third G.711/G.726 decoder or trying to extract a decode-only
+  mode from the combined decode+encode WASM `AssemblyTranscoder`.
+- **WASM is left uninitialized (not just unused) when WebCodecs is the active choice** — the point of
+  the mode is to avoid the WASM/Worker-init cost, not just to avoid calling it once ready. This
+  creates one accepted, documented gap: a G.711/G.726 frame arriving in the brief window between
+  choosing WebCodecs and its async `AudioEncoder.isConfigSupported()`/`configure()` resolving is
+  dropped rather than falling back to an uninitialized WASM worker for just that window. A runtime
+  failure *after* successful configuration (`onError`/a later `isConfigSupported` miss) does lazily
+  bring up WASM at that point, via `handleWebCodecsAudioEncoderFailure()` — recovers audio on the very
+  next frame instead of staying silent for the rest of the session.
+- **Attribute wiring copies the `debug` attribute's live-refresh chain exactly** (`RTSPOverWebSocket.ts`'s
+  `audioencodermode` attribute/property → `pushAudioEncoderModeToRunningPlayers()` →
+  `StreamPlayer.set audioEncoderMode()` → `MediaRouter.set audioEncoderMode()`/
+  `VideoPlayerLike.setAudioEncoderMode?` → `VideoTagPlayer.setAudioEncoderMode()`), rather than the
+  "read once at `play()` time" pattern most other attributes use — this was a direct, explicit part
+  of the user's request (dynamically changeable while already connected, not just at the next
+  connection).
+
+**Verified**: `npx tsc -b --force` clean; `npx vitest run` full suite passes (143/145 — the 2 failures
+are the pre-existing `SunapiManager.live.test.ts`, which needs a real device at a hardcoded LAN IP
+and fails the identical way with or without this change), including a new
+`WebCodecsAudioEncoder.test.ts` (mocked `AudioEncoder`/`AudioData` globals, since jsdom implements
+neither) covering the unsupported-API-throws, `isConfigSupported()`-false-calls-`onUnsupported`,
+successful-encode-round-trip, and closed-encoder-is-a-no-op cases.
+
+**Not yet verified against a real device** — same limitation as the ONVIF-overlay-overload entry
+above (this repo's WSL2 dev sandbox can't reach real camera UDP/RTSP/TLS traffic at all, see
+`README.md`'s networking note). Whether `audioencodermode="webcodecs"` actually reduces
+`DEMUXER_UNDERFLOW` frequency on the reporting user's real G.711 camera is an open question this
+feature exists specifically to let them answer.
+
 ## ONVIF overlay swallowed the native `<video controls>` bar's "more options" popup once the toggle was on (fixed)
 
 Reported directly by the user (`wisenet-camera-discovery`'s player, Korean): "video tag 에서 control

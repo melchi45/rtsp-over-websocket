@@ -200,6 +200,13 @@ export class RTSPOverWebSocket extends HTMLElement {
   // play" semantics); live mid-stream toggling isn't supported.
   private _debug: DebugConfig | null = null;
 
+  // Selects VideoTagPlayer.ts's G.711/G.726-to-AAC transcoding path -- see
+  // the `audioencodermode` attribute case below, the `audioEncoderMode`
+  // property setter, and docs/player/05-video-player-rendering.md. Unlike
+  // `_debug` above, this DOES support live mid-stream toggling (see
+  // `pushAudioEncoderModeToRunningPlayers()`).
+  private _audioEncoderMode = 'auto';
+
   // `_useGrunt` is a confirmed real bug: the `grunt` getter below reads it,
   // but no constructor (or anywhere else in the legacy file) ever assigns it
   // — only `_network` is a real backing field. `element.grunt` therefore
@@ -463,7 +470,8 @@ export class RTSPOverWebSocket extends HTMLElement {
       'limitwidth',
       'limitheight',
       'android',
-      'debug'
+      'debug',
+      'audioencodermode'
     ];
   }
 
@@ -811,6 +819,30 @@ export class RTSPOverWebSocket extends HTMLElement {
         }
         this.info.debug = this._debug;
         this.pushDebugConfigToRunningPlayers();
+        break;
+      }
+      case 'audioencodermode': {
+        // Selects VideoTagPlayer.ts's G.711/G.726-to-AAC transcoding path --
+        // 'wasm' (the existing Emscripten AssemblyTranscoder), 'webcodecs'
+        // (the native WebCodecs AudioEncoder alternative), or 'auto' (prefer
+        // WebCodecs when supported, falling back to WASM otherwise). See
+        // docs/player/05-video-player-rendering.md's "Audio encoder
+        // selection" entry.
+        if (newValue === null || typeof newValue === 'undefined') {
+          this._audioEncoderMode = 'auto';
+        } else if (newValue !== 'auto' && newValue !== 'wasm' && newValue !== 'webcodecs') {
+          throw new RTSPOverWebSocketError({
+            channelId: this.channel,
+            elementId: this.getAttribute('id') ?? undefined,
+            errorCode: fromHex('0x0414'),
+            place: 'RTSPOverWebSocket.ts:audioencodermode',
+            message: "invalid input parameter value, check your input parameter type, Only 'auto', 'wasm' and 'webcodecs' values are possible."
+          });
+        } else {
+          this._audioEncoderMode = newValue;
+        }
+        this.info.audioEncoderMode = this._audioEncoderMode;
+        this.pushAudioEncoderModeToRunningPlayers();
         break;
       }
       default:
@@ -2428,6 +2460,52 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
     if (this.backupplayer !== null) {
       this.backupplayer.debug = this._debug;
+    }
+  }
+
+  /** Selects `VideoTagPlayer.ts`'s G.711/G.726-to-AAC transcoding path --
+   *  `'auto'` (default, prefers the native WebCodecs `AudioEncoder` when
+   *  supported), `'wasm'` (forces the existing Emscripten `AssemblyTranscoder`
+   *  path), or `'webcodecs'` (forces the WebCodecs path, falling back to
+   *  WASM only if unsupported/erroring). Settable via the `audioencodermode`
+   *  attribute or this property directly; both go through the same
+   *  validation and live-refresh path (`pushAudioEncoderModeToRunningPlayers()`
+   *  below), mirroring `debug`'s attribute/property pair above. See
+   *  `docs/player/05-video-player-rendering.md`. */
+  get audioEncoderMode(): string {
+    return this._audioEncoderMode;
+  }
+  set audioEncoderMode(mode: string) {
+    if (mode !== 'auto' && mode !== 'wasm' && mode !== 'webcodecs') {
+      throw new RTSPOverWebSocketError({
+        channelId: this.channel,
+        elementId: this.getAttribute('id') ?? undefined,
+        errorCode: fromHex('0x0414'),
+        place: 'RTSPOverWebSocket.ts:audioEncoderMode',
+        message: "invalid input parameter value, check your input parameter type, Only 'auto', 'wasm' and 'webcodecs' values are possible."
+      });
+    }
+    this._audioEncoderMode = mode;
+    this.info.audioEncoderMode = this._audioEncoderMode;
+    this.pushAudioEncoderModeToRunningPlayers();
+  }
+
+  /** Live-refresh, same shape as `pushDebugConfigToRunningPlayers()` above --
+   *  the `audioencodermode` attribute case and the `audioEncoderMode`
+   *  property setter both call this after updating `_audioEncoderMode`/
+   *  `info.audioEncoderMode`, so an already-running `player`/`backupplayer`
+   *  (a `StreamPlayer`, whose own `set audioEncoderMode()` cascades into
+   *  `mediaRouter` and, from there, the live `VideoTagPlayer` instance if
+   *  one already exists) picks up the change starting with the next
+   *  G.711/G.726 frame, instead of only on the next `play()`/reconnect. A
+   *  no-op when neither is currently playing -- `info.audioEncoderMode` is
+   *  still updated either way, so a *future* `play()` picks up the value. */
+  private pushAudioEncoderModeToRunningPlayers(): void {
+    if (this.player !== null) {
+      this.player.audioEncoderMode = this._audioEncoderMode;
+    }
+    if (this.backupplayer !== null) {
+      this.backupplayer.audioEncoderMode = this._audioEncoderMode;
     }
   }
 

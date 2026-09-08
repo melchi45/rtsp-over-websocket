@@ -216,6 +216,18 @@ export interface VideoPlayerLike {
    *  `RtpClient`/`Session.setDebugConfig()`. Optional so pre-existing test doubles compile
    *  unchanged. */
   setDebugConfig?(config: DebugConfig | null, componentName: string): void;
+  /** See `RTSPOverWebSocket.ts`'s `audioencodermode` attribute/property and
+   *  `VideoTagPlayer.ts`'s `setAudioEncoderMode()`/
+   *  `docs/player/05-video-player-rendering.md` -- selects the WASM vs.
+   *  WebCodecs G.711/G.726-to-AAC transcoding path. Plain `string`, same
+   *  loose-typing convention as `codec`/`audioCodecHint` above (the real
+   *  `'auto' | 'wasm' | 'webcodecs'` union lives only where it's actually
+   *  consumed, in `VideoTagPlayer.ts`). Optional, same reasoning as
+   *  `setDebugConfig?` -- `CanvasTagPlayer`/pre-existing test doubles have
+   *  no equivalent and don't need one (G.711/G.726 transcoding is a
+   *  `VideoTagPlayer`-only, MSE-`SourceBuffer`-shaped concern; `CanvasTagPlayer`
+   *  decodes audio for playback via the unrelated `listen/` Web Audio path). */
+  setAudioEncoderMode?(mode: string): void;
 }
 
 export interface AudioPlayerLike {
@@ -403,6 +415,11 @@ export class MediaRouter {
   // arrive first — see VideoTagPlayer.ts's init()/setAudioInfo().
   private audioCodecHint: string | null = null;
   private audioBitrate: number | null = null;
+  // See VideoPlayerLike.setAudioEncoderMode?'s doc comment above.
+  // 'auto' matches VideoTagPlayer.ts's own field default, so a
+  // StreamPlayer/MediaRouter that never touches this at all still behaves
+  // exactly as before this feature existed.
+  private _audioEncoderMode = 'auto';
   private audioTalker: TalkLike | null = null;
 
   private metaDataParser: MetaDataParserLike | null = null;
@@ -543,6 +560,19 @@ export class MediaRouter {
     if (this.audioTalker !== null) this.audioTalker.debug = config;
     if (this.backupProvider !== null) this.backupProvider.debug = config;
     if (this.metaDataParser !== null) this.metaDataParser.debug = config;
+  }
+
+  /** Same live-refresh shape as `debug` above -- see `VideoPlayerLike.setAudioEncoderMode?`'s
+   *  doc comment. Also settable via `getAudioEncoderMode()`/`setAudioEncoderMode()`
+   *  (mirroring `getMaxInstantPlaybackTime()`/`setMaxInstantPlaybackTime()` below), which
+   *  `StreamPlayer.ts` calls once at session construction; this accessor is what
+   *  `StreamPlayer`'s own `set audioEncoderMode()` calls for a live mid-session change. */
+  get audioEncoderMode(): string {
+    return this._audioEncoderMode;
+  }
+  set audioEncoderMode(mode: string) {
+    this._audioEncoderMode = mode;
+    this._videoPlayer?.setAudioEncoderMode?.(mode);
   }
 
   get supportCovertAndOff(): boolean {
@@ -1450,6 +1480,15 @@ export class MediaRouter {
   getMaxInstantPlaybackTime(): number {
     return this.minRemainTime;
   }
+  /** Called once by `StreamPlayer.ts` at session construction (mirroring
+   *  `setMaxInstantPlaybackTime()` above); a later live change goes through
+   *  the `audioEncoderMode` accessor instead (see its own doc comment). */
+  setAudioEncoderMode(mode: string): void {
+    this.audioEncoderMode = mode;
+  }
+  getAudioEncoderMode(): string {
+    return this.audioEncoderMode;
+  }
   setBufferClearInterval(interval: number): void {
     this.minTimerInterval = interval;
   }
@@ -1665,6 +1704,7 @@ export class MediaRouter {
       player = this.factories.createCanvasPlayer();
     }
     player.setDebugConfig?.(this._debugConfig, this.tagMode === 'video' ? 'VideoTagPlayer' : 'CanvasTagPlayer');
+    player.setAudioEncoderMode?.(this._audioEncoderMode);
 
     if (this.deviceType === 'nvr') {
       player.setDefaultDelay(1.0);
