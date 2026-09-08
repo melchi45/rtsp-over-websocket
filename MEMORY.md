@@ -5021,6 +5021,65 @@ above (this repo's WSL2 dev sandbox can't reach real camera UDP/RTSP/TLS traffic
 `DEMUXER_UNDERFLOW` frequency on the reporting user's real G.711 camera is an open question this
 feature exists specifically to let them answer.
 
+## Live-mode Pause/Play/Pause loop after minimizing/restoring the browser — `onVisibilityChange()`'s catch-up jump was too small to actually recover, not just occasionally late
+
+Same investigation thread, direct follow-up: the user kept seeing `DEMUXER_UNDERFLOW` on both audio
+and video `SourceBuffer`s, then added the key detail that pinned it down — it happens "특히 브라우저는
+최소화 했다가 다시 보이면" (especially when the browser is minimized then shown again), and
+"결과적으로 Pause > Play > Pause 가 지속적으로 발생합니다" (results in a continuous Pause > Play >
+Pause cycle, not a one-time stall).
+
+This pointed straight at `onVisibilityChange()`'s existing Live-mode fix (see
+`05-video-player-rendering.md`'s History: "minimizing the browser then restoring it left Live
+playback permanently stopped" — already fixed once, by calling `videoUpdating()` on visibility
+restore). Reading `videoUpdating()`'s Live branch found the real gap: its catch-up jump target is
+`endTime - defaultDelay`, and `defaultDelay` is a *small* per-browser constant (`CHROME_DEFAULT_DELAY_TIME
+= 0.3`, `SAFARI_DEFAULT_DELAY_TIME = 0.4`, `OTHER_DEFAULT_DELAY_TIME = 0.7`) — sized for correcting a
+few hundred milliseconds of steady-state jitter during normal playback, not for resuming after a real
+multi-second-or-longer background gap. After a real background period, browsers commonly freeze a
+hidden tab's `<video>` clock (`currentTime` stops advancing) while RTP delivery and `SourceBuffer`
+appends keep running regardless (documented in this file's existing `changeCurrentTime()`/
+`onVisibilityChange()` comments) — so on refocus, `endTime` can be far ahead of `currentTime`, and
+landing only 0.3-0.7s behind that freshly-grown `endTime` risks the decoder not actually having
+anything ready to play at that exact spot yet. Landing there re-fires `'waiting'`, which calls
+`videoUpdating()` again, which computes the *identical* too-small jump again — an indefinite
+Pause/Play/Pause loop, not a single missed catch-up. This exactly matches every detail the user
+reported: triggered by minimize/restore specifically, doesn't self-recover, and manifests as
+continuous Pause/Play cycling rather than a one-time stall.
+
+**Fix**: a new `visibilityResumeUntil` field (a `performance.now()` deadline). `onVisibilityChange()`'s
+Live branch arms it to `now + VISIBILITY_RESUME_COOLDOWN_MS` (5000ms) before calling
+`videoUpdating()`. While armed, `videoUpdating()`'s Live-branch jump target uses `defaultDelay *
+VISIBILITY_RESUME_DELAY_MULTIPLIER` (5x — e.g. 1.5-3.5s instead of 0.3-0.7s) instead of the bare
+`defaultDelay`, for *every* call during that window (`'waiting'`, `'updateend'`, `'durationchange'` all
+route through the same `videoUpdating()`, not just the triggering `onVisibilityChange()` call) —
+deliberately not a one-shot larger margin only on the first call, since if that first jump still
+isn't enough, a subsequent retry falling back to the small margin would just reintroduce the same
+loop. The existing `if (tempCurrentTime > startTime && tempCurrentTime < endTime)` guard already
+degrades this safely if the buffered range genuinely isn't wide enough yet to support the bigger
+margin — it just skips the jump for that call and waits for more data to accumulate, rather than
+jumping somewhere nonsensical.
+
+**Verified**: `npx tsc -b --force` clean; `npx vitest run` full suite passes (143/145, same two
+pre-existing real-device-only failures as every other entry in this session). No unit test added —
+this class has no existing unit test file at all (confirmed: `find` for `VideoTagPlayer*test*` in
+`src/player` returns nothing), consistent with its established verification method throughout this
+file's own History (real-device/Playwright testing, not unit tests, given the DOM/MSE/timing
+dependencies involved).
+
+**Not yet verified against a real device** — same sandbox limitation as every other entry in this
+session. Whether 5x/5s is the right tuning (vs. needing to be larger, or scaled to how long the tab
+was actually hidden) can only be confirmed by the reporting user reproducing the minimize/restore
+scenario against their real camera.
+
+**How to apply**: when a "fix" reuses an existing steady-state correction routine for a
+qualitatively different situation (routine small-jitter nudging vs. recovering from a real gap), check
+whether that routine's *tuning constants* — not just its logic — still fit the new situation. Here the
+logic (jump forward, back off by a margin, resume if paused) was already correct and already reused
+appropriately; the bug was that the specific numeric margin it used was calibrated for a completely
+different magnitude of drift, and reusing it verbatim silently carried that mismatch into the new
+call site.
+
 ## ONVIF overlay swallowed the native `<video controls>` bar's "more options" popup once the toggle was on (fixed)
 
 Reported directly by the user (`wisenet-camera-discovery`'s player, Korean): "video tag 에서 control
@@ -5067,3 +5126,324 @@ against every *later* sibling added with the same positioning — not just a one
 element that happened to trigger it. A second `position: absolute` sibling added months later for an
 unrelated feature (the ONVIF overlay) silently re-triggered the exact same class of bug the comment
 already described in detail.
+
+## Live-mode "seek domino" after DEMUXER_UNDERFLOW recovery — `videoUpdating()`'s catch-up jump had no rate limit
+
+Direct follow-up to the visibility-resume Pause/Play/Pause fix above, same investigation: the user
+provided a fresh chrome://media-internals trace and described the pattern precisely — "underflow가
+발생하면 seeking이 한번 발생한 이후 도미노처럼 seeking > playing가 발생합니다. 이후에는 아예
+seeking도 없이 play > pause > play > pause가 발생합니다" (once underflow happens, one seek cascades
+domino-style into repeated seeking > playing, and afterward it becomes plain play > pause > play >
+pause with no seeking at all).
+
+Reading the trace: at one point in the log, ~30+ `kSeek`/`kPipelineStateChange` pairs fired within a
+9ms window, with `seek_target` creeping forward by almost exactly the same small increment each time
+(~0.064s, matching a typical inter-segment interval). That increment size was the key clue — this
+wasn't one big corrective jump, it was many small ones, each roughly one segment further than the
+last, all within milliseconds. `videoUpdating()`'s Live-branch catch-up jump (`tempCurrentTime =
+endTime - catchUpDelay`) runs unconditionally inside every call, and `videoUpdating()` itself is
+called from every single `sourceBuffer` `'updateend'` event — one per MSE append. During a burst
+where many queued segments append back-to-back (a backlog draining after any stall, e.g. right after
+the visibility-resume fix's own catch-up), each `updateend` fires almost immediately after the
+previous one, `endTime` has grown by roughly one segment's duration each time, and the jump logic
+re-triggers on every single one of them — chasing a constantly-moving target instead of picking one
+spot and letting playback actually get there.
+
+**Fix**: a new `lastLiveCatchUpJumpAt` field (`performance.now()` of the last jump that actually
+executed). The jump — and its `videoPlay()` call — now only runs if at least
+`MIN_LIVE_CATCHUP_JUMP_INTERVAL_MS` (500ms) has passed since the last one; every other call during
+that window still runs the rest of `videoUpdating()` (the `bufferedFrameCount` NVR tuning, etc.)
+normally, it just skips the actual `currentTime` reassignment. 500ms was chosen as "clearly long
+enough to block a sub-10ms storm, short enough not to meaningfully delay genuine periodic
+resync" — not independently tuned against real device timing, since that isn't available in this
+sandbox.
+
+**The second half of the report — plain Play/Pause cycling with no seeking at all, after the domino
+settles — is very likely a different, non-client-side-fixable symptom.** Once `currentTime` has
+caught up close to the real live edge, the browser's own `HTMLMediaElement` buffering state machine
+auto-pauses when data runs out and auto-resumes once more arrives, with no JS `currentTime`
+assignment involved at all (hence no `Seek` entries in the trace for that phase). If the underlying
+RTP/network data simply isn't arriving fast enough to sustain continuous playback, this cycling
+reflects that directly — no amount of catch-up-jump tuning can conjure data that hasn't arrived yet.
+This still needs to be confirmed against a real device/network to rule out an alternative explanation
+(e.g. `videoPlay()` being called from some path fighting the browser's own auto-pause), but the
+absence of any seeking in this second phase is itself strong evidence against a client-side
+currentTime-logic cause specifically.
+
+**Verified**: `npx tsc -b --force` clean; player package rebuilt (`npm run build:player`).
+
+**Not yet verified against a real device** — same limitation as every other entry in this session.
+
+**How to apply**: a debug trace showing many repeated corrections isn't automatically "the same bug
+firing repeatedly" — look at the *increment size* between consecutive values. Here, the near-constant
+~0.064s step between successive `seek_target`s (not random, not a single large jump repeated) was the
+signal that this was a rate/frequency problem (a handler re-firing on every append event) rather than
+a magnitude problem (a formula computing the wrong target) — a different diagnosis than the previous
+fix in this same investigation, even though both manifested as "seeking after underflow."
+
+## Live-session memory exceeding 1GB — two independent, real bugs in the mechanisms that were supposed to prevent exactly this
+
+Direct follow-up to the seek-domino fix above, same investigation: the user reported Live playback
+memory exceeding 1GB, and specifically asked whether `checkBufferSize()`'s `getMaxInstantPlaybackTime()`
+(30s) trim was definitely working, since if it were, the leak had to be somewhere else. Both turned
+out to be true at once — the trim *was* broken, in a way the user's own instinct correctly
+suspected, **and** there was a second, completely independent leak.
+
+**Bug one — `checkBufferSize()`'s trim gate only ever looked at the last buffered range.** Its
+trigger check was `Math.abs(endTime - startTime) > getMaxInstantPlaybackTime()`, where both
+`startTime` and `endTime` came from `sourceBuffer.buffered.start/end(buffered.length - 1)` — the
+*last* range only. `SourceBuffer.buffered` is not guaranteed to be one contiguous range: a PTS
+discontinuity between segments (audio/video segments that don't line up exactly, a dropped/late RTP
+packet, or — confirmed as an active source this same session — the currentTime-jump fragmentation the
+seek-domino and visibility-resume fixes both document) makes MSE start a new range instead of
+extending the existing one. Once fragmented, the *last* range can stay small and fresh indefinitely
+while everything sitting in the *earlier* ranges keeps accumulating completely untrimmed, because this
+gate's own measurement never looked at them at all — it could see a deceptively "small" trailing range
+forever while gigabytes sat further back in the buffer, still fully retained. The actual
+`sourceBuffer.remove(0, removeEnd)` call underneath was always correct (MSE removes across every
+range intersecting the given interval, fragmented or not) — only the *gate deciding whether to call it
+at all* was measuring the wrong thing. Fixed by measuring `buffered.start(0)` (the true earliest
+buffered position, across every range) instead of the last range's own start.
+
+**Bug two — `makeOnCueChange()`'s safety-net cue cap was dead code.** Separately from `SourceBuffer`
+memory, this class also maintains a hidden `TextTrack` of `VTTCue`s for A/V-sync timestamp delivery
+(`onCueEnter`/`onCueExit` report each cue's JSON payload as it's entered/exited). `onCueExit()` is the
+normal removal path, but any currentTime jump whose target lands *past* a cue's entire
+`[startTime, endTime)` range means the browser's cue-dispatch algorithm never fires `onexit` for it at
+all — it's simply orphaned, forever, in the `TextTrack`'s cue list. `makeOnCueChange()` exists
+specifically as a safety-net cap for this (`MAX_CUE_COUNT = 100`), but its actual removal condition,
+`cues.length < i` — inside a `for (i = 0; i < MAX_CUE_COUNT; i++)` loop that only runs once
+`cues.length > MAX_CUE_COUNT` is already true — can never evaluate `true`: `i` never exceeds
+`MAX_CUE_COUNT - 1`, and `cues.length` is by definition already greater than `MAX_CUE_COUNT` inside
+this branch, so `cues.length < i` is false on every iteration, always. `removeCue()` inside that loop
+never ran, ever. Every orphaned cue accumulated for the rest of the session, completely uncapped —
+and this same session's own seek-domino/visibility-resume bugs are themselves a plausible active
+source of many such orphaned cues (each involves a currentTime jump that can skip past cues).
+
+**Fix**: `checkBufferSize()`'s gate uses `buffered.start(0)` now (see above). `makeOnCueChange()` now
+removes `cues[0]` — reliably the oldest remaining cue, since cues are always appended in chronological
+order (documented elsewhere in this class, e.g. `checkTimestampCueAtCurrentTime()`'s own comment) —
+exactly `cues.length - MAX_CUE_COUNT` times, mirroring the removal pattern `removeAllCues()` already
+uses for full teardown.
+
+**Verified**: `npx tsc -b --force` clean; `npx vitest run` (excluding the real-device-only
+`SunapiManager.live.test.ts`) 144/144 passing; player package rebuilt (`npm run build:player`).
+
+**Not yet verified against a real device** — same limitation as every other entry in this session.
+Whether these two bugs together fully explain the reported >1GB figure, or whether a third
+contributor remains, can only be confirmed by the reporting user watching real memory usage over a
+long session against their real camera.
+
+**How to apply**: when a user reports a safety mechanism "should already be preventing this," don't
+just explain why it *should* work — actually read its condition line by line and hand-trace whether it
+*can* ever fire. Both bugs here were structurally identical in shape (a numeric-comparison bug that
+silently made a cleanup loop's body unreachable) despite living in unrelated subsystems
+(`SourceBuffer` byte data vs. `TextTrack` cue objects) — worth checking every "cap"/"trim"/"cleanup"
+loop in a class once one turns out to be dead code, since the same review often turns up more than
+one.
+
+**Follow-up, same session**: the user reported memory still exceeding 1GB after both fixes above,
+even with the F12 DevTools console closed (ruling out "DevTools itself is retaining references" as
+an explanation). Applying this entry's own "check every cap/trim loop" lesson found a third:
+`boxStartTime` (a plain `number[]`) was pushed to once per segment for the entire session with
+nothing ever trimming it during active playback — only `close()` cleared it — even though its only
+reader, `changeCurrentTime()`, never looks back more than 2 entries from the end. Fixed with a new
+`pushBoxStartTime()` that caps it at `MAX_BOX_START_TIME_ENTRIES` (10) via `.shift()`. Flagged
+explicitly to the user, though: this is a small-number array, not large buffers — even totally
+unbounded for a multi-hour session this would plausibly reach single-digit MB, not gigabytes — so
+this is a real bug worth fixing but almost certainly not *the* explanation for a 1GB figure by
+itself. Two things still genuinely unknown and asked of the user rather than guessed: (1) how memory
+is actually being measured (this tab/extension's own footprint — Chrome Task Manager, Shift+Esc — vs.
+the whole `chrome.exe` process tree total, which includes every other tab/extension and is not
+this code's responsibility to keep small), and (2) whether the number is still climbing without
+bound the longer a session runs, or climbs once and plateaus around ~1GB (a stable elevated baseline
+for MSE + `<video>` decode is not by itself evidence of a leak the way continued unbounded growth
+is). Also rebuilt and reconfirmed `wisenet-camera-discovery`'s own extension bundle
+(`dist/chrome-extension/external-lib/rtsp-over-websocket/rtsp-over-websocket.esm.js`) actually
+contains each fix as it landed (`grep` for a fix's own new identifier, e.g.
+`lastLiveCatchUpJumpAt`/`bufferedStart`/`pushBoxStartTime`) rather than assuming a rebuild happened —
+worth doing explicitly any time a fix in this sibling-repo-via-`file:`-dependency setup doesn't seem
+to take effect, since the extension vendors a *copy* of the built player library into
+`external-lib/`, not a live reference to `node_modules/@melchi45/rtsp-over-websocket`'s symlink
+target.
+
+**Second follow-up, same session — the actual dominant contributor.** Asked the user directly how
+memory was being measured and whether it plateaus; answer: both Chrome's *and* Windows' Task
+Manager, and it climbs continuously with no plateau — real, unbounded growth, not devtools overhead
+or an elevated-but-stable baseline. The user then volunteered the key detail unprompted: it gets
+noticeably worse specifically right after the system enters and recovers from a power-saving state
+("에너지 효율성 모드" — Windows "Efficiency Mode" / Chrome's own Energy Saver). That pointed straight
+at the same underlying mechanism this session's `onVisibilityChange()` fixes already document (RTP
+delivery and segment creation keep running while some other part of the pipeline gets suspended) —
+just needing to ask "suspended *what*, holding *what* memory" again for a different subsystem.
+
+Reading `appendSegmentToSourceBuffer()` found it: `segmentArray` (already-muxed `moof`+`mdat`
+`Uint8Array` buffers, real encoded frame data, waiting for an actual `appendBuffer()` call) had **no
+size limit at all**. `createVideoSegment()`/`createAudioSegment()`/`createSegment()` push onto it
+unconditionally; draining happens one entry per `'updateend'`, driven entirely by the browser's own
+append-completion event. In steady state those roughly balance, so this rarely showed up — but if
+the browser suspends the tab's MSE append pipeline for an extended period (a real, documented Chrome/
+Windows power-saving behavior, distinct from and potentially longer-lasting than simple
+tab-backgrounding) while segment creation keeps running regardless, nothing ever bounded how large
+this backlog could grow. Unlike the three fixes earlier in this same investigation (all small,
+fixed-size arrays of plain numbers or cue objects — realistically single-digit MB even fully
+unbounded), this queue holds actual compressed video/audio bytes — the only one of the four capable
+of plausibly reaching gigabyte scale on its own, and the most likely explanation for growth that
+never plateaus.
+
+**Fix**: new `pushSegment()`, used at every non-init `segmentArray` push site instead of `.push()`
+directly — once the array reaches `MAX_SEGMENT_QUEUE_LENGTH` (500), a new segment is dropped rather
+than queued. Deliberately drops the *incoming* segment rather than evicting from the front to make
+room, since `createInitSegment()`'s own `unshift()` can leave a not-yet-appended init segment sitting
+at index 0 — an eviction policy that always removes from the front could discard that instead of a
+disposable regular segment. Same backpressure-by-dropping trade-off `MJPEG_ENCODER_MAX_QUEUE_SIZE`
+already makes elsewhere in this exact class (lossy under a genuine sustained stall, but bounded —
+strictly better than unbounded growth toward an eventual tab crash).
+
+**Verified**: `npx tsc -b --force` clean; `npx vitest run` (excluding the real-device-only test)
+144/144 passing; both the player package and `wisenet-camera-discovery`'s own extension bundle
+rebuilt and reconfirmed (`grep` for `pushSegment`/`MAX_SEGMENT_QUEUE_LENGTH` in the extension's
+vendored `external-lib/` copy) to actually contain this fix.
+
+**Not yet verified against a real device.** Whether 500 is the right cap (vs. needing to be smaller,
+or scaled to segment size/bitrate) and whether this fully explains the reported >1GB figure can only
+be confirmed by the user reproducing the Efficiency-Mode-then-restore scenario against their real
+camera and watching memory afterward.
+
+**How to apply**: when a user says a problem gets *specifically* worse around one identifiable event
+(here: a power-saving mode transition), treat that as a direct pointer to "what does the browser
+suspend/throttle during that state, and what does *this* code keep doing regardless" — the same
+diagnostic question that already explained the visibility-restore bugs earlier in this session,
+just needing to be re-asked for a different subsystem (the append/`segmentArray` side, not the
+`currentTime`/`<video>`-clock side) rather than assumed answered by the earlier fixes.
+
+## `checkBufferSize()`'s trim was silently starved during exactly the burst it most needed to run in — a call-order bug, not a missing feature
+
+Third follow-up, same session, same investigation: the user reported the `segmentArray` cap fix still
+left a ~200MB jump (600MB -> 800MB) specifically on Efficiency-Mode recovery, and asked a very sharp,
+specific question: does `SourceBuffer` memory beyond the Instant Playback window need separate
+handling? The honest answer turned out to be "no separate mechanism needed — the *existing* mechanism
+had a real bug that made it silently no-op during exactly this scenario."
+
+`sourceBufferEventListener`'s `'updateend'` case called `appendSegmentToSourceBuffer()` *before*
+`videoUpdating()` (the only caller of `checkBufferSize()`). `SourceBuffer.appendBuffer()` sets
+`.updating` back to `true` **synchronously**, the instant it's called (MSE spec), if there's another
+segment queued (`appendSegmentToSourceBuffer()`'s own body does exactly this whenever `segmentArray`
+is non-empty). So on every single `'updateend'` fired *during a backlog-draining burst* — which is
+precisely the scenario right after a suspended MSE append pipeline (Energy Saver/Efficiency Mode)
+resumes and drains whatever queued up while suspended — the very next append had *already* been
+kicked off a few lines earlier in this same handler, by the time execution reached
+`checkBufferSize()`'s `if (!sourceBuffer.updating)` guard. That guard therefore saw `true` on every
+single call for the *entire* duration of the burst, not intermittently — the 30-second trim was
+completely starved for exactly as long as there was a backlog to drain, which is exactly when the
+buffer was growing fastest. Trimming only ever got a chance to run again once the backlog fully
+drained and appends settled back into their normal one-per-real-time-interval cadence — by which
+point the buffer had already grown by roughly however much data the burst itself added. This maps
+directly onto the reported shape: a discrete jump concentrated right at recovery, not gradual drift.
+
+**Fix**: swapped the call order — `videoUpdating()` now runs *before* `appendSegmentToSourceBuffer()`
+in the `'updateend'` handler. `'updateend'` fires exactly when the operation that was just in flight
+(an append, or — per the same MSE event — a `remove()`) has finished and `.updating` is guaranteed
+`false` at that precise instant, before this handler has decided whether to kick off anything new.
+Checking `checkBufferSize()`'s guard at that moment, before the next append claims `updating` again,
+means the trim gets evaluated on every completed operation, burst or not. No new coordination was
+needed for `remove()`/`appendBuffer()` to interleave safely afterward: if `checkBufferSize()` does
+start a `remove()` this cycle, `appendSegmentToSourceBuffer()`'s own pre-existing `if
+(this.sourceBuffer.updating) return;` guard (unchanged) correctly skips appending for this one cycle,
+and the `remove()`'s own completion fires another `'updateend'` that re-enters this exact handler and
+resumes appending right after — the two operations were always designed to pump off the same single
+`'updateend'` event, this fix just stopped one of them from being able to starve the other via
+ordering.
+
+**Verified**: `npx tsc -b --force` clean; `npx vitest run` (excluding the real-device-only test)
+144/144 passing; both the player package and `wisenet-camera-discovery`'s own extension bundle
+rebuilt, and the actual call order in the shipped minified bundle re-confirmed via `grep`
+(`this.videoUpdating(),this.appendSegmentToSourceBuffer()`, in that order) rather than trusting the
+source-level diff alone to have made it through the build.
+
+**Not yet verified against a real device.** Whether this closes the ~200MB Efficiency-Mode-recovery
+jump specifically (as its mechanism strongly predicts) can only be confirmed by the user reproducing
+that exact scenario again and watching memory afterward.
+
+**How to apply**: "the cleanup mechanism exists and looks correct in isolation" is not the same claim
+as "the cleanup mechanism actually gets to run when it matters." Here, `checkBufferSize()`'s own logic
+was fine on every previous read this session — the bug was entirely in *when* its caller was invoked
+relative to a sibling operation that shares the same MSE `updating` flag. Worth tracing the exact
+order of every operation that reads/depends on a single shared async-state flag (here,
+`SourceBuffer.updating`) within one event handler specifically, not just confirming each operation's
+own guard condition is individually correct.
+
+## The `updateend`-reorder fix above created a real livelock — a threshold with no hysteresis, retriggering `remove()` forever and starving real appends
+
+Direct, urgent follow-up to the entry immediately above, same session: added a temporary
+`logMemoryDiagnostics()` trace (per-second `segmentArray`/`videoSamples`/etc. sizes) to narrow down a
+still-reproducing leak, and asked the user to enable `debug` and share the output. What came back
+instead (twice, unprompted, pasted raw) was the *existing* `checkBufferSize()` `[trace]` log —
+firing on **every single** `'updateend'`, with the `updateend` counter climbing by tens of thousands
+while `durationchangeCount` (real new data extending the timeline) sat completely frozen. That
+second number frozen while the first climbed by tens of thousands is what made this unambiguous: the
+player wasn't slowly leaking during normal playback, it had stopped playing forward *at all* and was
+just spinning.
+
+**Root cause, entirely self-inflicted by the previous entry's own fix**: `checkBufferSize()`'s
+`remove(0, removeEnd)` always trims down to exactly `currentTime - getMaxInstantPlaybackTime()` — so
+right after a successful trim, the buffered span sits *just barely above* the bare
+`getMaxInstantPlaybackTime()` threshold (confirmed live in the pasted log: a span that held at a
+constant ~30.3-30.4s across thousands of consecutive calls, never dropping below 30s). With **no
+hysteresis margin**, `checkBufferSize()`'s own gate (`span > getMaxInstantPlaybackTime()`) was still
+`true` on the very next call, even though the just-completed `remove()` had nothing meaningful left
+to remove. This alone was survivable under the *original* call order (`appendSegmentToSourceBuffer()`
+before `videoUpdating()`) — a redundant `remove()` attempt would just get skipped once real appending
+resumed. But the previous entry's fix swapped that order specifically so `checkBufferSize()` would
+reliably see `updating === false` on every `'updateend'` — which, combined with the missing
+hysteresis, meant it reliably *always* had a chance to fire, and always took it. A near-no-op
+`remove()`'s own completion is itself another `'updateend'`, which re-enters the handler,
+`checkBufferSize()` runs first again, sees the same still-"over-threshold" span, and calls `remove()`
+again — a closed loop with no exit condition, running as fast as the browser could cycle
+remove-then-updateend, with `appendSegmentToSourceBuffer()` (which runs *after* in this same handler)
+never getting a real turn because `sourceBuffer.updating` was essentially always `true` from the just
+-started `remove()` by the time execution reached it.
+
+This is a textbook livelock: not a crash, not an infinite synchronous loop the browser would flag as
+unresponsive (each iteration yields via a real async MSE event), but a self-sustaining cycle that
+consumes CPU indefinitely and makes zero real progress — the worst kind to catch from a static code
+read, since every individual guard condition involved (`!sourceBuffer.updating`,
+`span > threshold`) was **individually correct**; the bug only existed in how they combined once the
+call order changed.
+
+**Fix, two layers**:
+1. `CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS` (5) — the trigger condition is now
+   `span > getMaxInstantPlaybackTime() + 5`, not `> getMaxInstantPlaybackTime()` bare. A freshly
+   -trimmed buffer (settling near the bare threshold) is now comfortably *under* the new, higher
+   trigger point, so it goes quiet until genuinely new data re-accumulates a real ~5s of headroom —
+   breaking the self-retriggering cycle at the source. Worst-case buffered span grows from exactly
+   30s to about 35s — not a meaningful regression for the feature's own purpose (capping unbounded
+   MSE memory growth).
+2. `lastCheckBufferSizeTrimAt` / `MIN_CHECK_BUFFER_SIZE_TRIM_INTERVAL_MS` (1000ms) — a hard floor on
+   how often an actual `remove()` can fire, added as defense-in-depth *independent* of the hysteresis
+   math being exactly right. Mirrors the existing `lastLiveCatchUpJumpAt`/
+   `MIN_LIVE_CATCHUP_JUMP_INTERVAL_MS` debounce pattern this same investigation already used for the
+   analogous Live-branch catch-up-jump livelock risk (the "seek domino" entry above) — same shape of
+   bug, same shape of fix, in a sibling subsystem of the exact same class.
+
+**Verified**: `npx tsc -b --force` clean; `npx vitest run` (excluding the real-device-only test)
+144/144 passing; both the player package and `wisenet-camera-discovery`'s own extension bundle
+rebuilt and reconfirmed (`grep` for `CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS`/
+`lastCheckBufferSizeTrimAt` in the extension's vendored `external-lib/` copy) to actually contain
+this fix.
+
+**Not yet verified against a real device** that this actually restores forward playback progress —
+only that the specific retriggering mechanism the pasted log showed is now structurally broken.
+
+**How to apply**: whenever a fix changes the *order* two operations run in relative to each other
+(not their individual logic), explicitly ask "if operation A now reliably gets to run every time
+instead of only when B happens to leave a gap, does A's own trigger condition have any built-in
+reason to eventually stop being true, or could satisfying it once make it immediately true again?" —
+a threshold check with no hysteresis is fine as an occasional, rarely-true gate (starved by a busier
+sibling operation, as it was before), but becomes a livelock the instant it's guaranteed a turn on
+every single cycle. This also reinforces the value of the temporary per-second diagnostic trace
+requested two entries above: it wasn't the tool that answered the original memory question directly,
+but reading its *own* enabling process led straight back to an *existing* trace log that had been
+running the whole time, and that log's shape (one counter frozen, another exploding) was the
+smoking gun neither static reading nor the size-based diagnostics alone had produced yet.
+

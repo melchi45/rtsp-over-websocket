@@ -99,6 +99,49 @@ const MJPEG_ENCODER_MAX_QUEUE_SIZE = 2;
 // alternative below target this same fixed rate/channel count.
 const G711_G726_SAMPLE_RATE = 8000;
 const G711_G726_CHANNEL_COUNT = 1;
+// See `onVisibilityChange()`/`videoUpdating()`'s own comments -- a background
+// tab's <video> clock commonly stops advancing entirely while RTP delivery
+// and SourceBuffer appends keep running, so `endTime` can be far ahead of
+// `currentTime` by the time the tab is foregrounded again. `defaultDelay`
+// (0.3-0.7s, CHROME/SAFARI/OTHER_DEFAULT_DELAY_TIME) is tuned for nudging
+// *steady-state* jitter, not for resuming after a real gap -- landing that
+// close to the buffered edge risks the decoder not actually having anything
+// ready to play yet at the jump target, immediately re-stalling. Live's
+// background-recovery catch-up uses this much larger multiple of
+// `defaultDelay` instead, for `VISIBILITY_RESUME_COOLDOWN_MS` after a
+// visibility restore (not just the one triggering call) -- see
+// `visibilityResumeUntil`.
+const VISIBILITY_RESUME_DELAY_MULTIPLIER = 5;
+const VISIBILITY_RESUME_COOLDOWN_MS = 5000;
+// See `videoUpdating()`'s Live-branch catch-up jump and `lastLiveCatchUpJumpAt`'s own field
+// comment -- caps how often that branch is allowed to actually reassign `currentTime`, since
+// `videoUpdating()` runs on every single `sourceBuffer` `'updateend'` (one per MSE append), and a
+// backlog of many segments draining in a burst (e.g. right after a visibility-resume catch-up, or
+// after any period `segmentArray` built up) can fire dozens of those within milliseconds of each
+// other.
+const MIN_LIVE_CATCHUP_JUMP_INTERVAL_MS = 500;
+// See `lastCheckBufferSizeTrimAt`'s own comment -- a hard floor under
+// `CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS`, independent of it.
+const MIN_CHECK_BUFFER_SIZE_TRIM_INTERVAL_MS = 1000;
+// `changeCurrentTime()` only ever reads back a few entries from the *end* of
+// `boxStartTime` (`boxTimeIndex` is at most 2, i.e. `length - 1 - 2`) -- see
+// `pushBoxStartTime()`'s own comment for why the array itself still needs a
+// cap despite that.
+const MAX_BOX_START_TIME_ENTRIES = 10;
+// See `pushSegment()`'s own comment -- a hard ceiling on `segmentArray`'s
+// length. Steady-state depth should be 0-2 (each 'updateend' drains one);
+// this only matters when `appendSegmentToSourceBuffer()`'s own draining
+// falls behind production for an extended period (reported live: Windows
+// "Efficiency Mode"/browser Energy Saver suspending the tab's MSE append
+// pipeline while RTP delivery/segment creation keep running) -- without a
+// cap, that backlog is unbounded, real encoded-frame `Uint8Array` memory,
+// not the small fixed-size arrays elsewhere in this class.
+const MAX_SEGMENT_QUEUE_LENGTH = 500;
+// See `checkBufferSize()`'s own comment -- without this margin, its trim
+// re-triggers on essentially every single 'updateend', livelocking the
+// player once `videoUpdating()` (and therefore `checkBufferSize()`) was
+// moved to run before `appendSegmentToSourceBuffer()` in that handler.
+const CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS = 5;
 
 /** One JPEG frame already handed to `mjpegEncoder.encode()`, awaiting that
  *  frame's own async `EncodedVideoChunk` output -- see
@@ -203,6 +246,43 @@ export class VideoTagPlayer extends VideoPlayer {
 
   private defaultDelay = CHROME_DEFAULT_DELAY_TIME;
   private delay = CHROME_DEFAULT_DELAY_TIME;
+  // `performance.now()`-based deadline set by `onVisibilityChange()`'s Live
+  // branch -- while now < this, `videoUpdating()` (from ANY trigger, not
+  // just the visibility-restore call itself: 'updateend', 'waiting',
+  // 'durationchange' all call it too) uses the larger
+  // `VISIBILITY_RESUME_DELAY_MULTIPLIER` catch-up margin instead of the
+  // steady-state `defaultDelay`. Real problem this fixes, reported live:
+  // after a real background period, the *first* catch-up jump (small
+  // `defaultDelay` margin) could itself land somewhere not yet actually
+  // decodable, immediately re-triggering 'waiting' -> another
+  // `videoUpdating()` call -> the same too-small jump again -- an
+  // indefinite Pause/Play/Pause cycle, not a one-time stall. A single
+  // one-shot larger margin on the triggering call alone doesn't fully fix
+  // this if that first jump still isn't enough; keeping the larger margin
+  // active for a few seconds, across however many retries it actually
+  // takes, does.
+  private visibilityResumeUntil = 0;
+  // `performance.now()` of the last time `videoUpdating()`'s Live-branch catch-up jump actually
+  // reassigned `currentTime` (0 = never yet). Real problem, found live: `videoUpdating()` is
+  // called from every single `sourceBuffer` `'updateend'` event -- one per MSE append -- and
+  // during a burst where many segments append back-to-back (a backlog draining, e.g. right after
+  // a visibility-resume catch-up, or after any period appends fell behind real time), each of
+  // those calls saw `endTime` a little further along than the last and re-jumped `currentTime`
+  // to chase it, every single time, often only milliseconds apart -- reported live as a "domino"
+  // of dozens of `Seek`/`kPipelineStateChange` pairs within the same handful of milliseconds
+  // (chrome://media-internals), each barely past the previous, with playback never actually
+  // settling long enough to render a frame before being yanked forward again. See
+  // `MIN_LIVE_CATCHUP_JUMP_INTERVAL_MS`.
+  private lastLiveCatchUpJumpAt = 0;
+  // Defense-in-depth alongside `CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS` -- see
+  // `checkBufferSize()`'s own comment for the livelock that constant alone
+  // fixes (an unbounded `remove()`-retriggering loop, confirmed live via
+  // `updateend`'s trace counter climbing by tens of thousands while real
+  // playback made zero progress). A hard minimum interval between actual
+  // trims, independent of the hysteresis math being exactly right, so a
+  // similar bug in the future degrades to "trims slightly less often than
+  // ideal" instead of "burns 100% of a thread forever." `0` = never yet.
+  private lastCheckBufferSizeTrimAt = 0;
   // NOTE: legacy's own `isCanPlay` is write-only too (set in onCanPlay/
   // onSeeking, grep-confirmed never read anywhere in videoTagPlayer
   // itself — a pre-existing legacy quirk, not something this port
@@ -287,6 +367,8 @@ export class VideoTagPlayer extends VideoPlayer {
   private mjpegNextTimestampUs = 0;
   private mjpegFramesSinceKeyFrame = 0;
 
+  // See `pushSegment()`'s own comment -- regular (non-init) segments go
+  // through it instead of `.push()` directly, capping this array's growth.
   private segmentArray: Uint8Array[] = [];
   private sequenseNum = 1;
   private videoSamples: VideoSample[] = [];
@@ -507,7 +589,6 @@ export class VideoTagPlayer extends VideoPlayer {
           sourceBuffer.remove(0, endTime);
           this.clearBufferFlag = false;
         }
-        this.appendSegmentToSourceBuffer();
         // Real bug, found live in Playback mode -- confirmed via a direct
         // trace that `durationchange` (this class's only other trigger for
         // videoUpdating(), via onDurationChange()) stops firing entirely
@@ -533,7 +614,34 @@ export class VideoTagPlayer extends VideoPlayer {
         this.traceUpdateEndCount++;
         // eslint-disable-next-line no-console
         this.debugLog.debug(`[trace] updateend #${this.traceUpdateEndCount} (playbackFlag=${this.playbackFlag}, durationchangeCount=${this.traceDurationChangeCount})`);
+        // Real bug, found live investigating a real long-session memory leak
+        // that got specifically worse right after the browser/OS recovered
+        // from a power-saving state (Windows Efficiency Mode / Chrome Energy
+        // Saver): `videoUpdating()` (and therefore `checkBufferSize()`'s
+        // trim) used to run *after* `appendSegmentToSourceBuffer()` below.
+        // `appendBuffer()` sets `sourceBuffer.updating` back to `true`
+        // synchronously the instant it's called (MSE spec) if there's
+        // another queued segment to send -- so whenever `segmentArray` had
+        // a backlog (the common case right after a suspended append
+        // pipeline resumes and drains a burst of queued segments -- see
+        // `pushSegment()`'s own comment), `checkBufferSize()`'s `!
+        // sourceBuffer.updating` guard would see `true` on *every single*
+        // 'updateend' during that entire burst, since the next append had
+        // already been kicked off a moment earlier in this same handler --
+        // silently skipping the 30-second trim for the whole burst, not just
+        // occasionally. Trimming only ever resumed once the backlog fully
+        // drained and appends returned to their normal one-per-real-time-
+        // interval cadence, by which point the buffer had already grown by
+        // however much the burst itself added. Fixed by running
+        // `videoUpdating()` first: `'updateend'` fires exactly when the
+        // *previous* operation (an append or, per the same MSE event, a
+        // `remove()`) just finished and `updating` is guaranteed `false` at
+        // that instant, before this handler decides whether to kick off
+        // another one -- so the trim check now actually gets to run once per
+        // real completed operation, burst or not, instead of being starved
+        // by the very backlog it exists to bound.
         this.videoUpdating();
+        this.appendSegmentToSourceBuffer();
         break;
       }
       default:
@@ -763,12 +871,32 @@ export class VideoTagPlayer extends VideoPlayer {
     const player = this;
     return function onCueChange(this: TextTrack): void {
       const cues = this.cues;
+      // Real bug, found live investigating a real long-session memory leak
+      // (>1GB during Live playback): this loop's whole purpose is a safety-
+      // net cap on cue count -- onCueExit() is the *normal* removal path,
+      // but a currentTime seek (videoUpdating()'s Live/Playback catch-up
+      // jumps, changeCurrentTime(), etc.) can skip straight over a cue's
+      // [startTime, endTime) range entirely, so the browser's own "time
+      // marches on" algorithm never fires onexit for it -- it's simply
+      // orphaned in the TextTrack forever. This cap existed to catch exactly
+      // that, but the condition was inverted: `cues.length < i` can never be
+      // true inside a loop that only runs `for (i = 0; i < MAX_CUE_COUNT;
+      // i++)` after already checking `cues.length > MAX_CUE_COUNT` above (a
+      // length strictly greater than MAX_CUE_COUNT is never less than any i
+      // strictly less than MAX_CUE_COUNT) -- so `removeCue()` here was dead
+      // code, and every seek-orphaned cue accumulated for the rest of the
+      // session with nothing ever trimming them. Cues are appended in
+      // chronological order (createVideoSample()/createSegment() always add
+      // the next sample's cue after the previous one's -- see
+      // checkTimestampCueAtCurrentTime()'s own comment), so `cues[0]` is
+      // always the oldest remaining one; removing it repeatedly (same
+      // pattern as removeAllCues()) trims the list back down to
+      // MAX_CUE_COUNT regardless of how it got oversized.
       if (cues !== null && cues.length > MAX_CUE_COUNT) {
-        for (let i = 0; i < MAX_CUE_COUNT; i++) {
+        const removeCount = cues.length - MAX_CUE_COUNT;
+        for (let i = 0; i < removeCount; i++) {
           try {
-            if (cues.length < i) {
-              this.removeCue(cues[i] as VTTCue);
-            }
+            this.removeCue(cues[0] as VTTCue);
           } catch (error) {
             throw new RTSPOverWebSocketError({
               channelId: player.channelId,
@@ -1006,7 +1134,47 @@ export class VideoTagPlayer extends VideoPlayer {
     }
   }
 
+  /** Temporary diagnostic, added 2026-09-08 investigating a real long-session
+   *  memory leak (>1GB Live) that persists after the `segmentArray`/
+   *  `checkBufferSize()` ordering fixes above -- reported live as a plain
+   *  single-camera Live session reaching ~800MB within under 2 minutes, with
+   *  no Efficiency-Mode/Instant-Playback/multi-camera involvement, so none
+   *  of those four fixes' own mechanisms explain it. This class's own
+   *  arrays are now all capped (`segmentArray`/`videoSamples`/`audioSamples`/
+   *  `boxStartTime`/`TextTrack` cues); logging their live sizes plus
+   *  `sourceBuffer.buffered`'s actual total span (should stay near
+   *  `getMaxInstantPlaybackTime()`, 30s by default, if `checkBufferSize()`
+   *  is really keeping up) and, where available, the tab's own JS heap
+   *  (`performance.memory.usedJSHeapSize`, Chrome-only/non-standard) is
+   *  meant to answer one question directly: is growth actually JS-heap-side
+   *  (one of these arrays/objects still unbounded somewhere this file
+   *  hasn't found yet) or is it browser/GPU-internal decode/media-pipeline
+   *  memory this class has no visibility into or control over at all (a
+   *  fundamentally different, likely not-fixable-from-here class of
+   *  problem). Gated through the existing `debugLog` mechanism (`debug`
+   *  attribute/property, `video` subsystem, `'VideoTagPlayer'` component --
+   *  see docs/player/01-elements-interface-exceptions.md/08-util.md) rather
+   *  than a raw always-on `console.log`, matching this class's own
+   *  established convention (see the `durationchange`/`updateend` trace
+   *  counters above) -- silent unless explicitly enabled. To be stripped
+   *  once the actual leak source is confirmed. */
+  private logMemoryDiagnostics(): void {
+    const bufferedSpan =
+      this.sourceBuffer !== null && this.sourceBuffer.buffered.length > 0
+        ? this.sourceBuffer.buffered.end(this.sourceBuffer.buffered.length - 1) - this.sourceBuffer.buffered.start(0)
+        : null;
+    const cueCount = (this.videoElement as HTMLVideoElement | undefined)?.textTracks?.[this.timestampTextTrackId]?.cues?.length ?? null;
+    const heap = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
+    this.debugLog.debug(
+      `[trace] memory diagnostics: segmentArray=${this.segmentArray.length}, videoSamples=${this.videoSamples.length}, ` +
+        `audioSamples=${this.audioSamples.length}, boxStartTime=${this.boxStartTime.length}, cueCount=${cueCount}, ` +
+        `bufferedSpanSec=${bufferedSpan?.toFixed(2) ?? 'n/a'}, ` +
+        `usedJSHeapMB=${heap ? (heap.usedJSHeapSize / 1048576).toFixed(1) : 'n/a (non-Chrome or unavailable)'}`
+    );
+  }
+
   private getCurrentVideoFrame(): void {
+    this.logMemoryDiagnostics();
     this.recalcRates();
     const videoElement = this.videoElement as HTMLVideoElement & { webkitDecodedFrameCount?: number; webkitVideoDecodedByteCount?: number; webkitDroppedFrameCount?: number };
     const curTime = videoElement.currentTime;
@@ -1084,6 +1252,26 @@ export class VideoTagPlayer extends VideoPlayer {
     this.dropMean.record(this.droppedFramesPerSec);
   }
 
+  /** Real bug, found live investigating a real long-session memory leak
+   *  (>1GB during Live playback): `boxStartTime` used to be appended to
+   *  directly (`this.boxStartTime.push(...)`) once per segment for the
+   *  entire life of a session, with nothing ever trimming it during active
+   *  playback -- only `close()` ever clears it. `changeCurrentTime()` (this
+   *  array's only reader) never looks back further than `boxTimeIndex`
+   *  entries from the end (at most 2, i.e. `length - 1 - 2`), so every entry
+   *  older than that was pure dead weight, growing without bound for as
+   *  long as a session ran. Kept small numbers rather than large buffers, so
+   *  this alone was very unlikely to be the *dominant* contributor to a
+   *  multi-hundred-MB/1GB figure on its own -- but it's real, unbounded
+   *  growth nonetheless, worth closing alongside the `checkBufferSize()`/
+   *  `makeOnCueChange()` fixes from the same investigation. */
+  private pushBoxStartTime(time: number): void {
+    this.boxStartTime.push(time);
+    if (this.boxStartTime.length > MAX_BOX_START_TIME_ENTRIES) {
+      this.boxStartTime.shift();
+    }
+  }
+
   private changeCurrentTime(): void {
     const videoElement = this.videoElement as HTMLVideoElement;
     if (videoElement.paused) {
@@ -1148,6 +1336,21 @@ export class VideoTagPlayer extends VideoPlayer {
     // call videoPlay() if paused, when latency exceeds this.delay) -- just
     // never had a reason to run right on visibility restore. Reused here
     // instead of duplicating that logic.
+    //
+    // Follow-up real bug, found live: reused as-is, this jump target
+    // (`endTime - defaultDelay`, a 0.3-0.7s margin tuned for nudging
+    // steady-state jitter) could itself land on a spot the decoder didn't
+    // actually have ready yet after a real background gap, immediately
+    // re-firing 'waiting' -> another videoUpdating() call -> the same
+    // too-small jump again -- reported live as playback stuck cycling
+    // Pause/Play/Pause indefinitely after un-minimizing, not just a single
+    // missed catch-up. Arming `visibilityResumeUntil` here makes every
+    // `videoUpdating()` call (this one and any 'waiting'/'updateend'/
+    // 'durationchange'-triggered ones over the next
+    // VISIBILITY_RESUME_COOLDOWN_MS) use a much larger catch-up margin
+    // instead, giving the decoder real runway regardless of how many
+    // retries it actually takes to land somewhere playable.
+    this.visibilityResumeUntil = performance.now() + VISIBILITY_RESUME_COOLDOWN_MS;
     this.videoUpdating();
   }
 
@@ -1967,7 +2170,7 @@ export class VideoTagPlayer extends VideoPlayer {
     const samples = boxSize ? this.videoSamples.splice(0, boxSize) : this.videoSamples.splice(0);
     const boxInfo: Mp4BoxInfo = { id: 1, samples: samples as unknown as Mp4Sample[], baseMediaDecodeTime: this.baseVideoTime, type: 'video' };
     const frameDataBuffer = this.createFrameDataBuffer(samples);
-    this.boxStartTime.push(boxInfo.baseMediaDecodeTime / TIME_SCALE);
+    this.pushBoxStartTime(boxInfo.baseMediaDecodeTime / TIME_SCALE);
     this.lastBoxSize = samples.length;
 
     if (this.playbackFlag) {
@@ -1992,7 +2195,7 @@ export class VideoTagPlayer extends VideoPlayer {
       });
     }
 
-    this.segmentArray.push(mediaSegment(this.sequenseNum, [boxInfo], frameDataBuffer));
+    this.pushSegment(mediaSegment(this.sequenseNum, [boxInfo], frameDataBuffer));
     this.sequenseNum++;
 
     this.appendSegmentToSourceBuffer();
@@ -2017,7 +2220,7 @@ export class VideoTagPlayer extends VideoPlayer {
       });
     }
 
-    this.segmentArray.push(mediaSegment(this.sequenseNum, [boxInfo], frameDataBuffer));
+    this.pushSegment(mediaSegment(this.sequenseNum, [boxInfo], frameDataBuffer));
     this.sequenseNum++;
 
     this.appendSegmentToSourceBuffer();
@@ -2105,7 +2308,7 @@ export class VideoTagPlayer extends VideoPlayer {
     };
     const videoFrameDataBuffer = this.createFrameDataBuffer(videoSamples);
     const audioFrameDataBuffer = this.createFrameDataBuffer(audioSamples);
-    this.boxStartTime.push(videoBoxInfo.baseMediaDecodeTime / TIME_SCALE);
+    this.pushBoxStartTime(videoBoxInfo.baseMediaDecodeTime / TIME_SCALE);
     this.lastBoxSize = videoSamples.length;
 
     if (this.playbackFlag) {
@@ -2135,7 +2338,7 @@ export class VideoTagPlayer extends VideoPlayer {
       });
     }
 
-    this.segmentArray.push(dualTrackMediaSegment(this.sequenseNum, [videoBoxInfo, audioBoxInfo], [videoFrameDataBuffer, audioFrameDataBuffer]));
+    this.pushSegment(dualTrackMediaSegment(this.sequenseNum, [videoBoxInfo, audioBoxInfo], [videoFrameDataBuffer, audioFrameDataBuffer]));
     this.sequenseNum++;
 
     this.appendSegmentToSourceBuffer();
@@ -2169,6 +2372,39 @@ export class VideoTagPlayer extends VideoPlayer {
     } catch {
       return true;
     }
+  }
+
+  /** Real bug, found live investigating a real long-session memory leak
+   *  (>1GB during Live playback, reported as noticeably worse right after
+   *  the browser/OS entered and then recovered from a power-saving state --
+   *  Windows "Efficiency Mode" / Chrome's own Energy Saver): unlike
+   *  `createVideoSample()`'s/`createSegment()`'s own sample queues (which
+   *  this class already caps indirectly via `boxsize`), `segmentArray` --
+   *  already-muxed `moof`+`mdat` byte buffers awaiting an actual
+   *  `appendBuffer()` call -- had no size limit at all. In steady state
+   *  `appendSegmentToSourceBuffer()` drains one entry per `'updateend'`
+   *  about as fast as they're produced, so this rarely matters -- but if the
+   *  browser suspends this tab's MSE append pipeline for an extended period
+   *  while RTP delivery and segment creation keep running regardless (the
+   *  same underlying mechanism `onVisibilityChange()`'s own fixes above
+   *  document for `currentTime`, just applied to the append side instead),
+   *  nothing ever bounded how large this backlog could grow -- real encoded
+   *  frame data, not the small fixed-size arrays this investigation's other
+   *  fixes capped. New non-init segment push sites all go through this
+   *  instead of `.push()` directly: once `segmentArray` reaches
+   *  `MAX_SEGMENT_QUEUE_LENGTH`, a new segment is dropped rather than
+   *  queued -- lossy under a genuine sustained stall, same trade-off
+   *  `MJPEG_ENCODER_MAX_QUEUE_SIZE`'s backpressure already makes elsewhere
+   *  in this class, and strictly better than unbounded growth. Deliberately
+   *  drops the *incoming* segment (never touches index 0) rather than
+   *  `shift()`-ing an old one out to make room, since `createInitSegment()`'s
+   *  own `unshift()` can leave the not-yet-appended init segment sitting at
+   *  index 0 -- dropping from the front here could discard it instead. */
+  private pushSegment(segment: Uint8Array): void {
+    if (this.segmentArray.length >= MAX_SEGMENT_QUEUE_LENGTH) {
+      return;
+    }
+    this.segmentArray.push(segment);
   }
 
   private appendSegmentToSourceBuffer(): void {
@@ -2359,22 +2595,74 @@ export class VideoTagPlayer extends VideoPlayer {
   private checkBufferSize(): void {
     try {
       const sourceBuffer = this.sourceBuffer as SourceBuffer;
-      const startTime = sourceBuffer.buffered.start(sourceBuffer.buffered.length - 1) * 1;
+      // Real bug, found live investigating a real long-session memory leak
+      // (>1GB during Live playback): this used to measure `endTime -
+      // startTime` from the *last* buffered range only
+      // (`buffered.start/end(buffered.length - 1)`), not the total buffered
+      // span. `SourceBuffer.buffered` can legitimately report more than one
+      // range (a PTS discontinuity between segments -- e.g. audio/video
+      // segments that don't align exactly, or a gap from a dropped/late RTP
+      // packet -- makes MSE start a new range instead of extending the
+      // existing one), and this class's own `videoUpdating()`/
+      // `changeCurrentTime()` currentTime-jump logic is a further, confirmed
+      // source of exactly this kind of fragmentation. Once fragmented, the
+      // *last* range's own width can stay well under
+      // `getMaxInstantPlaybackTime()` (a fresh, small range) even while
+      // everything buffered in the *earlier* ranges keeps growing
+      // completely untrimmed -- this trimming gate could see a "small"
+      // buffer indefinitely and never fire at all, no matter how much total
+      // data had actually accumulated. `sourceBuffer.remove(0, removeEnd)`
+      // below already correctly removes across every range that intersects
+      // `[0, removeEnd)` regardless of fragmentation -- the bug was purely in
+      // this gating measurement, not in the removal itself. Now measures the
+      // true earliest-to-latest span (`buffered.start(0)` to the last
+      // range's own `end()`), so growth across any number of fragmented
+      // ranges is caught.
+      const bufferedStart = sourceBuffer.buffered.start(0) * 1;
       const endTime = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1) * 1;
 
-      if (Math.abs(endTime - startTime) > this.getMaxInstantPlaybackTime()) {
-        if (!sourceBuffer.updating) {
+      // Real bug, found live via the [trace] log itself right after the
+      // videoUpdating()-before-appendSegmentToSourceBuffer() reorder above:
+      // `remove(0, removeEnd)` always trims down to exactly `currentTime -
+      // getMaxInstantPlaybackTime()`, landing the buffered span just barely
+      // *above* the bare `getMaxInstantPlaybackTime()` threshold (observed
+      // live: a span that settled at a constant ~30.3-30.4s, never below
+      // 30s) -- so with no margin, this outer condition stayed true on
+      // essentially every single subsequent call, even though the previous
+      // remove() had nothing meaningful left to remove. Combined with
+      // `checkBufferSize()` now running *before*
+      // `appendSegmentToSourceBuffer()` in the 'updateend' handler (the fix
+      // above), this created a genuine livelock: `updateend` fires (from
+      // the last remove() completing) -> this condition is still true ->
+      // another near-no-op `remove()` starts -> its own completion fires
+      // another `updateend` -> repeat, indefinitely, as fast as the browser
+      // can cycle -- confirmed live via the same [trace] output, whose
+      // `updateend` counter climbed by tens of thousands while
+      // `durationchangeCount` (real new data extending the timeline) never
+      // moved at all: real appends were being completely starved, not just
+      // occasionally delayed. `CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS` (5)
+      // requires a real ~5s overage before trimming at all, so a
+      // just-trimmed buffer (settling near `getMaxInstantPlaybackTime()`,
+      // comfortably under `+5`) stays quiet until genuinely new data
+      // accumulates again -- breaking the self-retriggering loop while
+      // still keeping the buffer bounded (a slightly larger ~35s worst-case
+      // ceiling instead of exactly 30s, not a meaningful regression).
+      if (Math.abs(endTime - bufferedStart) > this.getMaxInstantPlaybackTime() + CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS) {
+        const now = performance.now();
+        if (!sourceBuffer.updating && now - this.lastCheckBufferSizeTrimAt >= MIN_CHECK_BUFFER_SIZE_TRIM_INTERVAL_MS) {
           if (this.boxsize !== 1) {
             const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime());
             // eslint-disable-next-line no-console
-            this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - startTime).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
+            this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - bufferedStart).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
             sourceBuffer.remove(0, removeEnd);
+            this.lastCheckBufferSizeTrimAt = now;
           } else {
             const removeEnd = Math.abs(Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime()) - 60;
             if (removeEnd > 0) {
               // eslint-disable-next-line no-console
-              this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - startTime).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
+              this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - bufferedStart).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
               sourceBuffer.remove(0, removeEnd);
+              this.lastCheckBufferSizeTrimAt = now;
             }
           }
         }
@@ -2433,15 +2721,32 @@ export class VideoTagPlayer extends VideoPlayer {
 
         let tempCurrentTime: number;
 
+        // See `visibilityResumeUntil`'s own field comment -- for a few
+        // seconds after a Live visibility restore, every catch-up jump
+        // (however many retries it takes) uses a much larger margin than
+        // steady-state jitter correction needs, so it actually lands
+        // somewhere the decoder has real runway to play from instead of
+        // immediately re-stalling and re-triggering this same branch.
+        const catchUpDelay = performance.now() < this.visibilityResumeUntil ? this.defaultDelay * VISIBILITY_RESUME_DELAY_MULTIPLIER : this.defaultDelay;
+
         const latency = videoElement.currentTime === 0 ? endTime - startTime : endTime - videoElement.currentTime;
         if (latency > this.delay) {
-          tempCurrentTime = endTime - this.defaultDelay;
-          if (tempCurrentTime > startTime && tempCurrentTime < endTime) {
-            if (!(info.browser === 'Safari' && parseInt(info.browserVersion, 10) >= 14)) {
-              videoElement.currentTime = tempCurrentTime;
-            }
-            if (videoElement.paused) {
-              this.videoPlay();
+          // See `lastLiveCatchUpJumpAt`'s own field comment -- without this,
+          // a burst of back-to-back 'updateend' calls (a draining backlog)
+          // each re-jumps currentTime the instant endTime grows even a
+          // little, never letting playback actually settle anywhere long
+          // enough to render.
+          const now = performance.now();
+          if (now - this.lastLiveCatchUpJumpAt >= MIN_LIVE_CATCHUP_JUMP_INTERVAL_MS) {
+            tempCurrentTime = endTime - catchUpDelay;
+            if (tempCurrentTime > startTime && tempCurrentTime < endTime) {
+              if (!(info.browser === 'Safari' && parseInt(info.browserVersion, 10) >= 14)) {
+                videoElement.currentTime = tempCurrentTime;
+              }
+              if (videoElement.paused) {
+                this.videoPlay();
+              }
+              this.lastLiveCatchUpJumpAt = now;
             }
           }
           if (this.deviceType === 'nvr' && this.bufferedFrameCount < MAX_BUFFER_FRAME_COUNT) {
