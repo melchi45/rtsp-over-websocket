@@ -387,11 +387,13 @@ npm run build:player:dev   # same, but unminified (--mode development) — for r
 npm run build:server       # tsc -> dist/server/*.js
 ```
 
-Both `build:player` and `build:player:dev` emit `.js.map` sourcemaps next to every chunk (including the
-auto-detected Worker chunks), so the browser DevTools Sources panel shows the original `.ts` files instead of the
-bundled `.js` — set breakpoints and step through TypeScript directly. `build:player`'s output is still minified
-(a sourcemap is enough for DevTools to map it back); `build:player:dev` additionally skips minification, for
-cases where inspecting the generated JS itself (not just the mapped-back `.ts`) needs to be readable.
+`build:player:dev` emits `.js.map` sourcemaps next to every chunk (including the auto-detected Worker chunks), so
+the browser DevTools Sources panel shows the original `.ts` files instead of the bundled `.js` — set breakpoints
+and step through TypeScript directly — and additionally skips minification, for cases where inspecting the
+generated JS itself (not just the mapped-back `.ts`) needs to be readable. Plain `build:player` (the normal
+production build every real consumer, including npm-installing/`file:`-linking apps, actually runs) emits neither
+— minified, no sourcemap — so a consumer's own DevTools doesn't show this package's internal `.ts` sources unless
+that consumer deliberately built against `build:player:dev` output instead.
 
 ## Running the demo server
 

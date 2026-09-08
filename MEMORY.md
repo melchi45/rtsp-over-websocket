@@ -5447,3 +5447,44 @@ but reading its *own* enabling process led straight back to an *existing* trace 
 running the whole time, and that log's shape (one counter frozen, another exploding) was the
 smoking gun neither static reading nor the size-based diagnostics alone had produced yet.
 
+## Sourcemaps are no longer unconditional on `build:player` — dev-mode-only now, requested directly by the user
+
+Direct follow-up to the same live-debugging session: the user noticed Chrome DevTools' Sources panel
+was showing this package's original `.ts` files (not just the bundled `.js`) inside a *consumer*
+app (`wisenet-camera-discovery`), and asked whether that meant a debug build had somehow leaked into
+production, since they'd definitely run `npm run build:player` (not the `:dev` variant) and
+`wisenet-camera-discovery`'s own `npm run build` afterward.
+
+It hadn't — `src/player/vite.config.ts` (and the two sibling react configs) set `sourcemap: true`
+**unconditionally**, regardless of `mode`; only `minify` was gated on `mode === 'development'`. So a
+plain `build:player` always produced a real minified, production bundle (confirmed live: `class lr
+extends Error { constructor(e,i={}){...` — genuinely mangled) *with* a `.js.map` sitting right next
+to it and a `//# sourceMappingURL=...` comment pointing at it — which is exactly what lets DevTools'
+Sources panel resolve and display the original `.ts` for any consumer with DevTools open, intentional
+debugging session or not. This was a deliberate original design choice (see the removed comment: "so
+`build:player` alone is normally enough for browser debugging"), but the user found it surprising
+enough in practice — showing this package's internal source to every consumer by default — that they
+asked for it to be opt-in instead.
+
+**Fix**: all three `src/player/vite*.config.ts` files now set `sourcemap: mode === 'development'`,
+matching `minify`'s existing mode-gating exactly (opposite booleans: dev mode is unminified +
+source-mapped, production mode is minified + no sourcemap). `npm run build:player:dev` still emits
+`.js.map` files (verified: `dist/player/rtsp-over-websocket.esm.js.map` present after that command)
+for exactly the debugging use case the removed comment described — it's just no longer the default
+`build:player` behavior too.
+
+**Verified**: `npx vitest run` (excluding the real-device-only test) 144/144 passing (a build-config
+change, but re-run for safety); `npm run build:player` (plain) now produces zero `.map` files and no
+`sourceMappingURL` comment in any output `.js`; `npm run build:player:dev` still produces all four
+(`rtsp-over-websocket.esm.js.map`, `.global.js.map`, `rtsp-over-websocket-react.esm.js.map`,
+`dist/react/index.js.map`); `wisenet-camera-discovery` rebuilt and its vendored
+`external-lib/rtsp-over-websocket/` copy reconfirmed to no longer include a `.map` file or
+`sourceMappingURL` comment either.
+
+**How to apply**: "sourcemaps always on, matching `minify`'s own mode gate but inverted" is the shape
+to reach for by default in this kind of dual-purpose (published-library-and-locally-debugged) Vite
+config — the original unconditional choice wasn't wrong on its own terms (it deliberately traded
+"every consumer's DevTools can see this package's source" for "no separate dev build step needed to
+debug into it"), just not the trade-off the user wanted once they noticed the actual consequence in a
+real consumer's DevTools.
+

@@ -35,8 +35,9 @@ export default defineConfig(({ mode }) => ({
     // wrote rtsp-over-websocket.{esm,global}.js and the worker chunks into
     // this same outDir — clearing it here would erase them.
     emptyOutDir: false,
-    // See vite.config.ts's sourcemap comment.
-    sourcemap: true,
+    // See vite.config.ts's sourcemap comment -- dev-mode-only, not
+    // unconditional.
+    sourcemap: mode === 'development',
     minify: mode !== 'development',
     lib: {
       entry: resolve(__dirname, 'react/index.ts'),

@@ -13,13 +13,18 @@ import { defineConfig } from 'vite';
 // 'iife'/'umd' (single-entry-only formats), and this config's `iife` output
 // is load-bearing for the legacy-<script> consumers above.
 // `npm run build:player:dev` runs this (and the two configs below) with
-// `--mode development`, which only flips `minify` off — sourcemaps are
-// always on (see the `sourcemap: true` below) regardless of mode. Minified
-// output still maps back to the original .ts through the sourcemap, so
-// `build:player` alone is normally enough for browser debugging; the dev
-// mode exists for cases where stepping through readable (non-minified)
-// output is preferable, e.g. inspecting the Worker chunks' generated code
-// directly.
+// `--mode development`, which flips both `minify` off and `sourcemap` on
+// (see `sourcemap: mode === 'development'` below) -- requested directly by
+// the user: a plain `npm run build:player` (what every real consumer's own
+// build actually runs, including wisenet-camera-discovery's `file:`-linked
+// local checkout) used to always emit a `.js.map` regardless of mode, which
+// made Chrome DevTools' Sources panel resolve and display this package's
+// original .ts sources for *any* consumer with DevTools open, not just
+// during an intentional debugging session -- surprising when the consumer
+// hadn't opted into that and didn't expect to see this package's internals.
+// Sourcemaps (and therefore original-.ts stepping) are now opt-in via
+// `build:player:dev` specifically, not a side effect of every production
+// build.
 export default defineConfig(({ mode }) => ({
   // Both rtsp-over-websocket.global.js and every `new Worker(new URL(...))`
   // chunk it spawns (audiotranscoderWorker, decoderWorker, zipWorker, ...)
@@ -51,9 +56,12 @@ export default defineConfig(({ mode }) => ({
     outDir: resolve(__dirname, '../../dist/player'),
     emptyOutDir: true,
     // Emits .js.map alongside every chunk (including the auto-detected
-    // Worker chunks below) so browser devtools can step through the
-    // original .ts sources instead of the bundled/minified .js output.
-    sourcemap: true,
+    // Worker chunks below) only for `build:player:dev`, so browser devtools
+    // can step through the original .ts sources instead of the bundled/
+    // minified .js output during an intentional debugging session -- see
+    // this file's own top-of-file comment for why a plain `build:player`
+    // (production) no longer does this unconditionally.
+    sourcemap: mode === 'development',
     minify: mode !== 'development',
     lib: {
       entry: resolve(__dirname, 'index.ts'),

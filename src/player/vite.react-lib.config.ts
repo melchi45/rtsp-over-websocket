@@ -17,8 +17,9 @@ export default defineConfig(({ mode }) => ({
   build: {
     outDir: resolve(__dirname, '../../dist/react'),
     emptyOutDir: true,
-    // See vite.config.ts's sourcemap comment.
-    sourcemap: true,
+    // See vite.config.ts's sourcemap comment -- dev-mode-only, not
+    // unconditional.
+    sourcemap: mode === 'development',
     minify: mode !== 'development',
     lib: {
       entry: resolve(__dirname, 'react/index.ts'),

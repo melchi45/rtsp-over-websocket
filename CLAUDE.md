@@ -23,12 +23,15 @@ npm run test:player            # vitest run
 `src/index.html` is the source of the demo page; never edit `dist/index.html` directly — it's overwritten by
 `npm run build:demo` (part of `build:player`).
 
-Both `build:player` variants emit `.js.map` sourcemaps for every chunk (see the three `src/player/vite*.config.ts`
-files' `sourcemap: true`), so the browser debugger can step through the original `.ts` sources instead of the
-bundled JS — no separate config needed on the consumer side. `build:player:dev` additionally disables
-minification via Vite's `mode` (`minify: mode !== 'development'` in each config); `build:player`'s output stays
-minified since the sourcemap alone is enough for DevTools to map it back to `.ts`. See `MEMORY.md`'s "Player
-build shipped with no sourcemaps" entry for why this wasn't already the case.
+Only `build:player:dev` emits `.js.map` sourcemaps (see the three `src/player/vite*.config.ts` files'
+`sourcemap: mode === 'development'`), so the browser debugger can step through the original `.ts` sources instead
+of the bundled JS during an intentional debugging session. Plain `build:player` (what every real consumer's own
+build actually runs) emits neither a sourcemap nor unminified output — requested directly by the user after
+noticing a consumer's (`wisenet-camera-discovery`'s) DevTools Sources panel was showing this package's `.ts`
+internals by default, which they didn't want as a side effect of an ordinary production build. `build:player:dev`
+also disables minification via Vite's `mode` (`minify: mode !== 'development'` in each config, unchanged). See
+`MEMORY.md`'s "Sourcemaps are no longer unconditional on `build:player`" entry (and the earlier "Player build
+shipped with no sourcemaps" entry it follows up on) for the full history.
 
 ## Environment gotchas (read before debugging a "broken" build)
 
