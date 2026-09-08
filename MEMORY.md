@@ -5955,3 +5955,214 @@ purely because each fix prompted a "does this pattern exist anywhere else" sweep
 after the first report of each class would have meant discovering the rest of them one user-reported
 error at a time instead, exactly as happened before the sweep habit kicked in on this round.
 
+## The real 400MB-before-play() leak: an unconditional 160MB asm.js heap allocation on every mounted tag
+
+The user reported memory already at ~400MB with a `<rtsp-over-websocket>` tag merely attached to
+the page — `play()` never called, no RTSP connection ever made. Every leak fixed earlier the same
+day (checkBufferSize, minimapUpdateTimer, AudioPlayerAAC, etc.) requires an active or previously-
+active session to trigger at all, so none of them could explain memory this high with zero session
+ever started. Traced `connectedCallback()` (`RTSPOverWebSocket.ts`) top to bottom for anything that
+runs unconditionally, regardless of attributes or later `play()` calls.
+
+Found it immediately: `connectedCallback()`'s very first statement called
+`loadFfmpegAACDecoder().catch(...)` — a module-level helper that injects a `<script>` tag loading
+`vendor/ffmpegAAC.decoder.js`, a classic-script asm.js build. Checked the actual vendored file:
+`TOTAL_MEMORY = Module["TOTAL_MEMORY"] || 167772160` — **160MiB**, allocated as a single fixed
+`ArrayBuffer` the instant the script executes and `Module` initializes (asm.js heaps are fixed-size
+at init, unlike WASM's growable linear memory — there is no lazy/on-demand allocation to exploit
+here). This script load was completely unconditional in `connectedCallback()`: it ran for *every*
+mounted tag, before any attribute was even read, regardless of whether `play()` would ever be
+called, whether the session would end up in canvas-tag mode (the *only* mode that ever constructs
+`AACAudioDecoder`, the sole consumer of this vendor build — `VideoTagPlayer`/MSE sessions never
+touch it, decoding AAC natively via the browser's own `SourceBuffer`), or whether the stream would
+carry AAC audio at all. This single allocation alone accounts for the large majority of the
+reported 400MB baseline.
+
+The eager loading itself was not the mistake — the code comment explains a real constraint:
+`AACAudioDecoder`'s constructor calls `Module.cwrap(...)` synchronously (asm.js has no async
+compile step to await, unlike the WASM vendor builds elsewhere in this codebase), so the script
+must already be loaded by the time that constructor runs, not started lazily inside it. The mistake
+was *how early* "eager" was: `connectedCallback()` fires the moment the tag is parsed/attached,
+which happens on page load for every camera tile in something like a multi-camera dashboard grid —
+long before, or entirely independent of, any actual intent to play any of them.
+
+Considered and rejected two alternative fixes before landing on the one that shipped:
+- **Gate on `tagMode === 'canvas'`**: not feasible — `tagMode` isn't decided until
+  `MediaRouter.selectVideoPlayer()`, which needs a real first video frame's codec/size/framerate,
+  i.e. well after a session has already started and is already mid-negotiation. There is no earlier
+  point in the per-session pipeline that reliably knows canvas mode is coming. `MediaRouter.ts`'s
+  `tagMode` field is private, defaults to `'canvas'`, and gets finalized inside a large decision
+  tree in `selectVideoPlayer()` — not a simple attribute a host page sets upfront.
+- **Move the trigger to `MediaRouter.createAudioPlayer()`** (constructs `AudioPlayerGxx`, the only
+  class that ever builds `AACAudioDecoder`): traced its call sites and found the one that matters —
+  `handleAudioData()` calls `createAudioPlayer()` and then `audioPlayer.audioInit(...)` (which
+  constructs `AACAudioDecoder` for AAC) in the *same synchronous block*, on the very first audio RTP
+  frame. Moving the load trigger here would give it zero lead time — no better than putting it
+  inside `audioInit()` itself, the exact thing the original design was built to avoid.
+- **Fix that shipped**: moved the call to the top of `RTSPOverWebSocket.play()` instead of
+  `connectedCallback()`. Still fires before any codec/tagMode is known (same as before — this
+  fix doesn't add codec/mode-awareness, which isn't achievable this early per the point above), but
+  now tied to an actual attempt to start a session rather than to the tag merely existing in the
+  DOM. Real RTSP `SETUP`/`PLAY` negotiation and initial buffering between `play()` and the first
+  actual audio frame preserve the same lead-time safety margin the original `connectedCallback()`
+  placement had, without paying the 160MB cost for tags that never call `play()` at all.
+
+**Verified**: `tsc -b` clean, `npx vitest run` (excluding the real-device-only test) 144/144
+passing. **Not yet live-verified** that the reported ~400MB baseline actually drops for a mounted-
+but-not-playing tag — the fix is a straightforward call-site relocation with no new conditional
+logic, but real-device confirmation of the memory number itself is still outstanding.
+
+**How to apply**: when a reported number can't be a session-lifecycle leak (no session ever ran),
+stop looking at teardown/session code entirely and re-read whatever runs unconditionally at the
+*earliest* lifecycle point available (a custom element's `connectedCallback`, a module's top-level
+side effects, a constructor) — the bug class is completely different from "forgot to clean up after
+use," it's "did the expensive thing before use was ever confirmed." And when relocating an eager
+side effect like this, the question is never just "is there a later trigger point" but "does that
+later point still leave enough lead time before the real synchronous dependency" — the
+`createAudioPlayer()` candidate looked earlier than `audioInit()` by name alone, but tracing the
+actual call site showed they run back-to-back in the same tick, which would have silently
+reintroduced the exact race the eager-load exists to prevent.
+
+## Follow-up: `CanvasTagPlayer`/`tagMode` gating for the AAC decoder pre-load has a real race either way
+
+Direct continuation of the `play()`-time fix above. The user pushed on it twice, each time with a
+better-targeted question than the last: first "just gate on `tagMode === 'canvas'`", then, after
+that was explained as unsafe, "then just trigger it from `CanvasTagPlayer` itself, since that's
+only ever constructed in canvas mode." Both are the same underlying idea and both were traced to
+the same real race before being rejected.
+
+The key fact, found by reading `MediaRouter.handleAudioData()` line by line rather than reasoning
+about it abstractly:
+
+```ts
+if (self.player && self.player.onAudioData) {
+  self.player.onAudioData(playMode, streamData, audioInfo);
+} else if (!self.mute) {
+  if (self.audioPlayer === null || typeof self.audioPlayer === 'undefined') {
+    self.createAudioPlayer();
+  }
+  ...
+  self.audioPlayer.audioInit(...)   // constructs AACAudioDecoder for codecType === 'AAC'
+```
+
+`self.player` starts `null` and only becomes non-null once `MediaRouter.selectVideoPlayer()` runs
+— which itself only runs once `onVideoData()` has a real first video frame's codec/size/framerate
+in hand. Until then, `self.player && self.player.onAudioData` is `false` by simple null
+short-circuit, so **the very first audio frame that arrives, at any point before a video player
+exists at all, falls straight through to `AudioPlayerGxx.audioInit()` and constructs
+`AACAudioDecoder`** — with zero dependency on `CanvasTagPlayer`, or even on `tagMode` having been
+decided, in the picture at all. AAC frames typically arrive every 20-40ms; a video I-frame is
+often larger and slower to fully assemble across multiple RTP packets. There is nothing in this
+architecture guaranteeing video's first frame beats audio's — so any trigger that itself depends
+on a first video frame having already been processed (canvas-mode confirmed via `tagMode`, or
+`CanvasTagPlayer` having been constructed) can lose that race exactly like the original
+`connectedCallback()`-vs-`audioInit()` problem, just moved to a different pair of racing events.
+
+**What actually shipped instead**: a narrow, race-free exception added to the `play()`-time fix —
+skip `loadFfmpegAACDecoder()` only when `this.info.media.mode === 'video'`, an explicit host-
+supplied `type="video"` attribute. This is knowable synchronously in `play()`, before any RTSP
+request goes out, with no dependency on frame arrival order at all: an explicit `type="video"`
+guarantees `VideoTagPlayer.onAudioData` handles all audio for the session (the same
+`handleAudioData()` routing above, taken from the *other* side), so `AACAudioDecoder` can never be
+constructed regardless of what races with what. Auto-detected mode (`type` unset/`"auto"`, or
+explicitly `"canvas"`) still loads eagerly in `play()`, every time, since nothing about it is
+knowable this early without a real risk of losing the audio-vs-video race.
+
+**Practical scope of the fix**: this only helps sessions where the host explicitly forces video
+mode via the `type` attribute. Auto-detected sessions — likely the majority, since `tagMode`
+defaults to `'canvas'` and `MediaRouter.selectVideoPlayer()`'s own H264/H265 heuristic picks
+`'canvas'` below a size threshold — still pay the 160MB cost on every `play()`. The complete fix
+for those remains what the user's OWN follow-up question (in the same conversation) correctly
+identified: replace `AACAudioDecoder`'s asm.js dependency with a native WebCodecs `AudioDecoder`,
+mirroring `OPUSAudioDecoder.ts`'s existing pattern exactly — that removes the eager-load timing
+puzzle categorically (no script to pre-load, no fixed heap, decoder just constructs on demand like
+`OPUSAudioDecoder` already does) rather than trying to time around it. Not yet implemented: needs
+`AudioPlayerGxx.audioInit()`'s call signature (and its callers, up through `MediaRouter`) extended
+to carry AAC's `AudioSpecificConfig`/sample-rate/channel-count from SDP (`AACSession.ts` already
+parses this for the MSE/`VideoTagPlayer` path; the canvas-mode path currently doesn't receive it
+at all), plus a WebCodecs-AAC-support feature check with graceful fallback to the existing asm.js
+decoder for browsers that lack it.
+
+**Verified**: `tsc -b` clean, `npx vitest run` (excluding the real-device-only test) 144/144
+passing. **Not yet live-verified** for either the `type="video"` skip actually taking effect or
+(unchanged) the general `play()`-time relocation's real-device memory impact.
+
+**How to apply**: when a "just gate it on X" suggestion keeps coming back after being told X isn't
+safe, the productive response isn't to re-explain the same conclusion more firmly — it's to ask
+"is there anything ELSE, even narrower, that IS safe," which is exactly what turned two rejected
+ideas into one real (if partial) improvement. Also: two features whose names look related
+(`tagMode`'s canvas/video choice, `self.player`'s existence) can have completely decoupled
+lifecycles in the same class — always trace the actual gating `if` in the real call path
+(`handleAudioData()` here) rather than assuming "X requires Y" from architecture intuition alone.
+
+## Course correction: the AAC asm.js heap was a red herring; the growth is in the MSE SourceBuffer
+
+The user cut off the whole `ffmpegAAC.decoder.js` line of investigation with a distinction I had
+failed to hold onto: **a fixed 160MB allocation that is *held* is not the same as memory that
+*grows***. Their words: "메모리가 초기에 잡히는게 문제가 아니라 재생시 메모리가 지속적으로 증가하는게
+문제" — the reported symptom was always continuous growth *during playback*, and
+`ffmpegAAC.decoder.js` has been loaded the same way since long before the leak appeared. Both
+changes made in that direction (moving `loadFfmpegAACDecoder()` from `connectedCallback()` to
+`play()`, then skipping it for `type="video"`) were reverted; only a note on the helper's own doc
+comment remains, recording that the 160MB is a held footprint and was ruled out on that basis.
+
+They also supplied two decisive data points I had not had before: the growth **started when MJPEG
+began being handled via MSE**, and **H.264 reaches ~1GB after 10 minutes** — which is roughly a
+whole stream's worth of data for that period, i.e. consistent with *nothing ever being trimmed*
+rather than with any per-frame JS object leak.
+
+Two findings came out of re-reading the MSE path with that framing:
+
+1. **Fixed — `mjpegPendingFrames` orphans (MJPEG tier only).** `submitMjpegFrame()` pushes an entry
+   before calling `WebCodecsVideoEncoder.encode()`, and only `onMjpegEncodedChunk()` matching that
+   exact `timestampUs` ever removes it again. But `encode()` has four silent-drop paths (encoder
+   not `configured`; `createImageBitmap()` rejecting a partial/corrupt JPEG — routine under RTP
+   packet loss, and documented in that file as an expected case; encoder state changing during the
+   awaited decode; `encoder.encode()` throwing), none of which notify the caller. Every dropped
+   frame orphans an entry *permanently*, and each entry retains its whole `streamData.frameData` —
+   a complete JPEG, hundreds of KB at real camera resolutions. Nothing but `closeMjpegEncoder()`
+   ever cleared the array. Capped at `MJPEG_MAX_PENDING_FRAMES` (32); legitimate in-flight
+   occupancy is ~2-3 given `MJPEG_ENCODER_MAX_QUEUE_SIZE = 2`. Also worth noting for later: an
+   encoder that hits a fatal error is *never recreated* (`onError` only logs, and `isConfigured`
+   then stays false forever), so the video track simply stops advancing for the rest of the session.
+2. **Fixed — the trim gate measured the wrong thing (applies to H.264 too).**
+   `addSourceBuffer()` always declares *both* a video and an audio codec, so this is one
+   SourceBuffer with two tracks; per the MSE spec `SourceBuffer.buffered` is the **intersection**
+   of its track buffer ranges, not the union. `checkBufferSize()` takes both of its inputs from
+   that intersection. So the trim gate is only ever as good as whichever track is *behind*: any
+   sustained audio-vs-video divergence shrinks the measured span while the ahead track keeps
+   accumulating untrimmed, and a declared-but-never-fed track makes the intersection empty, which
+   `videoUpdating()`'s own `buffered.length > 0` guard turns into "skip `checkBufferSize()`
+   entirely". Divergence is routine here by construction — Live appends video and audio as
+   *separate single-track segments* with independent `baseVideoTime`/`baseAudioTime` accumulators,
+   and this class already carries an explicit resync for divergence past 2s
+   (`Math.abs(baseVideoTime - baseAudioTime) > 20000`, skipped while `dummyAudio` is true).
+   `remove()` itself is fine (MSE removes across all track buffers); only the measurement is blind.
+
+**The fix** (asked for directly rather than gathering the live measurement first): the gate now
+compares `bufferedStart` against `retainedEnd = max(intersection end, baseVideoTime / TIME_SCALE,
+baseAudioTime / TIME_SCALE)` — the furthest point *either* track has actually been muxed up to,
+using accumulators this class already maintains in the same media-timeline domain as `buffered`
+(cf. `pushBoxStartTime()`'s `baseMediaDecodeTime / TIME_SCALE`), each ignored while still at its
+`-1`/0 sentinel. Deliberately scoped to the **gate only**: the removal target still derives from
+`currentTime` and keeps its `removeEnd > 0` guard, so a gate that now fires while the playhead
+hasn't advanced far enough simply skips — the same no-op as before — and nothing ahead of the
+playhead can ever be removed. Both `[trace]` lines now print `intersection=` and `trackAware=`
+spans plus each track's own end, so a recurrence is readable at a glance instead of re-derived.
+
+Two related things deliberately left alone, to keep the blast radius small in a function that has
+already absorbed three regressions in one day: `videoUpdating()`'s `if (buffered.length > 0)` guard
+(which would skip `checkBufferSize()` entirely if the intersection were ever *empty* — but an empty
+intersection also means the element cannot play at all, which is not the reported symptom), and the
+`boxsize === 1` branch's extra `- 60` (retains ~90s instead of ~30s — bounded, so it cannot explain
+a 1GB curve, and it presumably exists for the low-fps/MJPEG tier it was written for).
+
+**How to apply**: "memory is high" and "memory keeps growing" are different bug classes and rule
+out different code. A fixed upfront allocation can never explain a linear-in-time curve, no matter
+how large it is — and chasing it burned most of a day here. Ask for (or derive) the *shape* of the
+curve first: a flat-then-flat step points at allocation sites, a straight line at retention
+proportional to throughput (buffers, queues, caches), and a staircase at per-event retention. Also:
+when a number like "1GB in 10 minutes" is close to the raw stream bitrate over that window, that
+alone is strong evidence that *everything received is being retained*, which is a much narrower
+hypothesis than "something leaks".
+

@@ -9,7 +9,7 @@ rendering pipeline (`CanvasTagPlayer` and friends) split out to
 [11-canvas-tag-player.md](11-canvas-tag-player.md) on 2026-09-08 — see this file's own History and
 that file's Context note for why.*
 
-**Version:** 1.2.18 · **Author:** Youngho Kim
+**Version:** 1.2.20 · **Author:** Youngho Kim
 
 **History**
 
@@ -57,6 +57,8 @@ that file's Context note for why.*
 | 2026-09-08 | Expanded "Timestamp cue → `RTSPOverWebSocket` flow"'s "Up through `MediaRouter` to `RTSPOverWebSocket`" bullet and the dequeue `sequenceDiagram`'s tail, requested directly by the user to match `11-canvas-tag-player.md`'s own "Timestamp callback" section depth (expanded there first, same day). Added: where the cue's `timestamp`/`timestamp_usec` originate before this class ever sees them (`MediaRouter.handleVideoData()`'s RTCP-Sender-Report-anchored NTP sync, Live-mode only — cross-referenced to file 11's full formula rather than duplicated, since it's the identical shared code path, not `VideoTagPlayer`-specific); `MediaRouter.sendTimeStamp()`'s actual code and its previously-undocumented `lastRenderingTime` side channel (read back by step-play's `controlStepPlay()`); and `RTSPOverWebSocket.onRTSPOverWebSocketTimestamp()`'s full 5-step breakdown ending in the dispatched `'timestamp'` event's field-by-field shape. No behavior change — pure documentation depth increase. |
 | 2026-09-08 | Fixed a Mermaid render error in that same expanded dequeue `sequenceDiagram` (introduced by the entry immediately above, same day): `RWS-->>RWS: timestamp.timezone = GMT*60; localTimestamp = curDate + timezone offset -> this._localTimestamp` combined two statements with a `;` — every other self-message in this diagram is one clause per line, and the semicolon-joined line is the one that failed to parse (`Expecting ... arrow token, got '+'`). Fixed by splitting into two separate `RWS-->>RWS:` lines, matching the diagram's own established one-clause-per-line style; also reworded `+` to "plus" in the split line's own text as a precaution, though the semicolon is the more likely actual cause (the adjacent line above it, `curDate = new Date(timestamp*1000 + timestamp_usec) -> this._currentTimestamp`, keeps a bare `+` and an inline `->` and parses fine, both present before this fix and unchanged by it). See `11-canvas-tag-player.md`'s matching fix (identical line, copied into both diagrams the same day) and `MEMORY.md`. |
 | 2026-09-08 | Added a new "Instant playback" section, requested directly by the user (this class had no coverage of the feature at all before now). Traced the full path across five classes: `RTSPOverWebSocket.ts`'s `playType`/`mode` setters and `pause()`/`resume()` (the public entry/exit points), `StreamPlayer.control()`'s `instantplayback` `cmd` routing, `MediaRouter.sendCommandData('instantplayback', ...)`, and this class's own `instantplaybackCmd()` (`init`/`play`/`pause`/`seek`/`terminate`) plus every site gated on `this.instantplayback` (`checkBufferSize()` suspension, `onPause()`/`onWaiting()`/`onSeeking()`/`onCanPlay()`/`getCurrentVideoFrame()`/`resume()`). Documented all eight `0x110`-prefixed status/error codes with their exact trigger and dispatched-detail shape (including two real asymmetries found along the way: `0x1104` is thrown directly rather than delivered via the event callback like the other seven, and `0x1107` isn't in `onRTSPOverWebSocketInstantPlayback()`'s switch so its `currentTime` gets silently dropped at dispatch) and the unrelated same-named `RtspClient.instantplayback` field (a different flag, on a different class, that only suppresses the RTSP alive-watchdog during any Live pause — easy to confuse with this section's field given the identical name). Added a call-stack `sequenceDiagram` covering entry, the pause/status-report cycle, and exit. Updated this file's opening abstract to mention the feature. No behavior change — pure documentation addition. |
+| 2026-09-08 | Fixed an unbounded leak in the MJPEG-encoder tier, and documented a second, larger structural finding about the trim gate. **Fixed**: `mjpegPendingFrames` entries are only ever removed again by `onMjpegEncodedChunk()` matching their exact `timestampUs`, but `WebCodecsVideoEncoder.encode()` has four paths that silently produce no output for a submitted frame (encoder not `configured`; `createImageBitmap()` rejecting a partial/corrupt JPEG, routine under RTP packet loss and documented as expected there; the encoder state changing while that async decode was awaited; `encoder.encode()` itself throwing). Each such frame leaves an entry orphaned permanently, retaining its whole `streamData.frameData` — a complete JPEG frame, hundreds of KB at real camera resolutions — and nothing but `closeMjpegEncoder()` (session teardown) ever cleared the array. Now capped at `MJPEG_MAX_PENDING_FRAMES` (32), far above the ~2-3 entries that can legitimately be in flight given `MJPEG_ENCODER_MAX_QUEUE_SIZE = 2`; a late chunk for a shifted-out entry hits `onMjpegEncodedChunk()`'s existing no-matching-entry branch, which already drops it safely. **Also fixed, and the more likely cause of the H.264 report** (see the "`SourceBuffer` fill/trim lifecycle" section's new bug-4 entry for the full write-up): `checkBufferSize()` gated on `sourceBuffer.buffered`, which for this class's **dual-track** SourceBuffer (`addSourceBuffer()` always declares both a video and an audio codec) is the MSE-spec-defined **intersection** of the audio and video track buffer ranges, not their union — so the trim gate was only ever as good as whichever track is *behind*, and any sustained audio-vs-video divergence silently stopped trimming entirely while both tracks kept accumulating, for the rest of the session. This class already treats such divergence as routine (`videoUpdating()`'s own `Math.abs(this.baseVideoTime - this.baseAudioTime) > 20000` resync, i.e. 2s, active whenever `dummyAudio` is false), and Live mode appends the two tracks as *separate single-track segments* (`createVideoSegment()` / `createAudioSegment()`), so their timelines advance independently by construction. Fixed by gating on `max(intersection end, baseVideoTime / TIME_SCALE, baseAudioTime / TIME_SCALE)` instead; removal target and all existing guards unchanged. |
+| 2026-09-08 | Follow-up, requested directly by the user: the new track-aware trim `[trace]` line (entry above) logs via `this.debugLog.warning(...)` instead of `.debug(...)` — `DEFAULT_LOG_LEVEL` is `'warning'` (`util/debugLog.ts`), so `.debug()`/`.info()` need both the component enabled and an explicit `level` override to print, while `.warning()` only needs the component enabled. Frequency stays low (same hysteresis/min-interval gating as before), so this doesn't reintroduce the volume `DEFAULT_LOG_LEVEL`'s own History was raised to quiet. |
 
 ---
 
@@ -626,6 +628,46 @@ sequenceDiagram
      `currentTime` needed to resume, permanently stalling playback at that position while `endTime`
      kept growing untrimmed for the rest of the session. Fixed to `Math.max(0, ...)` (skip trimming
      instead of sign-flipping) in both branches, with the same `if (removeEnd > 0)` guard on both.
+  4. *The gate measured the **intersection** of the audio and video track buffers, not the union.*
+     **Found and fixed 2026-09-08** — investigating a report of H.264 Live reaching ~1GB after
+     10 minutes, i.e. roughly "nothing was ever trimmed for the whole session". `addSourceBuffer()`
+     always builds a dual-codec MIME string (`video/mp4;codecs="<video>, opus|mp4a.40.2"`), so this
+     is a **single SourceBuffer carrying two tracks** — and per the MSE spec, `SourceBuffer.buffered`
+     returns the *intersection* of all its track buffer ranges (each track's own last range is only
+     extended to the highest end time once `readyState` is `"ended"`, never while `"open"`). Both of
+     `checkBufferSize()`'s inputs come from that intersection: `bufferedStart =
+     buffered.start(0)` and `endTime = buffered.end(buffered.length - 1)`. Consequences: (a) the
+     gate `|endTime - bufferedStart| > getMaxInstantPlaybackTime() + 5` sees only the span the two
+     tracks *share*, so if either track's end lags the other's, the measured span stays small while
+     the ahead track keeps accumulating untrimmed; (b) if a declared track is never fed at all, the
+     intersection is empty, `buffered.length === 0`, and `videoUpdating()`'s own
+     `if (this.sourceBuffer.buffered.length > 0)` guard skips `checkBufferSize()` entirely — no trim
+     ever runs. Divergence is routine here by construction, not exceptional: Live mode appends
+     video and audio as *separate single-track segments* (`createVideoSegment()` /
+     `createAudioSegment()`, each advancing its own independent `baseVideoTime` / `baseAudioTime`
+     accumulator), and `videoUpdating()` already carries an explicit A/V-divergence resync for
+     exactly this (`Math.abs(baseVideoTime - baseAudioTime) > 20000`, i.e. 2 seconds, skipped while
+     `dummyAudio` is true). `remove(0, removeEnd)` itself is unaffected — MSE removes across *all*
+     track buffers in the range — so only the gating measurement was blind. **Fix**: the gate now
+     compares `bufferedStart` against a *track-aware* end, `retainedEnd = max(intersection end,
+     baseVideoTime / TIME_SCALE, baseAudioTime / TIME_SCALE)` — the furthest point either track has
+     actually been muxed up to, using the two accumulators this class already maintains in the same
+     media-timeline domain as `buffered` (cf. `pushBoxStartTime()`'s own `baseMediaDecodeTime /
+     TIME_SCALE`), each ignored while still at its `-1`/0 sentinel. Only the gate changed: the
+     removal target still derives from `currentTime` (so nothing ahead of the playhead is ever
+     removed) and keeps its `removeEnd > 0` guard, meaning a gate that now fires in a state where
+     the playhead hasn't advanced far enough simply skips, exactly as before. The two `[trace]`
+     lines now print both spans (`intersection=` and `trackAware=`, plus each track's own end), so
+     any recurrence can be read off in one glance instead of re-derived. Logged via
+     `this.debugLog.warning(...)`, not `.debug(...)` (fixed 2026-09-08, requested directly by the
+     user) — `DEFAULT_LOG_LEVEL` is `'warning'` (`util/debugLog.ts`), so a `.debug()`/`.info()` call
+     needs both the component enabled *and* an explicit `level: 'debug'`/`'info'` override to print
+     at all, while `.warning()` only needs the component enabled (`debug: {video: true}` or
+     `["VideoTagPlayer"]`) — one fewer config step to see this specifically while live-verifying the
+     track-aware gate above. Frequency stays low regardless (gated by the outer span threshold,
+     `CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS`, and `MIN_CHECK_BUFFER_SIZE_TRIM_INTERVAL_MS`), so this
+     isn't the per-frame-volume situation `DEFAULT_LOG_LEVEL`'s own History (`08-util.md`) was
+     raised to `'warning'` to quiet in the first place.
 - **Full teardown (not re-creation).** `close()` (`:3138-`) calls `removeSourceBuffer()` on the
   `mediaSource` if one exists, then `endOfStream()` only if `readyState === 'open'` (a real fixed
   bug: the guard used to check `!== 'ended'`, which still let a `'closed'` `MediaSource` — reachable

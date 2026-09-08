@@ -75,6 +75,14 @@ let ffmpegAACDecoderLoadPromise: Promise<void> | null = null;
  * one `Module` global; safe to call redundantly from multiple instances'
  * `connectedCallback` — later calls reuse the same in-flight/settled
  * promise.
+ *
+ * Note on memory: the vendored asm.js build reserves a fixed
+ * `TOTAL_MEMORY = 167772160` (160MiB) heap when it initializes. That is a
+ * one-time *held* allocation, not a growing one — it was investigated
+ * (2026-09-08) as a suspect for a reported continuous-growth-during-playback
+ * leak and ruled out on exactly that basis; an experiment moving this call
+ * to `play()` (and skipping it for `type="video"`) was reverted as it
+ * addressed footprint, not growth. See `MEMORY.md`.
  */
 function loadFfmpegAACDecoder(): Promise<void> {
   if (ffmpegAACDecoderLoadPromise === null) {

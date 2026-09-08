@@ -93,6 +93,13 @@ const MJPEG_ENCODER_KEYFRAME_INTERVAL = 60;
 // real-time-oriented, matching this tier's live-playback intent rather than
 // buffering for eventual catch-up.
 const MJPEG_ENCODER_MAX_QUEUE_SIZE = 2;
+// Hard ceiling on `mjpegPendingFrames` (see submitMjpegFrame()'s own comment
+// for the leak this bounds). Deliberately far above anything legitimate:
+// MJPEG_ENCODER_MAX_QUEUE_SIZE caps the encoder queue at 2, and even the
+// forced-keyframe path that bypasses that check can only add a frame at a
+// time, so steady-state occupancy is ~2-3 entries. Anything past 32 is
+// necessarily an orphan whose `EncodedVideoChunk` output is never coming.
+const MJPEG_MAX_PENDING_FRAMES = 32;
 // G.711/G.726-transcoded-to-AAC audio is always fixed at 8000Hz mono (see
 // setAudioInfo()'s comment on this.audioInfo's hardcoded values for that
 // path) -- both the WASM AssemblyTranscoder path and the WebCodecsAudioEncoder
@@ -1969,6 +1976,23 @@ export class VideoTagPlayer extends VideoPlayer {
 
     const timestampUs = this.mjpegNextTimestampUs;
     this.mjpegNextTimestampUs += 1;
+    // Real leak, found live investigating continuous growth during MJPEG playback (reported
+    // directly by the user, who identified the MJPEG-over-MSE tier as when the growth started):
+    // an entry is only ever removed again by onMjpegEncodedChunk() matching this exact
+    // `timestampUs`, but `WebCodecsVideoEncoder.encode()` has four paths that silently produce
+    // no output at all for a submitted frame -- encoder not `configured`, `createImageBitmap()`
+    // rejecting on a partial/corrupt JPEG (routine with RTP packet loss, and documented as an
+    // expected case there), the encoder state changing while that decode was awaited, and
+    // `encoder.encode()` itself throwing. Every one of those leaves this entry orphaned
+    // *permanently*, and each orphan retains its whole `streamData.frameData` -- a complete JPEG
+    // frame (hundreds of KB at real camera resolutions). Nothing else ever trims this array; only
+    // closeMjpegEncoder() (session teardown) clears it. Bounding it here turns an unbounded,
+    // packet-loss-proportional leak into a fixed ceiling; a shifted-out entry's chunk (if one
+    // does arrive late) simply hits onMjpegEncodedChunk()'s existing no-matching-entry branch,
+    // which already drops it safely.
+    while (this.mjpegPendingFrames.length >= MJPEG_MAX_PENDING_FRAMES) {
+      this.mjpegPendingFrames.shift();
+    }
     this.mjpegPendingFrames.push({ timestampUs, streamData, videoInfo });
     void this.mjpegEncoder.encode({ frameData: streamData.frameData, timestampUs, forceKeyFrame });
   }
@@ -2621,6 +2645,35 @@ export class VideoTagPlayer extends VideoPlayer {
       const bufferedStart = sourceBuffer.buffered.start(0) * 1;
       const endTime = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1) * 1;
 
+      // Real bug, found live investigating H.264 Live reaching ~1GB after 10 minutes -- roughly a
+      // whole session's worth of stream, i.e. "nothing was ever trimmed", not any per-frame object
+      // leak. `addSourceBuffer()` always declares BOTH a video and an audio codec
+      // (`video/mp4;codecs="<video>, opus|mp4a.40.2"`), so this is a single SourceBuffer carrying
+      // two tracks -- and per the MSE spec `SourceBuffer.buffered` returns the *intersection* of
+      // its track buffer ranges, not their union (a track's own last range is only stretched to the
+      // highest end time once `readyState` is `"ended"`, never while `"open"`). Both values above
+      // therefore describe only the span the two tracks *share*, so the gate below was effectively
+      // measuring whichever track is furthest BEHIND: let the audio and video timelines drift apart
+      // and the measured span stops growing while both tracks keep accumulating untrimmed, so
+      // `remove()` is never called again for the rest of the session.
+      //
+      // That drift is routine here by construction, not an edge case: Live appends video and audio
+      // as *separate single-track segments* (`createVideoSegment()` / `createAudioSegment()`), each
+      // advancing its own independent `baseVideoTime` / `baseAudioTime` accumulator -- and
+      // `videoUpdating()` already carries an explicit resync for the two drifting more than 2s
+      // apart (`Math.abs(baseVideoTime - baseAudioTime) > 20000`).
+      //
+      // Fixed by gating on a track-aware end instead: the furthest point either track has actually
+      // been muxed up to, which is exactly what those two accumulators already track (same
+      // `TIME_SCALE` media-timeline domain as `buffered`, see `pushBoxStartTime()`'s own
+      // `baseMediaDecodeTime / TIME_SCALE` usage). Only the *gate* changes -- the removal target
+      // below still derives from `currentTime`, so nothing ahead of the playhead is ever removed,
+      // and `remove(0, removeEnd)` itself was never the problem (MSE removes across every track
+      // buffer in the range regardless of which track's data it is).
+      const videoTrackEnd = this.baseVideoTime > 0 ? this.baseVideoTime / TIME_SCALE : 0;
+      const audioTrackEnd = this.baseAudioTime > 0 ? this.baseAudioTime / TIME_SCALE : 0;
+      const retainedEnd = Math.max(endTime, videoTrackEnd, audioTrackEnd);
+
       // Real bug, found live via the [trace] log itself right after the
       // videoUpdating()-before-appendSegmentToSourceBuffer() reorder above:
       // `remove(0, removeEnd)` always trims down to exactly `currentTime -
@@ -2647,7 +2700,7 @@ export class VideoTagPlayer extends VideoPlayer {
       // accumulates again -- breaking the self-retriggering loop while
       // still keeping the buffer bounded (a slightly larger ~35s worst-case
       // ceiling instead of exactly 30s, not a meaningful regression).
-      if (Math.abs(endTime - bufferedStart) > this.getMaxInstantPlaybackTime() + CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS) {
+      if (Math.abs(retainedEnd - bufferedStart) > this.getMaxInstantPlaybackTime() + CHECK_BUFFER_SIZE_HYSTERESIS_SECONDS) {
         const now = performance.now();
         if (!sourceBuffer.updating && now - this.lastCheckBufferSizeTrimAt >= MIN_CHECK_BUFFER_SIZE_TRIM_INTERVAL_MS) {
           // Real bug, found live investigating the >1GB Live leak resurfacing despite every fix
@@ -2678,7 +2731,11 @@ export class VideoTagPlayer extends VideoPlayer {
             const removeEnd = Math.max(0, Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime());
             if (removeEnd > 0) {
               // eslint-disable-next-line no-console
-              this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - bufferedStart).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
+              this.debugLog.warning(
+                `[trace] checkBufferSize trimming: intersection=${(endTime - bufferedStart).toFixed(2)}s, ` +
+                  `trackAware=${(retainedEnd - bufferedStart).toFixed(2)}s (v=${videoTrackEnd.toFixed(2)} a=${audioTrackEnd.toFixed(2)}), ` +
+                  `remove(0, ${removeEnd.toFixed(2)})`
+              );
               sourceBuffer.remove(0, removeEnd);
               this.lastCheckBufferSizeTrimAt = now;
             }
@@ -2686,7 +2743,11 @@ export class VideoTagPlayer extends VideoPlayer {
             const removeEnd = Math.max(0, Math.min(endTime, (this.videoElement as HTMLVideoElement).currentTime) - this.getMaxInstantPlaybackTime()) - 60;
             if (removeEnd > 0) {
               // eslint-disable-next-line no-console
-              this.debugLog.debug(`[trace] checkBufferSize trimming: buffered=${(endTime - bufferedStart).toFixed(2)}s, remove(0, ${removeEnd.toFixed(2)})`);
+              this.debugLog.warning(
+                `[trace] checkBufferSize trimming: intersection=${(endTime - bufferedStart).toFixed(2)}s, ` +
+                  `trackAware=${(retainedEnd - bufferedStart).toFixed(2)}s (v=${videoTrackEnd.toFixed(2)} a=${audioTrackEnd.toFixed(2)}), ` +
+                  `remove(0, ${removeEnd.toFixed(2)})`
+              );
               sourceBuffer.remove(0, removeEnd);
               this.lastCheckBufferSizeTrimAt = now;
             }
