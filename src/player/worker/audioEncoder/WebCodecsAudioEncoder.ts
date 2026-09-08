@@ -56,7 +56,7 @@ const DEFAULT_BITRATE = 64000;
  * WebCodecs `AudioEncoder`, as an alternative to `VideoTagPlayer.ts`'s
  * existing WASM `AssemblyTranscoder`/`audiotranscoderWorker` path (selected
  * via the `audioencodermode` attribute/property -- see
- * `docs/player/05-video-player-rendering.md`). Structurally the audio mirror
+ * `docs/player/05-video-tag-player.md`). Structurally the audio mirror
  * of `WebCodecsVideoEncoder.ts` (same constructor-throws-if-unsupported
  * guard, same `isConfigSupported()`-verified `configure()`, same
  * close()-guards-already-closed pattern) -- the one real difference is

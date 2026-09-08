@@ -202,7 +202,7 @@ export class RTSPOverWebSocket extends HTMLElement {
 
   // Selects VideoTagPlayer.ts's G.711/G.726-to-AAC transcoding path -- see
   // the `audioencodermode` attribute case below, the `audioEncoderMode`
-  // property setter, and docs/player/05-video-player-rendering.md. Unlike
+  // property setter, and docs/player/05-video-tag-player.md. Unlike
   // `_debug` above, this DOES support live mid-stream toggling (see
   // `pushAudioEncoderModeToRunningPlayers()`).
   private _audioEncoderMode = 'auto';
@@ -826,7 +826,7 @@ export class RTSPOverWebSocket extends HTMLElement {
         // 'wasm' (the existing Emscripten AssemblyTranscoder), 'webcodecs'
         // (the native WebCodecs AudioEncoder alternative), or 'auto' (prefer
         // WebCodecs when supported, falling back to WASM otherwise). See
-        // docs/player/05-video-player-rendering.md's "Audio encoder
+        // docs/player/05-video-tag-player.md's "Audio encoder
         // selection" entry.
         if (newValue === null || typeof newValue === 'undefined') {
           this._audioEncoderMode = 'auto';
@@ -2471,7 +2471,7 @@ export class RTSPOverWebSocket extends HTMLElement {
    *  attribute or this property directly; both go through the same
    *  validation and live-refresh path (`pushAudioEncoderModeToRunningPlayers()`
    *  below), mirroring `debug`'s attribute/property pair above. See
-   *  `docs/player/05-video-player-rendering.md`. */
+   *  `docs/player/05-video-tag-player.md`. */
   get audioEncoderMode(): string {
     return this._audioEncoderMode;
   }

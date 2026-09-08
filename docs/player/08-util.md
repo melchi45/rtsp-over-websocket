@@ -11,7 +11,7 @@ subsystem's documentation — data structures, timing, and math utilities.*
 | --- | --- |
 | 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
-| 2026-09-03 | Added `avcConfigParser.ts` (`parseAvcConfigurationRecord`/`buildAvc1CodecString`) — feeds MJPEG's new `WebCodecsVideoEncoder`-based real-MSE tier. See `05-video-player-rendering.md`, `07-talk-backup-worker.md` §3b, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
+| 2026-09-03 | Added `avcConfigParser.ts` (`parseAvcConfigurationRecord`/`buildAvc1CodecString`) — feeds MJPEG's new `WebCodecsVideoEncoder`-based real-MSE tier. See `05-video-tag-player.md`, `07-talk-backup-worker.md` §3b, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
 | 2026-09-04 | Added `debugLog.ts` (`DebugConfig`/`DebugTarget`, `parseDebugAttribute`, `validateDebugConfig`, `isDebugEnabled`, `createDebugLogger`) — backs the new `debug` attribute on `RTSPOverWebSocket` (`01-elements-interface-exceptions.md`), consumed by every subsystem's own `debug` setter/`setDebugConfig()` (`02` through `07`). |
 | 2026-09-04 | `createDebugLogger()` now returns a `DebugLogger` (four independently-gated methods -- `debug`/`info`/`warning`/`error`, per new `LogLevel` type) instead of one bare function; added `NOOP_DEBUG_LOGGER` (the shared default) and `isLevelEnabled()`. Every one of the ~44 call sites across `02`–`07` that used to call the bare function directly now calls `.debug(...)` on it -- a mechanical migration, no behavior change to *what* those specific calls do, only to how they're gated (see the new "Level filtering" bullet below). Requested directly by the user. |
 | 2026-09-04 | Added `MEDIA_SESSION_GROUPS` and the group-alias branch in `isDebugEnabled()` -- `debug["mediaSession"]`'s string array now also accepts `"videoSession"`/`"audioSession"`/`"textSession"`/`"rtpSession"`/`"rtcpSession"` alongside individual class names. See the "Method Analysis" entry below and `03-mediaSession-core-video.md`'s matching History row for the live-verification detail. |
@@ -999,7 +999,7 @@ local `buildCylindricalMesh()` function instead.
 ### `avcConfigParser.ts` (`util/avcConfigParser.ts`)
 
 Added 2026-09-03, alongside MJPEG's new `WebCodecsVideoEncoder`-based real-MSE tier
-(`05-video-player-rendering.md`, `07-talk-backup-worker.md` §3b).
+(`05-video-tag-player.md`, `07-talk-backup-worker.md` §3b).
 
 - **Structure** — two standalone functions, no class/state:
   `parseAvcConfigurationRecord(description: Uint8Array): AvcConfigurationRecord | null` and
@@ -1029,7 +1029,7 @@ Added 2026-09-03, alongside MJPEG's new `WebCodecsVideoEncoder`-based real-MSE t
     this tier.
 
 - **Call Stack** — Both functions are called exclusively from `VideoTagPlayer.ts`'s
-  `onMjpegEncodedChunk()` (`05-video-player-rendering.md`'s "MJPEG real-MSE tier" section), which
+  `onMjpegEncodedChunk()` (`05-video-tag-player.md`'s "MJPEG real-MSE tier" section), which
   feeds the parsed `AvcConfigurationRecord` into a synthesized `VideoInfo` (`spsPayload`/
   `ppsPayload`/`profileIdc`/`levelIdc`/`codecInfo`) for the shared `setVideoInfo()`/
   `createInitSegment()` path every other real-MSE codec also uses. The sibling static candidate
@@ -1042,7 +1042,7 @@ Added 2026-09-03, alongside MJPEG's new `WebCodecsVideoEncoder`-based real-MSE t
   ISO Base Media File Format), the `AVCDecoderConfigurationRecord` ("avcC") structure specifically.
 
 - **Relations & Data Flow** — Consumed only by `VideoTagPlayer.ts` (`video/player/video/`,
-  documented in `05-video-player-rendering.md`); produces data for `vendor/mp4Generator`'s
+  documented in `05-video-tag-player.md`); produces data for `vendor/mp4Generator`'s
   `Mp4VideoTrackInfo` shape (`09-mp4-container-generation.md`) but never calls into it directly.
 
 ---

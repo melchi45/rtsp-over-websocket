@@ -1,10 +1,10 @@
 # `src/player` — Per-Class Reference Documentation
 
-*Index and reading guide for the 10-file, per-class reference doc set covering every subsystem under `src/player`
+*Index and reading guide for the 11-file, per-class reference doc set covering every subsystem under `src/player`
 — structure, method analysis, call stacks, RFC/standard references, and relations/data flow, one file per
 subsystem.*
 
-**Version:** 1.1.1 · **Author:** Youngho Kim
+**Version:** 1.1.2 · **Author:** Youngho Kim
 
 **History**
 
@@ -16,6 +16,7 @@ subsystem.*
 | 2026-08-26 | Add file 09 (MP4 container generation) to the index, RFC map, and discrepancies list |
 | 2026-09-04 | Add file 10 (ONVIF metadata overlay) to the index; correct the abstract's stale file count (8 -> 10) |
 | 2026-09-04 | Remove the W3C SVG standards-map row — `OnvifOverlay` was switched from SVG to plain `<div>`s, so it no longer uses a standards-defined graphics API |
+| 2026-09-08 | Split the former file 05 (`05-video-player-rendering.md`, `VideoPlayer`+`CanvasTagPlayer`+`VideoTagPlayer` combined) into `05-video-tag-player.md` (`VideoPlayer`/`VideoTagPlayer` only, now with five new MSE/`SourceBuffer`/audio-transcode/seeking/timestamp deep-dive sections) and new file 11, `11-canvas-tag-player.md` (`CanvasTagPlayer`/`CanvasRenderer`/`StepBufferList`/`webgl/`), requested directly by the user. File count 10 -> 11; file 05 keeps its number (still the primary `<video>`-tag/MSE reference) rather than a full renumber, to avoid churning every other file's existing "file 05"/"file 06" cross-references for files 06-10, which are otherwise unaffected. See both files' own History and this repo's root `MEMORY.md`. |
 
 ---
 
@@ -33,7 +34,7 @@ It complements two existing documents rather than replacing them:
 
 ## How the set is organized
 
-The library is documented in 10 files, split by subsystem so each stays a manageable read. Files
+The library is documented in 11 files, split by subsystem so each stays a manageable read. Files
 cross-reference each other by class name only — a class documented in file *N* that collaborates
 with a class in file *M* is named, not re-explained.
 
@@ -43,12 +44,13 @@ with a class in file *M* is named, not re-explained.
 | [02-network.md](02-network.md) | RTSP-over-WebSocket signaling + SUNAPI HTTP | `RtspClient`, `RtspClientManager`, `Transport`, `DigestGenerator`, `SunapiClient`, `SunapiManager`, `SunapiRestClient` |
 | [03-mediaSession-core-video.md](03-mediaSession-core-video.md) | RTP/RTCP session base classes, routing, video depacketization | `Session`, `RtpSession`, `RTCPSession`, `RtpClient`, `MediaRouter`, `MetaDataParser`, `H264Session`, `H265Session`, `VP8Session`, `VP9Session`, `AV1Session`, `MjpegSession`, `VideoRtcpSession`, `PlaybackBufferManager` |
 | [04-mediaSession-audio-text.md](04-mediaSession-audio-text.md) | Audio/text codec sessions | `AACSession`, `AudioTalkSession`, `G711Session`, `G726Session`, `OPUSSession`, `MetaSession` |
-| [05-video-player-rendering.md](05-video-player-rendering.md) | Canvas/WebGL and `<video>`(MSE) rendering | `VideoPlayer`, `CanvasTagPlayer`, `CanvasRenderer`, `WebGLCanvas`, `YUVWebGLCanvas`, `VideoTagPlayer` |
+| [05-video-tag-player.md](05-video-tag-player.md) | `<video>`-tag / MSE rendering: `SourceBuffer` fMP4 pipeline, WASM-vs-WebCodecs audio transcoding, seeking, timestamp-cue flow | `VideoPlayer` (shared abstract base), `VideoTagPlayer` |
 | [06-listen-audio.md](06-listen-audio.md) | Audio decode + playback | `AudioDecoder` hierarchy (AAC/G711/G726x/OPUS), `AudioPlayer`, `AudioPlayerAAC`, `AudioPlayerGxx` |
 | [07-talk-backup-worker.md](07-talk-backup-worker.md) | Two-way audio, client-side backup, Web Workers | `Talk`, `G711AudioEncoder`, `BackupProvider`, `FileMaker`, `AssemblyDecoder`, `AssemblyTranscoder`, `MjpegDepacketizer`, `SunapiRequestTask`, `AviFormatWriter`/`AviFileWriter`, `BackupSession` |
 | [08-util.md](08-util.md) | Stand-alone utilities | `BufferList`, `CircularTypedArrayQueue`, `Mean`/`Median`, `IntervalTimer`, `Fisheye3D`/`Fisheye3DMulti`, misc. helpers |
 | [09-mp4-container-generation.md](09-mp4-container-generation.md) | Box-level fMP4/ISOBMFF generation (vendored, not a class) | `vendor/mp4Generator.js` — `ftyp`/`moov`/`moof`/`mdat` box tree, per-codec `stsd` entries |
 | [10-onvif-metadata-overlay.md](10-onvif-metadata-overlay.md) | ONVIF `VideoAnalytics` bounding-box overlay + reusable toggle | `parseOnvifVideoAnalyticsFrame` (`util/onvifMetadata.ts`), `OnvifOverlay`, `onvifEventColors`, `createSwitch` (`components/ui/`) |
+| [11-canvas-tag-player.md](11-canvas-tag-player.md) | Canvas/WebGL rendering: decoder-worker pipeline, step-play buffering, no `SourceBuffer`/no audio | `CanvasTagPlayer`, `CanvasRenderer`, `StepBufferList`, `WebGLCanvas`, `YUVWebGLCanvas` |
 
 ## End-to-end flow across the documents
 
@@ -64,7 +66,7 @@ sequenceDiagram
     participant Sess as *Session (03/04)
     participant MR as MediaRouter (03)
     participant Dec as *Decoder / worker (06/07)
-    participant Rend as CanvasTagPlayer / VideoTagPlayer / AudioPlayerGxx / Talk (05/06/07)
+    participant Rend as CanvasTagPlayer(11) / VideoTagPlayer(05) / AudioPlayerGxx(06) / Talk(07)
 
     El->>SP: play() / attributeChangedCallback
     SP->>RC: new RtspClient(...), DESCRIBE
@@ -118,7 +120,7 @@ sections; this is a quick index of which standard governs which part of the wire
 | RFC 7587 (Opus RTP payload) / RFC 6716 (Opus codec) | `OPUSSession`, `OPUSAudioDecoder` (delegates to the browser's native WebCodecs `AudioDecoder`) | 04, 06 |
 | ITU-T G.711 / G.726 | Codec bitstream itself (not an RFC); `VideoTagPlayer`'s `audioEncoderMode='webcodecs'` tier decodes it via the same pure-JS `G711AudioDecoder`/`G726xAudioDecoder` file 06 uses, then re-encodes to AAC via the browser's native WebCodecs `AudioEncoder` (`WebCodecsAudioEncoder`) instead of the WASM `AssemblyTranscoder` | 04, 05, 06 |
 | W3C Media Source Extensions + ISO/IEC 14496-12 (ISOBMFF/fMP4) | `VideoTagPlayer`'s muxing into a `SourceBuffer`; box-level detail in `mp4Generator` | 05, 09 |
-| WebGL (Khronos/W3C) | `WebGLCanvas`/`YUVWebGLCanvas` rendering path | 05 |
+| WebGL (Khronos/W3C) | `WebGLCanvas`/`YUVWebGLCanvas` rendering path | 11 |
 | Microsoft RIFF/AVI (no IETF/ITU standard) | `AviFormatWriter`/`AviFileWriter` local recording | 07 |
 | PKWARE .ZIP spec (no IETF/ITU standard) | `zipWorker` local export | 07 |
 | No standard — vendor/SUNAPI-specific | `MetaSession`/`MetaDataParser` metadata channel | 03, 04 |

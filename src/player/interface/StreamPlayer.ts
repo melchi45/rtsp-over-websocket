@@ -100,7 +100,7 @@ export interface StreamPlayerInfo {
   debug?: DebugConfig | null;
   /** See `RTSPOverWebSocket.ts`'s `audioencodermode` attribute/property and
    *  `MediaRouter.ts`'s `VideoPlayerLike.setAudioEncoderMode?`/
-   *  `docs/player/05-video-player-rendering.md` -- `'auto' | 'wasm' | 'webcodecs'`,
+   *  `docs/player/05-video-tag-player.md` -- `'auto' | 'wasm' | 'webcodecs'`,
    *  loosely typed as `string` at this layer (same convention as
    *  `StreamPlayerMediaInfo`'s existing loosely-typed fields); the real
    *  union only matters where it's actually consumed, in `VideoTagPlayer.ts`.

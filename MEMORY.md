@@ -5488,3 +5488,50 @@ config — the original unconditional choice wasn't wrong on its own terms (it d
 debug into it"), just not the trade-off the user wanted once they noticed the actual consequence in a
 real consumer's DevTools.
 
+
+## Split `docs/player/05-video-player-rendering.md` into `05-video-tag-player.md` + `11-canvas-tag-player.md`, requested directly by the user
+
+The former `05-video-player-rendering.md` covered `VideoPlayer` (the shared abstract base),
+`CanvasTagPlayer`+`CanvasRenderer`+`StepBufferList`+the `webgl/` package, and `VideoTagPlayer` all
+in one 1398-line file. The user considers the canvas/WebGL rendering path and the `<video>`-tag/MSE
+path two genuinely separate subsystems with different readerships, and asked for them split into
+their own files — with `VideoTagPlayer`'s side specifically expanded into five new deep-dive
+sections it didn't have dedicated coverage for before: the full Video/Audio-sample-to-`SourceBuffer`
+pipeline, a side-by-side WASM-vs-WebCodecs audio-transcode flow, an explicit `SourceBuffer`
+fill/trim/create/teardown lifecycle writeup, a seeking-trigger catalog table, and the
+`VTTCue`-timestamp-cue-to-`RTSPOverWebSocket` `'timestamp'`-event call chain. `CanvasTagPlayer` got
+the equivalent depth for its own actual mechanisms (decoder-worker → `StepBufferList`/
+`PlaybackBufferManager` → `CanvasRenderer.draw()` → WebGL pixel upload; explicit "no `SourceBuffer`,
+no audio" notes; its three direct `timeStampCallback` call sites in place of `VideoTagPlayer`'s
+`VTTCue` mechanism; `StepBufferList`'s buffering/frame-drop as the closest thing this tier has to
+"seeking").
+
+**Numbering decision**: file 05 kept its number and became `05-video-tag-player.md`
+(`VideoTagPlayer` is the more actively-changed, more heavily cross-referenced half — nearly every
+"file 05" pointer already scattered across files 01/03/06/07/08/09/`docs/ROADMAP.md`/
+`src/player/README.md`/several `src/player/*.ts` comments turned out to be about `VideoTagPlayer`
+specifically, not `CanvasTagPlayer`). `CanvasTagPlayer` moved to a brand-new `11-canvas-tag-player.md`
+(the next free number after file 10) rather than triggering a full renumber of files 06-10 — a
+renumber would have meant rewriting every one of those existing cross-references for zero reader
+benefit, versus just fixing the handful that actually pointed at `CanvasTagPlayer`/`WebGLCanvas`
+specifically (`docs/player/06-listen-audio.md`'s two, `docs/player/README.md`'s WebGL RFC-map row).
+
+**History-table handling**: rather than starting file 11 with an empty "Initial version" row (the
+default for a brand-new doc per `CLAUDE.md`'s own convention), its History carries forward the
+subset of the old file 05's rows that were genuinely about `CanvasTagPlayer`/`StepBufferList` (the
+2026-09-02 `StepBufferList` `NaN`-guard fix, the 2026-09-04 `debug` live-refresh entry) in their
+original chronological order, plus the shared 2026-09-04 `debug`-rollout entry (which touched the
+`VideoPlayer` base both files still extend) kept in *both* files' History — the same
+multiple-files-record-the-same-cross-cutting-change pattern this doc set already uses elsewhere
+(e.g. the `debug` rollout is independently recorded in files 01/03/04/06/07 too). This was judged
+more useful to a future reader than a blank slate, since `CanvasTagPlayer`'s own bug history didn't
+actually start on 2026-09-08.
+
+**How to apply**: when a per-class reference doc covering N unrelated classes needs splitting,
+decide which half keeps the existing filename/number by whichever side has denser existing
+cross-references pointing at it (grep for the doc's filename across the whole repo *first*, before
+deciding) — that minimizes the total edit surface versus picking whichever half feels more
+"primary" by intuition alone. Carry forward a genuinely-relevant slice of the original History
+rather than resetting to a blank "Initial version," but don't try to mechanically split every row —
+rows that touched a shared base class belong in both new files' History, not just one.
+

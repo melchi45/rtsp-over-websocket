@@ -56,12 +56,12 @@ it's one of the files in scope.
 Everything in this file is reachable from exactly one of the two audio-dispatch branches in
 `MediaRouter.handleAudioData` (documented in full in `03-mediaSession-core-video.md`): it either
 forwards the frame to `player.onAudioData` — implemented only by `VideoTagPlayer`
-(`05-video-player-rendering.md`), which muxes real audio directly into its own fMP4
+(`05-video-tag-player.md`), which muxes real audio directly into its own fMP4
 `SourceBuffer` and needs none of this subsystem — or, when the active player has no
 `onAudioData` of its own, falls back to a standalone `AudioPlayerGxx` (this file), decoding
 frame-by-frame to PCM and playing it through the Web Audio API instead.
 
-`CanvasTagPlayer` (`05-video-player-rendering.md`) is the only other `VideoPlayerLike`
+`CanvasTagPlayer` (`11-canvas-tag-player.md`) is the only other `VideoPlayerLike`
 implementation, and it declares no `onAudioData` at all — so in practice this whole subsystem
 (`AudioPlayerGxx` and every decoder below) is **canvas-tag-mode-only** audio: MJPEG, small/
 step-play H264, H265 profiles the browser's `MediaSource` can't accept, and VP8/VP9/AV1 (see
@@ -830,7 +830,7 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
   for every codec, and itself constructs (and owns the lifecycle of) whichever concrete
   `AudioDecoderLike` implementation matches the negotiated codec. Only reached in the first place
   when `handleAudioData` finds no `player.onAudioData` to forward to instead — i.e. canvas-tag
-  mode (`CanvasTagPlayer`, file 05); see "Where this subsystem fits" at the top of this file.
+  mode (`CanvasTagPlayer`, file 11); see "Where this subsystem fits" at the top of this file.
   `VideoTagPlayer` sessions never construct an `AudioPlayerGxx` at all.
 
   ```mermaid

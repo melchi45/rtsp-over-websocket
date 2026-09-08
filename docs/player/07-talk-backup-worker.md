@@ -13,7 +13,7 @@ and AVI/ZIP muxing off the main thread.*
 | 2026-08-06 | Add per-class reference docs for `src/player` (initial version) |
 | 2026-08-11 | Add AV1/VP8/VP9 + WebCodecs decode support, per-class player docs, server lifecycle/config improvements, and fix SUNAPI protocol clobbering on non-http(s) hosts |
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
-| 2026-09-03 | Added new §3b, `WebCodecsVideoEncoder` (`worker/videoEncoder/`) — MJPEG's new H264 re-encode tier, feeding `VideoTagPlayer.ts`'s real-MSE pipeline. Grouped by source directory next to `worker/videoDecoder/` despite running on the main thread, not in a Worker — see that section's own note. See `05-video-player-rendering.md`, `08-util.md`, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
+| 2026-09-03 | Added new §3b, `WebCodecsVideoEncoder` (`worker/videoEncoder/`) — MJPEG's new H264 re-encode tier, feeding `VideoTagPlayer.ts`'s real-MSE pipeline. Grouped by source directory next to `worker/videoDecoder/` despite running on the main thread, not in a Worker — see that section's own note. See `05-video-tag-player.md`, `08-util.md`, `09-mp4-container-generation.md`, and this repo's `MEMORY.md`. |
 | 2026-09-03 | Fixed a real bug in `WebCodecsVideoEncoder`, found live against a real 2048x1536 camera: `encodeQueueSize` didn't count frames still awaiting `encode()`'s own `createImageBitmap()` decode step, only the underlying `VideoEncoder`'s own queue — invisible backpressure that let a real backlog grow unbounded (confirmed live: ~1s to ~28s within one real minute) while the caller's drop-based throttle kept reading 0. Fixed with a new `pendingDecodeCount` field folded into `encodeQueueSize`. See this section and `MEMORY.md`. |
 | 2026-09-04 | `BackupProvider`/`FileMaker` each gained a `debug`/`set debug()` gate (`util/debugLog.ts`, `debug["backup"]` — see `01-elements-interface-exceptions.md`'s new `debug` attribute and `08-util.md`), with new `init()`/`processMessage()` trace points. `BackupProvider.init()` also applies its own `debugConfig` to `sharedFileMaker` — the module-level `FileMaker` singleton this file's own doc comment already documents as shared across *every* channel's `BackupProvider` (only ever constructed once, by whichever channel starts a backup first) — so its debug tracing is subject to the same last-writer-wins sharing as every other piece of its state, not a new caveat introduced by this feature. |
 
@@ -631,7 +631,7 @@ Grouped here by source directory (`worker/videoEncoder/` sits alongside `worker/
 above), **not** by actual thread placement — unlike every class in section 3, this one is
 imported directly into `VideoTagPlayer.ts` and instantiated on the **main thread**, the same way
 that file already does for `WebCodecsVideoDecoder` in its `'bridge'` output mode (see
-`05-video-player-rendering.md`'s bridge-tier note): `VideoEncoder`/`VideoFrame`/
+`05-video-tag-player.md`'s bridge-tier note): `VideoEncoder`/`VideoFrame`/
 `createImageBitmap` are all ordinary main-thread-available APIs, and there was no existing
 `new Worker(...)` spawn point in `VideoTagPlayer.ts` to reuse for this direction. `decoderWorker.ts`
 (above) is a genuine dedicated Worker because `AssemblyDecoder`'s WASM decode is CPU-heavy and
@@ -670,7 +670,7 @@ Worker, it's simply a new file that happens to sit next to `videoDecoder/` in th
   decremented in a `finally` covering the whole method (every exit path, not just the success path),
   and folding it into the `encodeQueueSize` getter (`encoder.encodeQueueSize + pendingDecodeCount`)
   — the caller's existing backpressure check now actually throttles once enough frames are
-  mid-decode, not just once enough are mid-encode. See `05-video-player-rendering.md` and
+  mid-decode, not just once enough are mid-encode. See `05-video-tag-player.md` and
   `MEMORY.md` for the full narrative, including the caveat that this measurement's absolute
   magnitude may be specific to a software-only (no hardware acceleration) test environment.
 - `configure()` (private, async) — builds one `VideoEncoderConfig` per candidate (`codec`, real
@@ -701,7 +701,7 @@ Worker, it's simply a new file that happens to sit next to `videoDecoder/` in th
   (RFC 2435) source frames `MjpegDepacketizer`/`mjpegDepacketizeWorker` (below) already reassemble.
 
 - **Relations & Data Flow** — owned exclusively by `VideoTagPlayer.ts` (`mjpegEncoder` field);
-  no Worker boundary, no `postMessage`. See `05-video-player-rendering.md`'s "MJPEG real-MSE tier"
+  no Worker boundary, no `postMessage`. See `05-video-tag-player.md`'s "MJPEG real-MSE tier"
   section for the full `submitMjpegFrame()`/`onMjpegEncodedChunk()` call chain this feeds into,
   and `util/avcConfigParser.ts` (`08-util.md`) for the avcC parsing this class's output requires
   downstream.

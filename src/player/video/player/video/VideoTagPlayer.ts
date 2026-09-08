@@ -20,7 +20,7 @@ import { parseAvcConfigurationRecord, buildAvc1CodecString, type AvcConfiguratio
 import type { MediaStreamVideoTrackGenerator } from '../../../types/mediaStreamTrackGenerator';
 
 /** See `RTSPOverWebSocket.ts`'s `audioencodermode` attribute/property and
- *  `docs/player/05-video-player-rendering.md`'s "Audio encoder selection"
+ *  `docs/player/05-video-tag-player.md`'s "Audio encoder selection"
  *  entry -- `'auto'` prefers the native WebCodecs `AudioEncoder` path when
  *  supported, falling back to the existing WASM `AssemblyTranscoder` path
  *  otherwise; `'wasm'`/`'webcodecs'` force one or the other. */
@@ -3523,7 +3523,7 @@ export class VideoTagPlayer extends VideoPlayer {
       // async `AudioEncoder.isConfigSupported()`/`configure()` round trip)
       // during which `createAudioSample()`'s G.711/G.726 branch has neither
       // path ready and drops incoming frames -- an accepted, documented gap
-      // for this experimental mode (see docs/player/05-video-player-rendering.md),
+      // for this experimental mode (see docs/player/05-video-tag-player.md),
       // not a bug: adding a second, always-on WASM safety net for just this
       // window would defeat the mode's own purpose.
       return;

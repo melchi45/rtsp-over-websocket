@@ -19,7 +19,7 @@ what box tree each exported function actually constructs, byte by byte, for ever
 
 ## Scope and how this relates to file 05
 
-[05-video-player-rendering.md](05-video-player-rendering.md)'s `VideoTagPlayer` section already covers the
+[05-video-tag-player.md](05-video-tag-player.md)'s `VideoTagPlayer` section already covers the
 **caller side** in depth: when `initSegment`/`mediaSegment`/`dualTrackMediaSegment` get called, how samples are
 accumulated, and *why* composition-time-offsets exist (B-frame reordering). This document does not repeat any of
 that — it covers only what happens **inside** `mp4Generator.js` once those three functions are called: the actual
@@ -214,7 +214,7 @@ composition-time-offset-present); `trunHeader`/`trunHeader1` are `version 0`.
   FourCC into the box header. **Updated 2026-09-03, still confirmed unreachable, but for a different reason
   than before:** `MediaRouter.selectVideoPlayer()` no longer unconditionally forces `tagMode = 'canvas'` for
   `codecType === 'MJPEG'` — it can now reach `VideoTagPlayer` via the new `WebCodecsVideoEncoder`-based
-  real-MSE tier (`05-video-player-rendering.md`). That tier deliberately does **not** exercise this branch,
+  real-MSE tier (`05-video-tag-player.md`). That tier deliberately does **not** exercise this branch,
   though: encoder-sourced samples are tagged `codecType: 'H264'` throughout (`VideoTagPlayer.ts`'s
   `onMjpegEncodedChunk()`), not `'MJPEG'`, both because `mp4Generator.js` needs the real `avc1`/`avcC` H264
   `stsd` entry (this file's H264 branch, not the `mpv4`/`esds` one) to describe the actual re-encoded

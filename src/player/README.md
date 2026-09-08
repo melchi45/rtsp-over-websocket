@@ -214,7 +214,8 @@ constructed by `SunapiClient` directly — see §7.
 
 ## 5. `video/player` — rendering hierarchy
 
-> Per-class detail: [docs/player/05-video-player-rendering.md](../../docs/player/05-video-player-rendering.md).
+> Per-class detail: [docs/player/05-video-tag-player.md](../../docs/player/05-video-tag-player.md) (`VideoPlayer`/`VideoTagPlayer`)
+> and [docs/player/11-canvas-tag-player.md](../../docs/player/11-canvas-tag-player.md) (`CanvasTagPlayer` and the canvas/WebGL pipeline).
 
 ```mermaid
 classDiagram
