@@ -423,11 +423,14 @@ export const DARK_BALL_ANIMATION_STYLES: Record<'darkred' | 'red' | 'yellow' | '
   yellowgreen: darkBallAnimationStyle('yellowgreen')
 };
 
+// Sizing reduced (min-width 190->150px, .menu-option font-size 13->11px,
+// line-height 1.4->1.3, padding 8px 12px->5px 9px below) per explicit user
+// request that the context menu's font/overall footprint read as too large.
 export const CONTEXT_MENU_STYLE =
   '.menu {\r\n' +
-  'min-width: 190px;\r\n' +
+  'min-width: 150px;\r\n' +
   'margin: 0;\r\n' +
-  'padding: 6px;\r\n' +
+  'padding: 5px;\r\n' +
   'box-sizing: border-box;\r\n' +
   'z-index: 1000;\r\n' +
   'position: absolute;\r\n' +
@@ -456,10 +459,10 @@ export const CONTEXT_MENU_OPTION_STYLE =
   '.menu .menu-options .menu-option {\r\n' +
   '    color: #E8E8EA;\r\n' +
   '    z-index: 10000;\r\n' +
-  '    font-size: 13px;\r\n' +
-  '    line-height: 1.4;\r\n' +
-  '    padding: 8px 12px;\r\n' +
-  '    border-radius: 6px;\r\n' +
+  '    font-size: 11px;\r\n' +
+  '    line-height: 1.3;\r\n' +
+  '    padding: 5px 9px;\r\n' +
+  '    border-radius: 5px;\r\n' +
   '    cursor: pointer;\r\n' +
   '    font-style: normal;\r\n' +
   '    user-select: none;\r\n' +
@@ -478,28 +481,58 @@ export const CONTEXT_MENU_BUTTON_STYLE =
   'background: rgba(255, 255, 255, 0.18);\r\n' +
   '}';
 
-// Audio group (mute toggle + 1-5 volume picker) appended below the plain
-// label buttons above — see contextmenuDiv()'s Audio-group construction
-// and applyAudioMenuState(). Reuses .menu-option's row padding/hover from
-// CONTEXT_MENU_OPTION_STYLE/CONTEXT_MENU_OPTION_HOVER_STYLE; everything
-// here is just the toggle-switch/level-picker internals.
+// Audio group -- a single "Audio" parent row (`.submenu-trigger`, shared
+// with any future nested group) that reveals a flyout `.submenu` on hover
+// containing the mute toggle + 1-5 volume picker. See contextmenuDiv()'s
+// Audio-group construction and applyAudioMenuState(). Reuses .menu-option's
+// row padding/hover from CONTEXT_MENU_OPTION_STYLE/
+// CONTEXT_MENU_OPTION_HOVER_STYLE; everything here is just the parent-row
+// arrow, the flyout panel itself, and the toggle-switch/level-picker
+// internals.
 export const CONTEXT_MENU_AUDIO_STYLE =
   '.menu .menu-separator{\r\n' +
   'height: 1px;\r\n' +
-  'margin: 6px 4px;\r\n' +
+  'margin: 5px 3px;\r\n' +
   'background: rgba(255, 255, 255, 0.08);\r\n' +
   '}\r\n' +
-  // Groups the Audio toggle + Volume rows into one visually distinct block
-  // (subtle background/rounding) instead of two loose rows that happen to
-  // sit next to each other — sets them apart from the plain label buttons
-  // above as a single "Audio" section.
-  '.menu .audio-group{\r\n' +
+  '.menu .menu-options .submenu-trigger{\r\n' +
+  'position: relative;\r\n' +
+  'display: flex;\r\n' +
+  'align-items: center;\r\n' +
+  'justify-content: space-between;\r\n' +
+  '}\r\n' +
+  '.menu .submenu-trigger-arrow{\r\n' +
+  'opacity: 0.55;\r\n' +
+  'margin-left: 8px;\r\n' +
+  '}\r\n' +
+  // Flyout panel -- hidden by default, revealed on hover of its parent
+  // `.submenu-trigger` row (`:hover > .submenu` below). Positioned to the
+  // right of the parent row, matching a native OS context menu's own
+  // submenu convention. Unlike the top-level `.menu` (positioned/clamped by
+  // contextmenuDiv() against the host element's box), this flyout has no
+  // equivalent edge-clamping -- see contextmenuDiv()'s Audio-group comment
+  // for why that's an accepted simplification here.
+  '.menu .submenu{\r\n' +
+  'display: none;\r\n' +
+  'position: absolute;\r\n' +
+  'top: -6px;\r\n' +
+  'left: 100%;\r\n' +
+  'margin-left: 4px;\r\n' +
+  'min-width: 150px;\r\n' +
+  'padding: 5px;\r\n' +
+  'box-sizing: border-box;\r\n' +
+  'background: rgba(28, 28, 32, 0.96);\r\n' +
+  'backdrop-filter: blur(8px);\r\n' +
+  '-webkit-backdrop-filter: blur(8px);\r\n' +
+  'border: 1px solid rgba(255, 255, 255, 0.08);\r\n' +
+  'border-radius: 8px;\r\n' +
+  'box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.25);\r\n' +
+  'z-index: 10001;\r\n' +
+  '}\r\n' +
+  '.menu .menu-options .submenu-trigger:hover > .submenu{\r\n' +
   'display: flex;\r\n' +
   'flex-direction: column;\r\n' +
   'row-gap: 2px;\r\n' +
-  'padding: 4px;\r\n' +
-  'border-radius: 8px;\r\n' +
-  'background: rgba(255, 255, 255, 0.05);\r\n' +
   '}\r\n' +
   '.menu .menu-options .audio-toggle-row,\r\n' +
   '.menu .menu-options .audio-volume-row{\r\n' +
@@ -527,9 +560,9 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   // toggle-switch depth/shadow look.
   '.menu .audio-toggle-track{\r\n' +
   'position: relative;\r\n' +
-  'width: 34px;\r\n' +
-  'height: 18px;\r\n' +
-  'border-radius: 9px;\r\n' +
+  'width: 28px;\r\n' +
+  'height: 15px;\r\n' +
+  'border-radius: 8px;\r\n' +
   'background: rgba(255, 255, 255, 0.22);\r\n' +
   'transition: background-color 0.15s ease-out;\r\n' +
   '}\r\n' +
@@ -538,15 +571,15 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   'top: 50%;\r\n' +
   'left: 2px;\r\n' +
   'transform: translateY(-50%);\r\n' +
-  'width: 16px;\r\n' +
-  'height: 16px;\r\n' +
+  'width: 13px;\r\n' +
+  'height: 13px;\r\n' +
   'border-radius: 50%;\r\n' +
   'background: #FFFFFF;\r\n' +
   'box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);\r\n' +
   'transition: left 0.15s ease-out;\r\n' +
   '}\r\n' +
   '.menu .audio-toggle-switch.on .audio-toggle-track{ background: #3B82F6; }\r\n' +
-  '.menu .audio-toggle-switch.on .audio-toggle-thumb{ left: 16px; }\r\n' +
+  '.menu .audio-toggle-switch.on .audio-toggle-thumb{ left: 13px; }\r\n' +
   // No audio RTP session on the current stream (see applyAudioMenuState())
   // — not "muted", nothing to unmute, so this reads as inert rather than
   // a normal actionable Off a click could turn on.
@@ -560,8 +593,8 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   // one extra bit text can't compactly show inline (no audio available at
   // all), full word still reachable via its `title` tooltip.
   '.menu .audio-toggle-state-dot{\r\n' +
-  'width: 8px;\r\n' +
-  'height: 8px;\r\n' +
+  'width: 6px;\r\n' +
+  'height: 6px;\r\n' +
   'border-radius: 50%;\r\n' +
   'flex: 0 0 auto;\r\n' +
   'background: #6B7280;\r\n' +
@@ -576,8 +609,8 @@ export const CONTEXT_MENU_AUDIO_STYLE =
   '.menu .audio-volume-levels{\r\n' +
   'display: flex;\r\n' +
   'align-items: center;\r\n' +
-  'column-gap: 10px;\r\n' +
-  'padding: 4px 12px;\r\n' +
+  'column-gap: 8px;\r\n' +
+  'padding: 3px 10px;\r\n' +
   'border-radius: 999px;\r\n' +
   'background: #111827;\r\n' +
   'border: 1px solid #4B5563;\r\n' +
@@ -653,7 +686,25 @@ export const UI_SWITCH_STYLE =
   '}\r\n' +
   '.menu .onvif-overlay-label{\r\n' +
   'color: #E8E8EA;\r\n' +
-  '}';
+  '}\r\n' +
+  '.menu .onvif-overlay-controls{\r\n' +
+  'display: flex;\r\n' +
+  'align-items: center;\r\n' +
+  'column-gap: 6px;\r\n' +
+  '}\r\n' +
+  // Same dot+`title` convention as `.audio-toggle-state-dot` -- carries the
+  // "no VideoAnalytics data received yet" bit now that the row itself is
+  // always shown (see applyOnvifOverlayMenuState()'s comment) instead of
+  // being hidden entirely until the first frame arrives.
+  '.menu .onvif-overlay-state-dot{\r\n' +
+  'width: 6px;\r\n' +
+  'height: 6px;\r\n' +
+  'border-radius: 50%;\r\n' +
+  'flex: 0 0 auto;\r\n' +
+  'background: #6B7280;\r\n' +
+  'transition: background-color 0.15s ease-out;\r\n' +
+  '}\r\n' +
+  '.menu .onvif-overlay-state-dot.active{ background: #3B82F6; }';
 
 export const VIDEO_CONTAINER_STYLE = '.video-container {\r\n' + 'position: absolute;\r\n' + 'overflow: hidden;\r\n' + 'width: 100%;\r\n' + 'height: 100%;\r\n' + '}';
 

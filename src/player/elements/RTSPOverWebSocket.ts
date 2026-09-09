@@ -301,6 +301,7 @@ export class RTSPOverWebSocket extends HTMLElement {
   onvifOverlay?: OnvifOverlay | null;
   onvifOverlaySwitch?: SwitchController | null;
   onvifOverlayRowElement?: HTMLElement | null;
+  onvifOverlayStateElement?: HTMLElement | null;
   hasReceivedOnvifMetadata?: boolean;
   onvifVideoIntrinsicSize?: { width: number; height: number } | null;
   /** The most recently parsed frame, cached regardless of whether it was
@@ -3410,20 +3411,33 @@ export class RTSPOverWebSocket extends HTMLElement {
     }
   }
 
-  /** REQ-PLY-115: the "ONVIF Event" toggle row stays hidden until at least
-   *  one `VideoAnalytics` frame has actually been received (matching the
-   *  Audio group's own "only show controls for data that's actually
-   *  present" convention above, though that group dims/disables rather
-   *  than hides -- there's no meaningful "disabled but visible" state for a
-   *  stream that has never sent any ONVIF metadata at all). Called both
-   *  from `onRTSPOverWebSocketMeta()` (metadata may arrive before the
-   *  context menu is ever built -- see `contextmenuDiv()`'s lazy,
+  /** REQ-PLY-115 (revised): the "ONVIF Event" toggle row is now always
+   *  present in the context menu -- previously it stayed `display: none`
+   *  entirely until at least one `VideoAnalytics` frame had been received,
+   *  which real-world testing reported as the row having "disappeared"
+   *  (a camera/profile that never sends ONVIF analytics metadata hid the
+   *  control with no visible explanation, indistinguishable from a bug).
+   *  Now matches the Audio group's own convention instead: always visible,
+   *  a status dot (`onvifOverlayStateElement`, same dot+`title` pattern as
+   *  `audioToggleStateElement`) carries the "no data yet" bit that would
+   *  otherwise need hiding the whole row. The switch itself stays
+   *  interactive even before any metadata arrives -- turning it on early is
+   *  harmless (`renderOnvifOverlay()` already no-ops until a frame is
+   *  cached; see that method's own comment) and lets the toggle be
+   *  pre-armed before the first analytics event fires. Called both from
+   *  `onRTSPOverWebSocketMeta()` (metadata may arrive before the context
+   *  menu is ever built -- see `contextmenuDiv()`'s lazy,
    *  built-on-first-right-click construction) and once from
    *  `contextmenuDiv()` itself right after building the row, to cover
    *  metadata that arrived first. */
   private applyOnvifOverlayMenuState(): void {
     if (this.onvifOverlayRowElement === undefined || this.onvifOverlayRowElement === null) return;
-    this.onvifOverlayRowElement.style.display = this.hasReceivedOnvifMetadata === true ? 'flex' : 'none';
+    this.onvifOverlayRowElement.style.display = 'flex';
+    if (this.onvifOverlayStateElement !== undefined && this.onvifOverlayStateElement !== null) {
+      const received = this.hasReceivedOnvifMetadata === true;
+      this.onvifOverlayStateElement.classList.toggle('active', received);
+      this.onvifOverlayStateElement.setAttribute('title', received ? 'Receiving ONVIF metadata' : 'Waiting for ONVIF metadata');
+    }
   }
 
   /** Generic rolling-history line-chart renderer, normalized against the
@@ -3581,22 +3595,45 @@ export class RTSPOverWebSocket extends HTMLElement {
 
       // Audio group: independent of the `Controls` item above (native
       // <video> controls also expose their own volume UI, but this works
-      // whether or not those are on) — a mute/unmute toggle switch mirroring
-      // `ismute`, plus a 1-5 level picker (setAudioVolume()'s valid range)
-      // that only shows while unmuted. See applyAudioMenuState() for how
-      // this stays in sync with actual player state.
+      // whether or not those are on) — a single "Audio" parent row that
+      // reveals a flyout submenu (hover, matching a native OS context menu's
+      // own ">"-triggered submenu convention — the rest of this menu is
+      // click-driven, but nothing else here nests) containing an "On/Off"
+      // mute toggle mirroring `ismute` and a "Volume" 1-5 level picker
+      // (setAudioVolume()'s valid range) that only shows while unmuted.
+      // Previously these were two flat rows directly under a non-interactive
+      // "Audio" grouping div; restructured into an actual submenu per
+      // explicit user request. See applyAudioMenuState() for how the
+      // contents stay in sync with actual player state, and
+      // CONTEXT_MENU_SUBMENU_STYLE for the flyout positioning/hover-reveal
+      // CSS — note that flyout, unlike the top-level `.menu` itself, does
+      // NOT reflow off the container's right edge (no equivalent of
+      // contextmenuDiv()'s own maxLeft/maxTop clamp); accepted as a known
+      // simplification since this menu's min-width keeps the flyout well
+      // within typical player widths in practice.
       const audioSeparatorElement = document.createElement('div');
       audioSeparatorElement.setAttribute('class', 'menu-separator');
       this.menuOptionElement.appendChild(audioSeparatorElement);
 
       const audioGroupElement = document.createElement('div');
-      audioGroupElement.setAttribute('class', 'audio-group');
+      audioGroupElement.setAttribute('class', 'menu-option submenu-trigger');
+      const audioGroupLabelElement = document.createElement('span');
+      audioGroupLabelElement.setAttribute('class', 'submenu-trigger-label');
+      audioGroupLabelElement.innerText = 'Audio';
+      const audioGroupArrowElement = document.createElement('span');
+      audioGroupArrowElement.setAttribute('class', 'submenu-trigger-arrow');
+      audioGroupArrowElement.innerText = '›';
+      audioGroupElement.appendChild(audioGroupLabelElement);
+      audioGroupElement.appendChild(audioGroupArrowElement);
+
+      const audioSubmenuElement = document.createElement('div');
+      audioSubmenuElement.setAttribute('class', 'submenu audio-submenu');
 
       const audioToggleRowElement = document.createElement('div');
       audioToggleRowElement.setAttribute('class', 'menu-option audio-toggle-row');
       const audioToggleLabelElement = document.createElement('span');
       audioToggleLabelElement.setAttribute('class', 'audio-toggle-label');
-      audioToggleLabelElement.innerText = 'Audio';
+      audioToggleLabelElement.innerText = 'On/Off';
       const audioToggleSwitchElement = document.createElement('span');
       audioToggleSwitchElement.setAttribute('class', 'audio-toggle-switch');
       audioToggleSwitchElement.setAttribute('data-action', 'toggle-mute');
@@ -3611,7 +3648,7 @@ export class RTSPOverWebSocket extends HTMLElement {
       audioToggleSwitchElement.appendChild(audioToggleStateElement);
       audioToggleRowElement.appendChild(audioToggleLabelElement);
       audioToggleRowElement.appendChild(audioToggleSwitchElement);
-      audioGroupElement.appendChild(audioToggleRowElement);
+      audioSubmenuElement.appendChild(audioToggleRowElement);
 
       const audioVolumeRowElement = document.createElement('div');
       audioVolumeRowElement.setAttribute('class', 'menu-option audio-volume-row');
@@ -3631,8 +3668,9 @@ export class RTSPOverWebSocket extends HTMLElement {
       }
       audioVolumeRowElement.appendChild(audioVolumeLabelElement);
       audioVolumeRowElement.appendChild(audioVolumeLevelsElement);
-      audioGroupElement.appendChild(audioVolumeRowElement);
+      audioSubmenuElement.appendChild(audioVolumeRowElement);
 
+      audioGroupElement.appendChild(audioSubmenuElement);
       this.menuOptionElement.appendChild(audioGroupElement);
 
       this.audioToggleSwitchElement = audioToggleSwitchElement;
@@ -3640,17 +3678,21 @@ export class RTSPOverWebSocket extends HTMLElement {
       this.audioVolumeRowElement = audioVolumeRowElement;
       this.audioVolumeButtons = audioVolumeButtons;
 
-      // ONVIF Event overlay toggle (REQ-PLY-115/116) -- hidden by default
-      // (both `display: none` here and `createSwitch`'s own `initialValue:
-      // false`) until applyOnvifOverlayMenuState() reveals it, and built via
-      // the standalone createSwitch() component rather than inline markup
-      // (docs/player/10-onvif-metadata-overlay.md).
+      // ONVIF Event overlay toggle (REQ-PLY-115/116) -- always present (see
+      // applyOnvifOverlayMenuState()'s comment for why this is no longer
+      // hidden until metadata arrives), built via the standalone
+      // createSwitch() component rather than inline markup
+      // (docs/player/10-onvif-metadata-overlay.md). The trailing status dot
+      // mirrors the Audio group's own `audio-toggle-state-dot` convention.
       const onvifOverlayRowElement = document.createElement('div');
       onvifOverlayRowElement.setAttribute('class', 'menu-option onvif-overlay-row');
-      onvifOverlayRowElement.style.display = 'none';
       const onvifOverlayLabelElement = document.createElement('span');
       onvifOverlayLabelElement.setAttribute('class', 'onvif-overlay-label');
       onvifOverlayLabelElement.innerText = 'ONVIF Event';
+      const onvifOverlayStateElement = document.createElement('span');
+      onvifOverlayStateElement.setAttribute('class', 'onvif-overlay-state-dot');
+      const onvifOverlayControlsElement = document.createElement('span');
+      onvifOverlayControlsElement.setAttribute('class', 'onvif-overlay-controls');
       const onvifOverlaySwitch = createSwitch({
         initialValue: false,
         ariaLabel: 'Toggle ONVIF event overlay',
@@ -3665,12 +3707,15 @@ export class RTSPOverWebSocket extends HTMLElement {
           }
         }
       });
+      onvifOverlayControlsElement.appendChild(onvifOverlayStateElement);
+      onvifOverlayControlsElement.appendChild(onvifOverlaySwitch.element);
       onvifOverlayRowElement.appendChild(onvifOverlayLabelElement);
-      onvifOverlayRowElement.appendChild(onvifOverlaySwitch.element);
+      onvifOverlayRowElement.appendChild(onvifOverlayControlsElement);
       this.menuOptionElement.appendChild(onvifOverlayRowElement);
 
       this.onvifOverlaySwitch = onvifOverlaySwitch;
       this.onvifOverlayRowElement = onvifOverlayRowElement;
+      this.onvifOverlayStateElement = onvifOverlayStateElement;
       // Covers metadata that arrived before the menu was ever built (this
       // whole block only runs once, on the first right-click) -- see this
       // method's own doc comment.

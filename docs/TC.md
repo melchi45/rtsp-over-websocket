@@ -2,7 +2,7 @@
 
 *Test cases for the Player and Server, each mapped to the [SRS.md](SRS.md) requirement(s) it verifies.*
 
-**Version:** 1.1.1 · **Author:** Youngho Kim
+**Version:** 1.1.2 · **Author:** Youngho Kim
 
 **History**
 
@@ -14,6 +14,7 @@
 | 2026-09-04 | Corrected TC-PLY-112 (Transformation is NOT applied) and updated TC-PLY-113/114/115 for the SVG -> `<div>` rendering surface change |
 | 2026-09-07 | Added TC-SRV-022c/022d for the new `digestAlgorithm` session field (SRS.md REQ-SRV-010/REQ-SRV-043) |
 | 2026-09-08 | Added TC-PLY-120/121 for REQ-PLY-117 (overlay must not obscure the native controls bar) |
+| 2026-09-09 | Rewrote TC-PLY-116/117 for revised REQ-PLY-115 (row always present, status dot instead of hide). Added TC-PLY-122 for new REQ-PLY-118 (Audio flyout submenu). |
 
 ---
 
@@ -166,9 +167,10 @@ Legend: **Auto** = covered by an existing automated test · **Manual** = exercis
 | TC-PLY-113 | REQ-PLY-111, REQ-PLY-113 | Overlay mounted, video intrinsic size 1920x1080, container box 1920x1080 (no letterbox) | `OnvifOverlay.render()` with one object with a `boundingBox` | A `<div class="onvif-overlay-box">` appears at the exact mapped pixel position/size; a `<div class="onvif-overlay-label">` sits just above its top edge | Both — `OnvifOverlay.test.ts` (jsdom, exact math) + Playwright synthetic harness (real visual confirmation) |
 | TC-PLY-114 | REQ-PLY-111 | Overlay mounted, video intrinsic size 1920x1080, container box 800x800 (letterboxed both axes) | `OnvifOverlay.render()` with a known bounding box | Rendered box `<div>`'s position/size accounts for the letterbox offset — verified against the same `object-fit: contain` containment math the video element itself uses | Both — `OnvifOverlay.test.ts` + Playwright |
 | TC-PLY-115 | REQ-PLY-114 | — | `render()` with objects of different class types (e.g. `Human`, `Fire`, an unrecognized type) | Each box `<div>`'s border color matches `onvifEventColors.ts`'s palette; the unrecognized type gets the defined fallback color | Auto — `onvifEventColors.test.ts` |
-| TC-PLY-116 | REQ-PLY-115 | Fresh connection, no `meta` event received yet | Open the context menu | No "ONVIF Event" toggle row is present | Manual |
-| TC-PLY-117 | REQ-PLY-115 | A `meta` event carrying `VideoAnalytics` data has been received | Open the context menu | "ONVIF Event" toggle row is present, in the Off (hidden) position by default | Manual |
+| TC-PLY-116 | REQ-PLY-115 | Fresh connection, no `meta` event received yet | Open the context menu | "ONVIF Event" toggle row IS present (no longer hidden), status dot shows "Waiting for ONVIF metadata" via its `title`, toggle is Off by default and still clickable | Manual |
+| TC-PLY-117 | REQ-PLY-115 | A `meta` event carrying `VideoAnalytics` data has been received | Open the context menu | "ONVIF Event" toggle row is present, status dot shows "Receiving ONVIF metadata" (`.active` class set), toggle in the Off (hidden) position by default | Manual |
 | TC-PLY-118 | REQ-PLY-115 | As TC-PLY-117, overlay objects currently rendered | Click the toggle to On, then back to Off | Overlay becomes visible then hidden again; toggle visual state (`createSwitch`'s controller) matches each click | Manual |
 | TC-PLY-119 | REQ-PLY-116 | — | `createSwitch({ initialValue: false, onChange })` | Returns `{ element, getValue, setValue, destroy }`; `element` contains track+thumb structure; `getValue()` reflects `initialValue`; a simulated click fires `onChange` and flips `getValue()` | Auto — `components/ui/switch/Switch.test.ts` (jsdom) |
 | TC-PLY-120 | REQ-PLY-117 | Overlay visible (`setVisible(true)`) | Call `setSuppressed(true)`, then `setSuppressed(false)` | Overlay is force-hidden while suppressed; on `setSuppressed(false)` it becomes visible again on its own (no `setVisible()` re-call needed) — and a user preference of `setVisible(false)` stays hidden through the same suppress/unsuppress cycle | Auto — `OnvifOverlay.test.ts` |
 | TC-PLY-121 | REQ-PLY-117 | Native `controls` on, "ONVIF Event" toggle On, overlay currently drawing at least one box near the bottom of the video | Observe the native controls bar, including its overflow "more options" popup if the bar is narrow enough to show one | The controls bar (and its "more options" popup, if opened) remain fully visible/clickable — not covered by the overlay | Manual |
+| TC-PLY-122 | REQ-PLY-118 | Context menu open | Hover the "Audio" row | An "On/Off"/"Volume" flyout submenu appears to the right of the row; clicking its mute toggle/volume dots behaves exactly as the previous flat-row layout did (`applyAudioMenuState()` unchanged) | Manual |

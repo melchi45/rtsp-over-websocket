@@ -3,7 +3,7 @@
 *Detailed, testable requirements for the Player and Server, with requirement IDs referenced from [TC.md](TC.md)'s
 test cases.*
 
-**Version:** 1.1.1 · **Author:** Youngho Kim
+**Version:** 1.1.2 · **Author:** Youngho Kim
 
 **History**
 
@@ -16,6 +16,7 @@ test cases.*
 | 2026-09-04 | Corrected REQ-PLY-112 — real device data proved `Transformation` must NOT be applied to `Shape` coordinates, reversing the requirement's original direction |
 | 2026-09-07 | REQ-SRV-010/REQ-SRV-043 updated for the new optional `digestAlgorithm` (`'MD5'`/`'SHA-256'`) session field — lets the demo server's own RTSP Digest bridge exercise the player's RFC 7616 SHA-256 path, since no real camera available for testing offers it. See `MEMORY.md`. |
 | 2026-09-08 | Added REQ-PLY-117 — the overlay must not visually obscure the native `<video controls>` bar (including its overflow "more options" popup) while controls are showing, per a live bug report. |
+| 2026-09-09 | Revised REQ-PLY-115 — the "ONVIF Event" toggle row is now always present in the context menu (a status dot carries the "no data yet" state) instead of being hidden entirely until the first `VideoAnalytics` frame arrives, per a live report that the fully-hidden row read as the control having disappeared. Added REQ-PLY-118 — the Audio group (mute toggle + volume) is now a single "Audio" parent row with an "On/Off"/"Volume" flyout submenu, not two flat rows. Also reduced the context menu's overall font size/padding per direct user request. See `MEMORY.md`. |
 
 ---
 
@@ -175,10 +176,14 @@ section) into `{ xml, json }` and dispatches it as the public `meta` event. This
 - **REQ-PLY-114**: The bounding box's color MUST vary by class/event type (e.g. `Human`, `Vehicle`,
   `Fire`, ...), from a built-in palette with a defined fallback color for a type not in the
   palette.
-- **REQ-PLY-115**: The context menu MUST expose a show/hide toggle for this overlay, hidden until
-  at least one `meta` event carrying `VideoAnalytics` data has actually been received (matching the
-  existing convention for the Audio group — see `docs/player/01-elements-interface-exceptions.md`).
-  The overlay MUST default to hidden.
+- **REQ-PLY-115** *(revised 2026-09-09)*: The context menu MUST expose a show/hide toggle for this
+  overlay, and this row MUST always be present in the menu — it MUST NOT be hidden entirely before
+  any `VideoAnalytics` data has been received. A status indicator alongside the toggle MUST instead
+  communicate whether at least one `meta` event carrying `VideoAnalytics` data has actually been
+  received yet (matching the Audio group's own dot+`title` "N/A" convention — see
+  `docs/player/01-elements-interface-exceptions.md`). The overlay MUST default to hidden (`Off`).
+  *(Original wording hid the row entirely until first data; reversed after a live report that this
+  read as the control having disappeared, rather than as "no data yet" — see `MEMORY.md`.)*
 - **REQ-PLY-116**: The toggle control itself MUST be implemented as a standalone, reusable
   component under `src/player/components/ui/`, not inline markup construction — see
   `docs/player/10-onvif-metadata-overlay.md` for its API.
@@ -186,6 +191,11 @@ section) into `{ xml, json }` and dispatches it as the public `meta` event. This
   visually obscure it — including its browser-native overflow "more options" popup — regardless of
   the overlay's own show/hide toggle state (REQ-PLY-115). The overlay MUST become visible again on
   its own, without requiring the toggle to be re-flipped, once controls are turned back off.
+- **REQ-PLY-118** *(added 2026-09-09)*: The context menu's Audio controls (mute on/off, 1-5 volume
+  picker) MUST be grouped under a single "Audio" parent row that reveals an "On/Off"/"Volume"
+  flyout submenu on hover, rather than being shown as two flat rows directly in the top-level menu —
+  per explicit user request. See `docs/player/01-elements-interface-exceptions.md`'s
+  `contextmenuDiv()` entry and `MEMORY.md`.
 
 ## 5. Server requirements (`src/server`)
 

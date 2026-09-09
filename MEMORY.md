@@ -6312,3 +6312,69 @@ each input is actually in before touching the algebra — `pageX`/`clientX`/`off
 offset that looks like a layout-dependent bug. And when a clamp "does nothing", check its operands
 for `NaN` before assuming the branch logic is wrong: `Number()` on an attribute string with a unit
 suffix is a silent `NaN` factory, and every comparison against it is `false`.
+
+## Context menu: ONVIF Event toggle "disappeared", menu felt too large, Audio needed a submenu (fixed)
+
+Three related context-menu requests, all from the same live report against
+`wisenet-camera-discovery` (a consumer): the "ONVIF Event" toggle had "disappeared" from the
+right-click menu, the menu's font/overall size read as too large, and the Audio mute-toggle +
+volume rows should be grouped into a proper "Audio" submenu instead of two flat rows.
+
+**"Disappeared" toggle — not a regression, a design decision working exactly as documented.**
+REQ-PLY-115 (added with the feature itself, `b546545`) explicitly specified `display: none` for
+the "ONVIF Event" row until at least one `VideoAnalytics` `meta` frame had actually been received —
+mirroring the Audio group's own "only show controls for data that's actually present" convention.
+Working as designed is still a real problem when the *actual* symptom (a camera/profile that never
+sends ONVIF analytics metadata — a distinct, separate condition from a code bug) is indistinguishable
+from the control being broken or removed. Verified this wasn't a build/bundling gap first (`grep`
+for `'ONVIF Event'`/`onvif-overlay-row` in the built `dist/player/rtsp-over-websocket.global.js`
+after a fresh `npm run build:player` — both present) and that no commit between the feature's
+original add and this report had touched `hasReceivedOnvifMetadata`/`onRTSPOverWebSocketMeta`
+(`git log -S`) — before concluding the *hide* behavior itself, not a bug in it, was the thing to
+change. Fixed by revising REQ-PLY-115: the row is now always present, and a new
+`onvifOverlayStateElement` (`.onvif-overlay-state-dot`) carries the "no data yet" bit via the exact
+dot+`title` pattern `audioToggleStateElement` already used for the Audio group's own "N/A" case.
+Left the switch itself always interactive in both states (not disabled pre-data, unlike Audio's
+disabled-when-unavailable) — turning it on before metadata arrives is harmless, since
+`renderOnvifOverlay()` already no-ops until a frame is cached (see that method's own comment) and
+pre-arming it is a reasonable thing to want to do.
+
+**Menu felt too large.** `CONTEXT_MENU_STYLE`/`CONTEXT_MENU_OPTION_STYLE` (`panelStyles.ts`) had
+`.menu` at `min-width: 190px` and `.menu-option` at `font-size: 13px`/`line-height: 1.4`/
+`padding: 8px 12px`. Reduced to `150px`/`11px`/`1.3`/`5px 9px` respectively (and proportionally
+trimmed the Audio group's own separator margins, switch track/thumb, state dots, and volume-level
+picker padding/gaps to match the denser rows) — but deliberately left `UI_SWITCH_STYLE`'s
+`.ui-switch-track`/`.ui-switch-thumb` dimensions (40x20/14px) untouched: that sizing is a documented
+external visual-parity target matching `wisenet-camera-discovery`'s own `mountSwitch({variant:
+'slider'})`, not something derived from this menu's own scale (see `10-onvif-metadata-overlay.md`'s
+`createSwitch` CSS section) — shrinking it would have silently broken that parity for an unrelated
+reason.
+
+**Audio group restructured into a real submenu.** Previously `.audio-group` was a single shaded
+`<div>` directly containing two always-in-the-flow rows ("Audio" toggle + "Volume" picker, the
+latter only `display`-toggled by mute state). Replaced with a single "Audio" `.menu-option
+.submenu-trigger` row (an arrow-suffixed label, no direct action of its own — clicking it matches
+none of `contextmenuDiv()`'s existing `label ===` checks, so it's a no-op by construction, not a new
+special case) that reveals a `.submenu` flyout on `:hover` containing the same two rows, relabeled
+"On/Off" (was "Audio") and "Volume" (unchanged). No JS click-handling changes were needed —
+`applyAudioMenuState()` and the `[data-action="toggle-mute"]`/`[data-volume]` closest()-based click
+matching operate on the same elements regardless of which parent they're nested under. One accepted
+gap: the flyout has no equivalent of the top-level `.menu`'s own `contextmenuDiv()` edge-clamp (it
+can in principle render off the right edge of a very narrow host), left unaddressed since the
+menu's reduced min-width keeps this from mattering at any width the demo/consumer actually uses.
+
+Also worth noting for anyone touching this menu again: there is no `stopPropagation()` anywhere in
+`contextmenuDiv()`'s click handling, so *any* click inside the menu (including inside the new
+Audio flyout) bubbles to the `window`-level `boundWindowClickHideMenuHandler` and closes the whole
+menu immediately after the local handler runs — pre-existing behavior (true of the old flat Audio
+rows too), not something the submenu change introduced or should try to fix as a "bug".
+
+**How to apply**: when a reported "the feature is gone" turns out to trace to a `display: none`
+gate working exactly as its own requirement specifies, that's still a real finding — a state
+indistinguishable from breakage needs its own visible signal (a status dot, a title, a disabled
+style), not just "it's hidden on purpose, working as intended." Before touching a hide-vs-show
+requirement, rule out an actual regression first (grep the built bundle, `git log -S` the gating
+field) so the fix targets the right layer. And when copying an existing sizing convention onto a
+new control, check whether it was called out as a *deliberate external parity target* rather than
+a value picked to match its context — those two look identical in the CSS but should not both move
+just because the surrounding menu got denser.

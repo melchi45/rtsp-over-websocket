@@ -3,7 +3,7 @@
 *Per-class reference for the public custom element (`elements/`), its per-channel orchestration layer
 (`interface/`), the React wrapper (`react/`), and the error hierarchy (`exceptions/`).*
 
-**Version:** 1.7.10 · **Author:** Youngho Kim
+**Version:** 1.7.11 · **Author:** Youngho Kim
 
 **History**
 
@@ -64,6 +64,7 @@
 | 2026-09-08 | **`audioencodermode` now selects the AAC *decode* tier too**, not just the transcode/encode one — requested directly by the user, whose stated motivation is that `vendor/ffmpegAAC.decoder.js` is an asm.js build reserving a fixed 160MiB `TOTAL_MEMORY` heap. No change was needed in this file's own code: `attributeChangedCallback`'s validation, `info.audioEncoderMode`, and `pushAudioEncoderModeToRunningPlayers()` all stayed exactly as the 2026-09-08 entry above describes them. What changed is downstream — `MediaRouter` now also forwards the value to its `AudioPlayerLike`, and `AudioPlayerGxx.audioInit()` reads it to pick between the new `AACWebCodecsAudioDecoder` (`'auto'`/`'webcodecs'`, the new default) and the existing asm.js `AACAudioDecoder` (`'wasm'`). Scope note for anyone reading the attribute's docs: the decode half applies **only in canvas-tag mode**, since `AudioPlayerGxx` is never constructed for a `VideoTagPlayer` session; the encode half described above is video-tag-only, so the one attribute governs a different subsystem in each of the two rendering modes. See `06-listen-audio.md` (v1.2.0) and `03-mediaSession-core-video.md` (v1.2.2). |
 | 2026-09-09 | Fixed a real layout bug, reported directly by a consumer (`wisenet-camera-discovery`): mouse-wheel digital zoom (`scrolled()`/`update()`) visually broke the surrounding host page — the video area appeared to grow past its column and the statistics overlay jumped to a page corner. Root cause: `rtspOverWebSocketWrapperElement` (holding `this.video` *and* every `position: absolute` overlay — statistics/channel/context-menu/video-container) gets a `transform: translate(...) scale(...)` from `update()`, and a CSS `transform` makes its element the containing block for those `position: absolute` descendants regardless of the element's own (static) `position` — but does not clip anything by itself. `connectedCallback()` now also sets `overflow: hidden` (alongside the existing `position: relative`/`display: block`, same only-if-unset guard) so panned/scaled content stays clipped to this element's own box instead of painting over the host page. See `:888-903`'s own comment and `MEMORY.md`. |
 | 2026-09-09 | Two more real mouse-wheel-zoom bugs, both reported directly by the same consumer after the `overflow: hidden` fix above: (a) the zoom anchor drifted with the element's size/placement instead of staying under the cursor — `scrolled()` computed `zoom_point` as `event.pageX - wrapper.offsetLeft`, but this element is the wrapper's `offsetParent` (it sets `position: relative`), so that term is ~0 and a document-space `pageX` was being used as an element-local coordinate; (b) zooming all the way back out never restored the full frame — the pan clamps compared against `this.size`, seeded once in `updateRendering()` from the `width`/`height` *attribute strings*, so `Number("640px")` → `NaN` made both lower clamps dead and only `pos > 0` ever fired, leaving whatever negative translate the last anchor produced. Both now derive from a live `this.getBoundingClientRect()` (an ancestor's box is unaffected by a descendant's transform, so it is a stable reference at any zoom level, and it also tracks CSS/aspect-ratio-driven resizes that a once-at-attach attribute snapshot cannot); `this.size` is kept in sync from it. At `scale === 1` the two clamps now pin `pos` to exactly `(0, 0)`. See the "Geometry / interaction helpers" paragraph above and `MEMORY.md`. |
+| 2026-09-09 | Three context-menu changes, all requested directly by the user: (1) REQ-PLY-115 revised — the "ONVIF Event" toggle row is now always present (previously `display: none` entirely until the first `VideoAnalytics` frame, reported as the control having "disappeared"); an `.onvif-overlay-state-dot` now carries the "no data yet" state instead, mirroring the Audio group's own dot convention. (2) The context menu's overall font-size/padding/min-width (`panelStyles.ts`'s `CONTEXT_MENU_STYLE`/`CONTEXT_MENU_OPTION_STYLE`) were reduced — reported as reading too large. (3) REQ-PLY-118 added — the Audio group (mute toggle + 1-5 volume picker) is now a single "Audio" parent row (`.submenu-trigger`) that reveals an "On/Off"/"Volume" flyout submenu (`.submenu`) on hover, replacing the previous two-flat-rows-in-a-shaded-box layout; the flyout does not reflow off the container's right edge the way the top-level menu itself does (accepted simplification, `.menu`'s min-width keeps this from mattering in practice). See `10-onvif-metadata-overlay.md`'s matching History entry and `MEMORY.md`. |
 
 ---
 
@@ -903,16 +904,24 @@ their exact location rather than fixed silently (file header comment,
   passed to `parseOnvifVideoAnalyticsFrame()` (`util/onvifMetadata.ts`), and a successfully-parsed
   frame is forwarded to a mounted `OnvifOverlay` instance's `render()`, but *only* while the new
   "ONVIF Event" context-menu toggle (`onvifOverlaySwitch`, a `createSwitch()` controller — see
-  `10-onvif-metadata-overlay.md`) is On. The toggle row itself is built (and appended to the
-  context menu, alongside the Audio group) the first time a `VideoAnalytics` frame is successfully
-  parsed — mirroring the Audio group's existing "only show controls for data that's actually
-  present" convention — and stays hidden entirely on a stream that never sends ONVIF metadata.
-  `OnvifOverlay` is constructed once, alongside the video/canvas rendering element, in the same
-  place `elementSetting()`/`updateRendering()` set those up; its mounted `<svg>` is resized on the
-  same `onRTSPOverWebSocketResize()` path that already tracks `videoWidth`/`videoHeight` for the
+  `10-onvif-metadata-overlay.md`) is On. The toggle row itself is built once, up front, alongside
+  the Audio group (not lazily on first metadata frame). `OnvifOverlay` is constructed once,
+  alongside the video/canvas rendering element, in the same place `elementSetting()`/
+  `updateRendering()` set those up; its mounted `<svg>` is resized on the same
+  `onRTSPOverWebSocketResize()` path that already tracks `videoWidth`/`videoHeight` for the
   statistics overlay, and torn down from the same per-instance cleanup `close()`/disconnect path
   uses for everything else. See `10-onvif-metadata-overlay.md` for the full class reference and
   `DESIGN.md` §2.7 for the coordinate-mapping algorithm.
+  **Row visibility revised (2026-09-09)**: REQ-PLY-115 originally hid this row entirely
+  (`display: none`) until the first `VideoAnalytics` frame arrived, mirroring the Audio group's
+  own "only show controls for data that's actually present" convention. Reported live as the
+  toggle having "disappeared" — a stream/profile that never sends ONVIF analytics metadata hid the
+  control with no visible explanation, indistinguishable from a real regression. The row is now
+  always present; `applyOnvifOverlayMenuState()` instead toggles an `.onvif-overlay-state-dot`
+  (same dot+`title` convention as the Audio group's own `audioToggleStateElement`) between
+  "Waiting for ONVIF metadata" and "Receiving ONVIF metadata". The switch stays interactive either
+  way — turning it on before any metadata has arrived is harmless, since `renderOnvifOverlay()`
+  already no-ops until a frame is cached. See `MEMORY.md`.
 
 **Event plumbing (non-standard `EventTarget` override)**
 
@@ -932,9 +941,12 @@ their exact location rather than fixed silently (file header comment,
 resolution/position/ratio/codec/FPS/frames/rate/drops/chunk/video-RTP/audio-RTP/latency/
 received/timestamp rows plus SVG line/intensity charts), `networkstateDiv()`/
 `applyNetworkStateDotClass()` (`:2873-2943`, the pulsing floating network-quality dot),
-`contextmenuDiv(e?)` (`:2945-3175`, the right-click menu: Statistics/Network State/FullScreen/
-Controls/Channel/Minimap/Show-bestshot toggles plus an Audio mute-switch + 1-5 volume-level
-picker synced via `applyAudioMenuState()`), `updateMinimap()`/`updateMetaImage()`
+`contextmenuDiv(e?)` (`:3564-3867`, the right-click menu: Statistics/Network State/FullScreen/
+Controls/Channel/Minimap/Show-bestshot toggles, a single "Audio" parent row (`.submenu-trigger`)
+revealing an "On/Off" mute-switch + "Volume" 1-5 level-picker flyout submenu on hover — synced via
+`applyAudioMenuState()`, restructured 2026-09-09 from two flat rows per explicit user request, see
+`MEMORY.md` — and an always-present "ONVIF Event" toggle row synced via
+`applyOnvifOverlayMenuState()`), `updateMinimap()`/`updateMetaImage()`
 (`:1091-1211`, the latter's tail is a confirmed copy-paste bug — it queries/updates the
 `minimap` element and command instead of a `metaimage`-specific one). These build/toggle plain
 DOM + inject scoped `<style>` blocks from `panelStyles.ts` via `appendStyle()`/`checkStyle()`/
