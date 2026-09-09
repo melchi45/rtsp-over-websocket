@@ -3,7 +3,7 @@
 *Per-class reference for `src/player/listen/decoder/*` and `src/player/listen/renderer/*` — the audio decode and
 playback subsystem, including decode math/tables and Web Audio API / MSE usage.*
 
-**Version:** 1.2.0 · **Author:** Youngho Kim
+**Version:** 1.2.1 · **Author:** Youngho Kim
 
 **History**
 
@@ -16,6 +16,7 @@ playback subsystem, including decode math/tables and Web Audio API / MSE usage.*
 | 2026-09-04 | Live-refresh: reported directly by the user, a `debug` config change made *during* an already-running stream had no visible effect on `AudioPlayerGxx`'s decoder tracing either. `AudioPlayerGxx` now overrides `set debug()` to also re-push into `audioDecoder` if one already exists, using a new `audioDecoderDebugName` field (promoted from what used to be a local variable inside `audioInit()`) that remembers which literal decoder name is currently active, so the override doesn't need to re-derive it from `codecInfo.type`. `AudioPlayerAAC` needed no equivalent override — never actually constructed by the default factory (see the 2026-09-04 entry above), so it was already out of scope. See `03-mediaSession-core-video.md`'s matching History entry (the full chain starts at `RTSPOverWebSocket.ts`/`MediaRouter.ts`) and `MEMORY.md` for the complete per-class breakdown. |
 | 2026-09-08 | **New `AACWebCodecsAudioDecoder`**, requested directly by the user: `vendor/ffmpegAAC.decoder.js` is an asm.js build that reserves a fixed `TOTAL_MEMORY = 167772160` (160MiB) heap the moment its `Module` loads, so the user asked for the *existing* Audio Transcode Type control (`audioencodermode`, already driving `WebCodecsAudioEncoder` on the Talk/encode side) to also pick the **decode** tier: `'auto'`/`'webcodecs'` → the browser's native WebCodecs `AudioDecoder`, exactly like `OPUSAudioDecoder` already does; `'wasm'` → keep the existing `AACAudioDecoder`/asm.js path unchanged. Implemented as a new decoder class rather than a branch inside `AACAudioDecoder`, so the asm.js path stays byte-for-byte the legacy behavior it faithfully ports. **No `AudioSpecificConfig` plumbing was needed**: `AACSession.genADTSAAC()` already builds a real 7-byte ADTS header from the SDP fmtp `config=`, and `MediaRouter.handleAudioData()` already prepends it to the access unit before `BufferAudio()` — and Chrome reads an `AudioDecoderConfig` *without* a `description` as declaring exactly that ADTS framing, so the bytes already arriving here are the one format WebCodecs accepts with no out-of-band config. `AudioPlayerGxx` gained a public `audioEncoderMode` field (pushed down by `MediaRouter.createAudioPlayer()` and its `set audioEncoderMode()` setter) plus a `try`/`catch` around the WebCodecs construction that falls back to the asm.js decoder and logs a `warning`, covering both "no WebCodecs at all" and "WebCodecs present but no AAC decode support" (Chrome throws `NotSupportedError` synchronously from `configure()`). Note this is **canvas-tag-mode only** by construction — per this file's own "Where this subsystem fits", `AudioPlayerGxx` is never built for a `VideoTagPlayer` session, which muxes AAC into its own `SourceBuffer` instead — which also answers the user's second question directly: yes, the canvas-tag player can now play AAC through WebCodecs. See `03-mediaSession-core-video.md` for the matching `AudioPlayerLike.audioEncoderMode` interface change and `MEMORY.md`. |
 | 2026-09-08 | Full-`src/player` memory-leak audit, requested directly by the user as a follow-up to the `VideoTagPlayer`/`Transport`/`MediaRouter` leaks fixed the same day elsewhere: `AudioPlayerAAC.terminate()` was a complete no-op (a faithfully-ported copy of the legacy file's own commented-out `audio = null;`), despite `audioInit()` creating a real `<audio>` element appended directly to `document.body` (never removed), a `MediaSource` with five event listeners, a `SourceBuffer` with one more, and a Blob URL via `createObjectURL(mediaSource)` (never revoked) — every one of those survives past the JS object's own lifetime once orphaned in the DOM/blob-URL registry. Fixed to match `AudioPlayerGxx.terminate()`'s own correct pattern: removes all listeners, revokes the Blob URL, detaches the `<audio>` element from `document.body`, nulls every field. **Confirmed currently unreachable in this application** (per this file's own 2026-09-04 note above — `StreamPlayer.ts`'s default factory only ever constructs `AudioPlayerGxx`), so this fix does not explain any memory growth the user has observed so far; fixed anyway since the class remains part of the public `MediaRouterFactories` seam and a real, if currently dormant, leak. See `MEMORY.md` for the full audit writeup covering every file checked. |
+| 2026-09-09 | Added a call-stack sequence diagram for the "Where this subsystem fits" canvas-tag vs. video-tag audio routing decision (`MediaRouter.handleAudioData`'s `self.player.onAudioData` check, `MediaRouter.ts:1022`), citing exact source lines for both branches (`VideoTagPlayer.onAudioData` muxing vs. lazy `AudioPlayerGxx` construction/`BufferAudio`), requested directly by the user. Added an explicit paragraph confirming `OPUSAudioDecoder` (and every other codec here) *is* reachable in canvas-tag mode despite `CanvasTagPlayer`/`VideoPlayerLike` declaring no audio-shaped method in their own inheritance chain — canvas-tag audio is a fully separate pipeline `MediaRouter` drives directly, decoupled from the video player's class hierarchy. No code changed. |
 
 ---
 
@@ -79,6 +80,55 @@ flowchart LR
     Q -->|"yes: VideoTagPlayer.onAudioData"| VTP["VideoTagPlayer<br/>(muxes into its own fMP4 SourceBuffer — file 05)"]
     Q -->|"no: CanvasTagPlayer has no onAudioData"| Gxx["AudioPlayerGxx (this file)<br/>decode() to PCM, play via Web Audio API"]
 ```
+
+The routing decision above is a single truthiness check, traced end-to-end from the RTP callback
+that feeds it:
+
+```mermaid
+sequenceDiagram
+    participant RtpSession as *Session (RtpClient's onAudioData callback, 03/04)
+    participant MR as MediaRouter.handleAudioData
+    participant VTP as VideoTagPlayer.onAudioData (05)
+    participant Gxx as AudioPlayerGxx (this file)
+
+    RtpSession->>MR: onAudioData(playMode, streamData, audioInfo)
+    alt self.player && self.player.onAudioData truthy (MediaRouter.ts:1022) — video-tag mode
+        MR->>VTP: player.onAudioData(playMode, streamData, audioInfo)
+        VTP->>VTP: setAudioInfo() / createAudioSample()<br/>mux directly into its own fMP4 SourceBuffer (VideoTagPlayer.ts:3103-3128)
+    else self.player.onAudioData undefined (CanvasTagPlayer, 11) and !self.mute
+        MR->>MR: if audioPlayer===null: createAudioPlayer()<br/>(MediaRouter.ts:1026,1152-1153 → StreamPlayer's factory: new AudioPlayerGxx() — StreamPlayer.ts:124)
+        MR->>Gxx: audioInit(codecType, codecMime, bitrate, volume) [once, on codec change]
+        Note over MR,Gxx: gated on audioPlayer.isInit() && audioPlayer.channelId===self.channelId (MediaRouter.ts:1041)
+        MR->>Gxx: BufferAudio(streamData.frameData, streamData.timeStamp.rtpTimestamp) (MediaRouter.ts:1049)
+        MR->>Gxx: setBufferingFlag(rtpTimestamp, 'currentTime') (MediaRouter.ts:1050)
+    end
+```
+
+`VideoPlayerLike.onAudioData` is declared **optional** (`onAudioData?(...)`, `MediaRouter.ts:199`)
+precisely so `CanvasTagPlayer` (`11-canvas-tag-player.md`) can simply not implement it — confirmed
+in code: neither `CanvasTagPlayer.ts` nor its `VideoPlayer.ts` base declares an `onAudioData`
+method at all (only `onVideoData`). That absence is what makes `self.player.onAudioData` falsy
+and routes into the `else` branch above. `AudioPlayerGxx` itself is **lazily constructed** —
+`MediaRouter.createAudioPlayer()` guards with `if (this.audioPlayer === null)`
+(`MediaRouter.ts:1152`) and is only ever called from this `else` branch or the `mute` setter
+(`MediaRouter.ts:526`) — so a video-tag session never constructs one at all, and a canvas-tag
+session doesn't build one until the first audio packet that needs it.
+
+**This is also the direct answer to "can `OPUSAudioDecoder` be reached in canvas-tag mode": yes.**
+Reading only the class/inheritance diagrams (this file's own below, or `src/player/README.md`'s)
+can suggest otherwise, since neither `CanvasTagPlayer` nor its `VideoPlayerLike` base declares any
+audio-shaped method — but that absence is exactly the point of the seam traced above: canvas-tag
+audio does not route through `CanvasTagPlayer`'s own inheritance chain at all. It is a fully
+separate, parallel pipeline that `MediaRouter` drives directly whenever `player.onAudioData` is
+absent, and `OPUSAudioDecoder` sits inside that pipeline like every other codec
+(`AudioPlayerGxx.audioInit()`'s `codecType === 'OPUS'` branch — see its own section and Call Stack
+below). Nothing about Opus decode (native WebCodecs `AudioDecoder`) or playback (`AudioPlayerGxx`'s
+Web Audio graph) depends on which video codec/tag-mode is active; video-tag mode simply never
+constructs `AudioPlayerGxx` in the first place — `VideoTagPlayer.onAudioData` muxes Opus (and every
+other audio codec) directly into its own `SourceBuffer` instead, guarded by
+`(streamData.codecType === 'OPUS') === this.sourceBufferAudioIsOpus` (`VideoTagPlayer.ts:3124`), so
+Opus reaches audible output via one path or the other depending purely on which tag mode the
+*video* codec selected (`MediaRouter.selectVideoPlayer`, file 03) — never both, and never neither.
 
 ```mermaid
 classDiagram
