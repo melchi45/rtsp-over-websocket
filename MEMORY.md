@@ -6166,3 +6166,64 @@ when a number like "1GB in 10 minutes" is close to the raw stream bitrate over t
 alone is strong evidence that *everything received is being retained*, which is a much narrower
 hypothesis than "something leaks".
 
+
+---
+
+## The AAC asm.js heap, addressed properly: a second WebCodecs decode tier behind the existing `audioencodermode` attribute
+
+Two failed attempts at `vendor/ffmpegAAC.decoder.js`'s 160MiB asm.js heap are already recorded
+above ("The real 400MB-before-`play()` leak", "Follow-up: `CanvasTagPlayer`/`tagMode` gating…",
+both reverted after "Course correction: the AAC asm.js heap was a red herring"). Both tried to
+*defer or skip* loading that heap by guessing, at `connectedCallback()`/`play()` time, whether
+AAC decode would eventually be needed. Both were wrong for the same reason: the tag mode and the
+negotiated audio codec aren't known that early, so any gate there is a race.
+
+The user's own framing is what unlocked it — and it is worth quoting, because it reframes the
+problem rather than proposing a fix: *"ffmpegAAC.decoder.js 는 asm.js 를 사용하기 때문에 메모리
+사용이 많습니다. 해당 내역을 유지한채 UI 에서 Audio Transcode Type 이 auto 나 webcodecs 인 경우
+OPUS 와 같이 WebCodecs 을 사용하고, 만약 wasm 을 선택하면 기존 ffmpegAAC.decoder.js 을 사용하도록
+처리가 가능한가요?"* — i.e. **don't gate the load, remove the need for it**, and do it through the
+`audioencodermode` control that already exists for exactly this kind of WASM-vs-native choice on
+the encode side.
+
+**What was built.** A new `listen/decoder/AACWebCodecsAudioDecoder.ts`, a near-twin of
+`OPUSAudioDecoder` (same async-output → sync-`decode()` FIFO bridge, same `AudioData.close()` in a
+`finally`, same `0x0311` unsupported-API error). `AudioPlayerGxx` gained a public
+`audioEncoderMode` field; its `audioInit()` AAC branch now picks `AACWebCodecsAudioDecoder` for
+`'auto'`/`'webcodecs'` and the existing `aacAudioDecoderFactory()` for `'wasm'`, inside a
+`try`/`catch` that falls back to asm.js with a `warning`. `MediaRouter` forwards the value through
+a new optional `AudioPlayerLike.audioEncoderMode`.
+
+**The finding that made it a ~100-line change instead of a plumbing project.** WebCodecs takes AAC
+in one of two framings: raw access units *plus* an `AudioSpecificConfig` in
+`AudioDecoderConfig.description`, or ADTS-framed input signalled by supplying **no** `description`
+at all. Getting an `AudioSpecificConfig` down to the decoder would have meant threading the SDP
+fmtp `config=` through `SDPParser` → `AACSession` → `MediaRouter` → `AudioPlayerGxx`. It turned out
+to be unnecessary: `AACSession.genADTSAAC()` already builds a real 7-byte ADTS header from that
+same fmtp `config=` (real `samplingFrequencyIndex`/`channelConfiguration`, not assumed values), and
+`MediaRouter.handleAudioData()` already prepends it to `frameData` before `BufferAudio()` — a step
+that has existed all along for `AACAudioDecoder`'s benefit. **The bytes reaching `decode()` were
+already in the exact format WebCodecs accepts with no out-of-band config.** Passing a `description`
+would in fact have been wrong.
+
+**Two deliberate asymmetries, both worth not "fixing" later:**
+
+1. `AudioPlayerGxx.audioEncoderMode` is a plain public field, not a live-refreshing setter — unlike
+   `debug`, which does re-push into an existing decoder, and unlike `VideoPlayerLike.
+   setAudioEncoderMode?()`, which swaps the encoder live. It is read only inside `audioInit()`, so
+   a mid-session change takes effect at the next codec change or session. Swapping a decoder
+   underneath the running Web Audio `AudioBufferSourceNode` scheduling path is not worth the
+   hazard for a setting nobody flips mid-stream.
+2. One attribute now governs two different subsystems depending on rendering mode: in video-tag
+   mode it selects the G.711/G.726→AAC *encoder* (`VideoTagPlayer`, file 05); in canvas-tag mode it
+   selects the AAC *decoder* (this change, file 06). They can never both apply to one stream —
+   `AudioPlayerGxx` is never constructed for a `VideoTagPlayer` session — which is precisely why
+   reusing the one attribute is coherent rather than overloaded. This also answered the user's
+   second question directly: yes, the canvas-tag player can now play AAC via WebCodecs.
+
+**How to apply**: when a resource is expensive and you can't reliably predict whether it will be
+needed, the question "when can I safely load this?" may be the wrong one. Ask whether a path exists
+that doesn't need it at all — and check whether the codebase already has a user-facing switch for
+that same class of choice before adding another. Also: before plumbing configuration down through
+four layers to satisfy an API, check what the data arriving at that API already looks like; the
+required framing may already be there for unrelated historical reasons.

@@ -262,6 +262,7 @@ classDiagram
     class AudioPlayer
 
     AudioDecoder <|-- AACAudioDecoder
+    AudioDecoder <|-- AACWebCodecsAudioDecoder
     AudioDecoder <|-- G711AudioDecoder
     AudioDecoder <|-- G726_16_AudioDecoder
     AudioDecoder <|-- G726_24_AudioDecoder
@@ -280,9 +281,15 @@ classDiagram
 
     AudioPlayerGxx --> G711AudioDecoder : creates
     AudioPlayerGxx --> G726xAudioDecoder : creates
-    AudioPlayerGxx --> AACAudioDecoder : creates
+    AudioPlayerGxx --> AACAudioDecoder : creates (audioEncoderMode=wasm)
+    AudioPlayerGxx --> AACWebCodecsAudioDecoder : creates (auto/webcodecs)
     AudioPlayerGxx --> OPUSAudioDecoder : creates
 ```
+
+`AACAudioDecoder` and `AACWebCodecsAudioDecoder` are two interchangeable implementations of the
+same AAC-to-PCM step, picked at `audioInit()` time by the `audioencodermode` attribute — the
+former via the vendored ffmpeg asm.js build, the latter via the browser's native WebCodecs
+`AudioDecoder` (the default, and the same approach `OPUSAudioDecoder` takes).
 
 `G726xAudioDecoder` is a dispatcher/facade over the four bitrate-specific G.726 decoders
 (16/24/32/40 kbit/s) — it does **not** itself extend `AudioDecoder`, it composes them and

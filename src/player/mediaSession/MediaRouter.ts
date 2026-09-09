@@ -242,6 +242,12 @@ export interface AudioPlayerLike {
   setBufferingFlag(rtpTimestamp: unknown, mode: string): void;
   ControlVolume(value: unknown): void;
   debug?: DebugConfig | null;
+  /** `'auto'` | `'webcodecs'` | `'wasm'` -- selects `AudioPlayerGxx`'s AAC *decode* tier
+   *  (WebCodecs `AudioDecoder` vs. the vendored ffmpeg asm.js build), the decode-side counterpart
+   *  to the same `audioencodermode` attribute's existing effect on `VideoTagPlayer`'s G.711/G.726-
+   *  to-AAC encode tier. Optional: `AudioPlayerAAC` (the unused second implementation, see
+   *  `06-listen-audio.md`) has no AAC decoder of its own to select. */
+  audioEncoderMode?: string;
 }
 
 export interface TalkLike {
@@ -573,6 +579,13 @@ export class MediaRouter {
   set audioEncoderMode(mode: string) {
     this._audioEncoderMode = mode;
     this._videoPlayer?.setAudioEncoderMode?.(mode);
+    // Decode side (`AudioPlayerGxx`'s AAC tier). Unlike the video player's encode tier, this one
+    // is only *read* when `audioInit()` constructs a decoder, so a mid-session change here takes
+    // effect on the next `audioInit()` -- the next codec change, or the next session -- rather
+    // than swapping an already-running decoder underneath the Web Audio scheduling path.
+    if (this.audioPlayer !== null) {
+      this.audioPlayer.audioEncoderMode = mode;
+    }
   }
 
   get supportCovertAndOff(): boolean {
@@ -1140,6 +1153,12 @@ export class MediaRouter {
       this.audioPlayer = this.factories.createAudioPlayer();
       this.audioPlayer.channelId = this.channelId;
       this.audioPlayer.debug = this._debugConfig;
+      // Decode-side counterpart to the same `audioencodermode` this class already forwards to the
+      // video player's encode tier (see `selectVideoPlayer()`'s `setAudioEncoderMode` call) --
+      // `AudioPlayerGxx.audioInit()` reads it when picking its AAC decoder. Pushed here rather
+      // than through `audioInit()`'s signature so the (unused) `AudioPlayerAAC` implementation,
+      // which has no AAC decoder to select, needs no change.
+      this.audioPlayer.audioEncoderMode = this._audioEncoderMode;
       if (this.getAudioVolume() !== 0) {
         this.audioPlayer.ControlVolume(this.getAudioVolume());
       }

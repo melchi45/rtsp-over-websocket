@@ -2,6 +2,7 @@ import { AudioPlayer } from './AudioPlayer';
 import { G711AudioDecoder, type G711Mime } from '../decoder/G711AudioDecoder';
 import { G726xAudioDecoder } from '../decoder/G726xAudioDecoder';
 import { AACAudioDecoder } from '../decoder/AACAudioDecoder';
+import { AACWebCodecsAudioDecoder } from '../decoder/AACWebCodecsAudioDecoder';
 import { OPUSAudioDecoder } from '../decoder/OPUSAudioDecoder';
 import { RTSPOverWebSocketError } from '../../exceptions/RTSPOverWebSocketError';
 import { fromHex } from '../../util/hex';
@@ -61,6 +62,11 @@ export class AudioPlayerGxx extends AudioPlayer {
    *  below can live-refresh an already-constructed decoder (added 2026-09-04, requested directly
    *  by the user) without needing to re-derive which decoder class is currently active. */
   private audioDecoderDebugName = '';
+  /** `'auto'` (default) | `'webcodecs'` | `'wasm'` -- the same `audioencodermode` attribute that
+   *  already selects `VideoTagPlayer`'s G.711/G.726-to-AAC *encode* tier, reused here to select the
+   *  AAC *decode* tier for canvas-tag audio (see `audioInit()`'s AAC branch). Pushed in by
+   *  `MediaRouter.createAudioPlayer()`; left at `'auto'` when nothing sets it. */
+  audioEncoderMode = 'auto';
 
   constructor(
     private readonly audioContextFactory: () => AudioContext = () => new AudioContext(),
@@ -182,9 +188,38 @@ export class AudioPlayerGxx extends AudioPlayer {
       this.audioDecoder = decoder;
       this.audioDecoderDebugName = 'G711AudioDecoder';
     } else if (codecType === 'AAC') {
-      this.audioDecoder = this.aacAudioDecoderFactory();
       this.codecInfo.samplingRate = 16000;
-      this.audioDecoderDebugName = 'AACAudioDecoder';
+      // Two interchangeable AAC decode tiers, selected by the same
+      // `audioencodermode` attribute that already picks `VideoTagPlayer`'s
+      // G.711/G.726-to-AAC *encode* tier (`'auto'` | `'webcodecs'` | `'wasm'`):
+      //
+      //  - `'wasm'`            -> AACAudioDecoder, the vendored ffmpeg asm.js build
+      //                           (`vendor/ffmpegAAC.decoder.js`) this path has always used.
+      //  - `'auto'`/`'webcodecs'` -> AACWebCodecsAudioDecoder, the browser's own
+      //                           WebCodecs `AudioDecoder`, exactly as OPUS already does.
+      //
+      // `'auto'` prefers WebCodecs and falls back on its own: the constructor throws
+      // synchronously both when the API is missing entirely and when `configure()` rejects
+      // AAC (`NotSupportedError`), so a browser without WebCodecs AAC decode still lands on
+      // the asm.js tier rather than losing audio. `'webcodecs'` takes the same fallback --
+      // an explicit request can't conjure browser support that isn't there, and silently
+      // dropping audio would be a worse answer than quietly using the tier that works.
+      if (this.audioEncoderMode === 'wasm') {
+        this.audioDecoder = this.aacAudioDecoderFactory();
+        this.audioDecoderDebugName = 'AACAudioDecoder';
+      } else {
+        try {
+          this.audioDecoder = new AACWebCodecsAudioDecoder(this.codecInfo.samplingRate);
+          this.audioDecoderDebugName = 'AACWebCodecsAudioDecoder';
+        } catch (error) {
+          this.debugLog.warning(
+            `AAC WebCodecs decode unavailable (audioEncoderMode='${this.audioEncoderMode}'), falling back to the asm.js decoder:`,
+            error
+          );
+          this.audioDecoder = this.aacAudioDecoderFactory();
+          this.audioDecoderDebugName = 'AACAudioDecoder';
+        }
+      }
     } else if (codecType === 'OPUS') {
       this.audioDecoder = new OPUSAudioDecoder();
       this.codecInfo.samplingRate = 48000;

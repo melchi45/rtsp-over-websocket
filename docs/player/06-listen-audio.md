@@ -3,7 +3,7 @@
 *Per-class reference for `src/player/listen/decoder/*` and `src/player/listen/renderer/*` — the audio decode and
 playback subsystem, including decode math/tables and Web Audio API / MSE usage.*
 
-**Version:** 1.1.1 · **Author:** Youngho Kim
+**Version:** 1.2.0 · **Author:** Youngho Kim
 
 **History**
 
@@ -14,6 +14,7 @@ playback subsystem, including decode math/tables and Web Audio API / MSE usage.*
 | 2026-08-26 | Added Title/Abstract/Version/Author/History metadata header |
 | 2026-09-04 | Added `debug`-gated `console.log` tracing (`util/debugLog.ts`, `debug["listen"]` — see `01-elements-interface-exceptions.md`'s new `debug` attribute and `08-util.md`). `AudioPlayer` (the shared base `AudioPlayerGxx`/`AudioPlayerAAC` both extend) gained a `debug` setter — logged as the fixed literal name `'AudioPlayer'` regardless of which concrete subclass, since `MediaRouter`'s `createAudioPlayer()` factory call site is generic and doesn't distinguish them (unlike `video`'s `VideoPlayer`, which does — see `05`); `debug["listen"]: ["AudioPlayer"]` is the matching filter name for both. `AudioDecoder` (base for `AACAudioDecoder`/`G711AudioDecoder`/`G726_16/24/32/40_AudioDecoder`/`OPUSAudioDecoder`) instead got `Session`-style `setDebugConfig(config, componentName)`, since `AudioPlayerGxx.audioInit()` always knows exactly which decoder class it's about to construct at each branch (mirrors `RtpClient`'s own reasoning in `03`) — a literal name like `'AACAudioDecoder'`, never `constructor.name`. `G726xAudioDecoder` (a thin dispatcher wrapping the four bit-depth variants, not itself an `AudioDecoder` subclass) forwards `setDebugConfig()` to whichever concrete decoder it picked. `AACAudioDecoder`'s own two `console.log` calls (`'Construct AAC Codec'`/`'AAC Decoder init'`) were deliberately **left untouched** — that file's own doc comment states they're preserved-faithfully legacy behavior, always-on by design, not something this feature should gate. |
 | 2026-09-04 | Live-refresh: reported directly by the user, a `debug` config change made *during* an already-running stream had no visible effect on `AudioPlayerGxx`'s decoder tracing either. `AudioPlayerGxx` now overrides `set debug()` to also re-push into `audioDecoder` if one already exists, using a new `audioDecoderDebugName` field (promoted from what used to be a local variable inside `audioInit()`) that remembers which literal decoder name is currently active, so the override doesn't need to re-derive it from `codecInfo.type`. `AudioPlayerAAC` needed no equivalent override — never actually constructed by the default factory (see the 2026-09-04 entry above), so it was already out of scope. See `03-mediaSession-core-video.md`'s matching History entry (the full chain starts at `RTSPOverWebSocket.ts`/`MediaRouter.ts`) and `MEMORY.md` for the complete per-class breakdown. |
+| 2026-09-08 | **New `AACWebCodecsAudioDecoder`**, requested directly by the user: `vendor/ffmpegAAC.decoder.js` is an asm.js build that reserves a fixed `TOTAL_MEMORY = 167772160` (160MiB) heap the moment its `Module` loads, so the user asked for the *existing* Audio Transcode Type control (`audioencodermode`, already driving `WebCodecsAudioEncoder` on the Talk/encode side) to also pick the **decode** tier: `'auto'`/`'webcodecs'` → the browser's native WebCodecs `AudioDecoder`, exactly like `OPUSAudioDecoder` already does; `'wasm'` → keep the existing `AACAudioDecoder`/asm.js path unchanged. Implemented as a new decoder class rather than a branch inside `AACAudioDecoder`, so the asm.js path stays byte-for-byte the legacy behavior it faithfully ports. **No `AudioSpecificConfig` plumbing was needed**: `AACSession.genADTSAAC()` already builds a real 7-byte ADTS header from the SDP fmtp `config=`, and `MediaRouter.handleAudioData()` already prepends it to the access unit before `BufferAudio()` — and Chrome reads an `AudioDecoderConfig` *without* a `description` as declaring exactly that ADTS framing, so the bytes already arriving here are the one format WebCodecs accepts with no out-of-band config. `AudioPlayerGxx` gained a public `audioEncoderMode` field (pushed down by `MediaRouter.createAudioPlayer()` and its `set audioEncoderMode()` setter) plus a `try`/`catch` around the WebCodecs construction that falls back to the asm.js decoder and logs a `warning`, covering both "no WebCodecs at all" and "WebCodecs present but no AAC decode support" (Chrome throws `NotSupportedError` synchronously from `configure()`). Note this is **canvas-tag-mode only** by construction — per this file's own "Where this subsystem fits", `AudioPlayerGxx` is never built for a `VideoTagPlayer` session, which muxes AAC into its own `SourceBuffer` instead — which also answers the user's second question directly: yes, the canvas-tag player can now play AAC through WebCodecs. See `03-mediaSession-core-video.md` for the matching `AudioPlayerLike.audioEncoderMode` interface change and `MEMORY.md`. |
 | 2026-09-08 | Full-`src/player` memory-leak audit, requested directly by the user as a follow-up to the `VideoTagPlayer`/`Transport`/`MediaRouter` leaks fixed the same day elsewhere: `AudioPlayerAAC.terminate()` was a complete no-op (a faithfully-ported copy of the legacy file's own commented-out `audio = null;`), despite `audioInit()` creating a real `<audio>` element appended directly to `document.body` (never removed), a `MediaSource` with five event listeners, a `SourceBuffer` with one more, and a Blob URL via `createObjectURL(mediaSource)` (never revoked) — every one of those survives past the JS object's own lifetime once orphaned in the DOM/blob-URL registry. Fixed to match `AudioPlayerGxx.terminate()`'s own correct pattern: removes all listeners, revokes the Blob URL, detaches the `<audio>` element from `document.body`, nulls every field. **Confirmed currently unreachable in this application** (per this file's own 2026-09-04 note above — `StreamPlayer.ts`'s default factory only ever constructs `AudioPlayerGxx`), so this fix does not explain any memory growth the user has observed so far; fixed anyway since the class remains part of the public `MediaRouterFactories` seam and a real, if currently dormant, leak. See `MEMORY.md` for the full audit writeup covering every file checked. |
 
 ---
@@ -33,6 +34,7 @@ listen/
 ├── decoder/
 │   ├── AudioDecoder.ts            <<abstract>> base class
 │   ├── AACAudioDecoder.ts         AAC → PCM via vendored ffmpeg asm.js build
+│   ├── AACWebCodecsAudioDecoder.ts  AAC → PCM via the browser's native WebCodecs AudioDecoder
 │   ├── G711AudioDecoder.ts        G.711 µ-law/A-law → PCM (pure JS table math)
 │   ├── G726_16_AudioDecoder.ts    G.726 ADPCM @ 16 kbit/s (2 bits/sample)
 │   ├── G726_24_AudioDecoder.ts    G.726 ADPCM @ 24 kbit/s (3 bits/sample)
@@ -99,6 +101,7 @@ classDiagram
     }
 
     AudioDecoder <|-- AACAudioDecoder
+    AudioDecoder <|-- AACWebCodecsAudioDecoder
     AudioDecoder <|-- G711AudioDecoder
     AudioDecoder <|-- G726_16_AudioDecoder
     AudioDecoder <|-- G726_24_AudioDecoder
@@ -120,7 +123,8 @@ classDiagram
 
     AudioPlayerGxx --> G711AudioDecoder : creates (codecType==='G711')
     AudioPlayerGxx --> G726xAudioDecoder : creates (else branch)
-    AudioPlayerGxx --> AACAudioDecoder : creates (codecType==='AAC')
+    AudioPlayerGxx --> AACAudioDecoder : creates (AAC + audioEncoderMode==='wasm')
+    AudioPlayerGxx --> AACWebCodecsAudioDecoder : creates (AAC + auto/webcodecs)
     AudioPlayerGxx --> OPUSAudioDecoder : creates (codecType==='OPUS')
 ```
 
@@ -555,6 +559,103 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
 
 ---
 
+### `AACWebCodecsAudioDecoder` (`src/player/listen/decoder/AACWebCodecsAudioDecoder.ts`)
+
+The **default** AAC decode path as of 2026-09-08 (`audioEncoderMode` `'auto'`/`'webcodecs'`);
+`AACAudioDecoder` above remains the `'wasm'` alternative. Structurally a near-twin of
+`OPUSAudioDecoder` — same async-to-sync FIFO bridge, same lifecycle — differing only in codec
+string and in how the input framing is declared.
+
+- **Structure** (`:36-115`) — Extends `AudioDecoder` (imported as `AudioDecoderBase`, same
+  name-clash workaround `OPUSAudioDecoder` uses against the browser's native `AudioDecoder`
+  type). Fields: `decoder: AudioDecoder` (the native WebCodecs instance), `pending:
+  Float32Array[]` (FIFO of already-decoded PCM chunks), `configuredSampleRate: number` (the rate
+  the constructor was given — used only for synthetic-timestamp math, see `decode()`),
+  `nextTimestampUs: number`, and `lastFrameSamples: number` (seeded from module constant
+  `AAC_FRAME_SAMPLES = 1024`, AAC-LC's fixed access-unit size per ISO/IEC 14496-3; replaced by the
+  real per-frame count once the first `AudioData` arrives).
+  Constructor signature is `(sampleRate: number, numberOfChannels = 1)` — unlike
+  `OPUSAudioDecoder`, which hardcodes both. `AudioPlayerGxx.audioInit()` passes
+  `codecInfo.samplingRate` (16000 for AAC) so the decoder config and the `AudioBuffer` scheduling
+  rate agree; mono is the default for the same reason `OPUSAudioDecoder` hardcodes it —
+  `playAudioIn()` builds a 1-channel `AudioBuffer`.
+  Throws `RTSPOverWebSocketError` (errorCode `0x0311`, same code as `OPUSAudioDecoder`) if
+  `window.AudioDecoder` is unavailable, then `configure({ codec: 'mp4a.40.2', sampleRate,
+  numberOfChannels })`.
+- **Why no `description` is passed to `configure()`** — this is the one genuinely non-obvious
+  decision in the class, and it is deliberate, not an omission. WebCodecs accepts AAC in two
+  mutually exclusive framings: raw AAC access units, which require an `AudioSpecificConfig` in
+  `AudioDecoderConfig.description`; or ADTS-framed input, signalled by supplying **no**
+  `description` at all (Chrome's documented behavior). This player already produces the second:
+  `AACSession.genADTSAAC(frameSize)` builds the 7-byte ADTS header from the SDP fmtp `config=`'s
+  own `AudioSpecificConfig` (real `samplingFrequencyIndex`/`channelConfiguration`, not assumed
+  values) and emits it as a separate `streamData.ADTs` field, which
+  `MediaRouter.handleAudioData()` then prepends to `frameData` before calling `BufferAudio()` —
+  a step that predates this class and exists for `AACAudioDecoder`'s benefit. So the bytes
+  reaching `decode()` are *already* ADTS, and passing a `description` would be actively wrong.
+  The practical consequence: **no AudioSpecificConfig plumbing from `SDPParser` down through
+  `MediaRouter` to this layer was needed** to add WebCodecs AAC support.
+- **Method Analysis**
+  - `onDecodedOutput(audioData: AudioData)` (private) — identical to `OPUSAudioDecoder`'s:
+    records `lastFrameSamples`, `copyTo(pcm, { planeIndex: 0, format: 'f32-planar' })` into a
+    fresh `Float32Array`, pushes onto `pending`, and always `audioData.close()`s in a `finally`
+    (WebCodecs `AudioData` must be explicitly released or its backing buffer leaks — the same
+    discipline the 2026-09-08 memory audit was about).
+  - `decode(buffer: ArrayLike<number>): Float32Array` — normalizes the input to a `Uint8Array`
+    (accepting an existing one as-is), submits it as an `EncodedAudioChunk` with `type: 'key'`
+    (every AAC access unit is independently decodable — no inter-frame prediction across AUs) and
+    `timestamp: nextTimestampUs`, advances `nextTimestampUs` by
+    `(lastFrameSamples / configuredSampleRate) * 1e6` µs, and returns `pending.shift() ?? new
+    Float32Array(0)`. The timestamps are purely synthetic monotonic filler — ADTS carries no
+    presentation time, and WebCodecs only requires increasing values; the *real* playout timing
+    still comes from `AudioPlayerGxx.playAudioIn()`'s own RTP-timestamp scheduling, so a small
+    drift between the configured and true frame rate is harmless here.
+    As with `OPUSAudioDecoder`, the first few calls return an empty array before the first
+    `output` callback fires; `playAudioIn()` tolerates a zero-length chunk safely.
+  - `close(): void` (override) — clears `pending`, closes the native decoder unless already
+    `closed`. Reached from `AudioPlayerGxx.terminate()`, whose `close?.()` call is already gated
+    on `codecInfo.type === 'AAC' || 'OPUS'` — so this needed no change on the caller side.
+  - The `error` callback is an intentional no-op, with the same rationale
+    `OPUSAudioDecoder` records: none of the sibling decoders have a failure path back to
+    `BufferAudio()` either, so an undecodable packet simply yields no output for that call,
+    indistinguishable from an empty queue.
+- **Call Stack**
+
+  ```mermaid
+  sequenceDiagram
+      participant AACSession as mediaSession/audioSession/AACSession
+      participant MR as MediaRouter.handleAudioData
+      participant Gxx as AudioPlayerGxx
+      participant Dec as AACWebCodecsAudioDecoder
+      participant WC as window.AudioDecoder (WebCodecs, native)
+
+      AACSession->>MR: streamData{frameData: raw AU, ADTs: 7-byte header}
+      MR->>MR: prepend ADTs to frameData
+      MR->>Gxx: BufferAudio(adtsFramedAU, rtpTimestamp)
+      Gxx->>Dec: decode(data)
+      Dec->>WC: decode(EncodedAudioChunk{type:'key', timestamp, data})
+      Dec-->>Gxx: pending.shift() ?? empty  (PCM from an EARLIER call, if any)
+      Note over WC,Dec: asynchronously, some time later
+      WC-->>Dec: output callback fires with AudioData
+      Dec->>Dec: onDecodedOutput → pending.push(Float32Array)
+      Gxx->>Gxx: playAudioIn(pcm, rtpTimestamp) → AudioBufferSourceNode
+  ```
+
+- **RFC / Standard References** — Same codec standard as `AACAudioDecoder`: MPEG-4 Audio
+  (ISO/IEC 14496-3) for AAC-LC itself, including the 1024-sample-per-AU constant and the ADTS
+  header layout; RFC 3640 (`mpeg4-generic` RTP payload format) for the transport `AACSession`
+  depacketizes upstream. The `'mp4a.40.2'` codec string is the RFC 6381 / ISO/IEC 14496-15
+  MIME codec-parameter form (object type 2 = AAC-LC), the same string
+  `VideoTagPlayer` uses in its own `addSourceBuffer()` codec list.
+- **Relations & Data Flow** — Constructed by `AudioPlayerGxx.audioInit()` when `codecType ===
+  'AAC'` **and** `audioEncoderMode !== 'wasm'`, inside a `try`/`catch` that falls back to
+  `aacAudioDecoderFactory()` (the asm.js `AACAudioDecoder`) on any construction failure. Input
+  originates at `AACSession` via `MediaRouter.handleAudioData`. Like `OPUSAudioDecoder`, it has
+  no vendored library dependency — only the browser's WebCodecs surface — which is precisely the
+  point: choosing it avoids loading `vendor/ffmpegAAC.decoder.js`'s fixed 160MiB asm.js heap.
+
+---
+
 ### `AudioPlayer` (`src/player/listen/renderer/AudioPlayer.ts`)
 
 - **Structure** (`:9-35`) — The abstract root of the playback hierarchy, ported from legacy's
@@ -685,8 +786,9 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
 
 - **Structure** (`:39-309`) — Extends `AudioPlayer`. Despite the "Gxx" name (suggesting G.7xx-only
   scope), this class actually handles **all four** audio codecs the player supports — G.711,
-  G.726, AAC, *and* Opus — confirmed directly from `audioInit()`'s dispatch (`:157-226`), which
-  branches on `codecType` to construct one of `G711AudioDecoder`, `AACAudioDecoder`,
+  G.726, AAC, *and* Opus — confirmed directly from `audioInit()`'s dispatch, which
+  branches on `codecType` to construct one of `G711AudioDecoder`, `AACWebCodecsAudioDecoder` or
+  `AACAudioDecoder` (per `audioEncoderMode` — see Method Analysis),
   `OPUSAudioDecoder`, or (the `else` fallback) `G726xAudioDecoder`. This is a legacy naming quirk
   carried over from the original port (`Listen/Renderer/audioPlayerGxx`) — at the time the class
   was named, it likely only handled G.711/G.726 (the two ITU-T "Gxx" codecs), and AAC/Opus support
@@ -721,6 +823,14 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
     class — a minimal structural interface matching exactly what this player calls, which is also
     why `G726xAudioDecoder` (which has no `channelId` and isn't an `AudioDecoder` subclass) can
     still be assigned here via an explicit `as unknown as AudioDecoderLike` cast.
+  - `audioEncoderMode: string` (public, defaults to `'auto'`) — pushed in by
+    `MediaRouter.createAudioPlayer()` and by `MediaRouter`'s `set audioEncoderMode()`, mirroring
+    the `audioencodermode` attribute. **Only read inside `audioInit()`**, at the AAC branch, to
+    pick between `AACWebCodecsAudioDecoder` and `AACAudioDecoder`. A plain public field rather
+    than a setter *on purpose*: unlike `debug` (which live-refreshes into an existing decoder), a
+    mid-session change here must not swap a decoder out from under the running Web Audio
+    scheduling path, so it takes effect at the next `audioInit()` — the next codec change, or the
+    next session. `MediaRouter`'s setter documents the same asymmetry on its own side.
   - Constructor takes two injectable factories (both defaulted): `audioContextFactory: () =>
     AudioContext = () => new AudioContext()` and `aacAudioDecoderFactory: AACAudioDecoderFactory
     = defaultAACAudioDecoderFactory` — the latter exists specifically so tests can substitute a
@@ -760,7 +870,17 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
        buffer's `duration` so the *next* chunk schedules immediately after this one — this is the
        gapless back-to-back scheduling pattern for streaming PCM via `AudioBufferSourceNode`.
   - `audioInit(codecType, codecMime, bitrate, volume): boolean` (override) — the per-codec
-    dispatch documented in Structure above; also resets `nextStartTime`, sets
+    dispatch documented in Structure above. The `'AAC'` branch is the only one that is not a
+    straight one-codec-one-class mapping: `audioEncoderMode === 'wasm'` takes
+    `aacAudioDecoderFactory()` (the vendored asm.js `AACAudioDecoder`), and any other value —
+    `'auto'`, `'webcodecs'`, or an unrecognized string — attempts `new
+    AACWebCodecsAudioDecoder(codecInfo.samplingRate)` inside a `try`/`catch`, falling back to
+    `aacAudioDecoderFactory()` and emitting a `debugLog.warning` on failure. The `catch` covers
+    both failure shapes in one place: the constructor's own `RTSPOverWebSocketError` when the
+    browser has no WebCodecs at all, and the synchronous `NotSupportedError` Chrome throws from
+    `configure()` when WebCodecs exists but lacks AAC decode support. `audioDecoderDebugName` is
+    set to whichever class actually won, so `debug`-gated decoder tracing names the real one.
+    Also resets `nextStartTime`, sets
     `codecInfo.samplingRate` (8000 default, 16000 for AAC, 48000 for Opus, then ×4 again on Apple
     Safari specifically — i.e. Safari declares a higher `AudioBuffer` sample rate across the
     board, working together with `upsampling8Kto32K` for the G.711/G.726 path specifically).
@@ -805,7 +925,8 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
 
       Session->>MR: depacketized RTP payload + timestamp
       MR->>Gxx: audioInit(codecType,...) [once, on codec change]
-      Gxx->>Dec: new G711AudioDecoder() / new G726xAudioDecoder(bits) / aacAudioDecoderFactory() / new OPUSAudioDecoder()
+      Gxx->>Dec: new G711AudioDecoder() / new G726xAudioDecoder(bits) / new OPUSAudioDecoder()
+      Note over Gxx,Dec: AAC: audioEncoderMode picks AACWebCodecsAudioDecoder or aacAudioDecoderFactory()
       MR->>Gxx: BufferAudio(frameData, rtpTimestamp)
       alt isRunning
           Gxx->>Dec: decode(frameData)
@@ -842,7 +963,8 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
       OPUSSession -->|OPUS| MediaRouter
       MediaRouter -->|AudioPlayerLike: audioInit/BufferAudio/...| AudioPlayerGxx
       AudioPlayerGxx -->|codecType===G711| G711AudioDecoder
-      AudioPlayerGxx -->|codecType===AAC| AACAudioDecoder
+      AudioPlayerGxx -->|"AAC + audioEncoderMode=wasm"| AACAudioDecoder
+      AudioPlayerGxx -->|"AAC + auto/webcodecs"| AACWebCodecsAudioDecoder
       AudioPlayerGxx -->|codecType===OPUS| OPUSAudioDecoder
       AudioPlayerGxx -->|else G726| G726xAudioDecoder
       AudioPlayerGxx -->|schedules PCM via| WebAudioAPI[("AudioContext<br/>BiquadFilterNode -> GainNode -> destination")]
@@ -867,8 +989,11 @@ normalized `Float32Array` on the way out (see its Method Analysis below).
   - G.711 — pure JS arithmetic (no lookup table literal; computed compansion formula) in this
     repo.
   - G.726 — pure JS ADPCM state machine (`CommonAudioUtil`), also entirely in this repo.
-  - AAC — delegated to a vendored ffmpeg-derived asm.js/WASM build (`AACAudioDecoder` +
-    `vendor/ffmpegAAC.decoder.js`), or (if `AudioPlayerAAC` were ever wired up) delegated further
-    out to the browser's own MSE/`<audio>` decode pipeline.
+  - AAC — **runtime-selectable, per the `audioencodermode` attribute**: by default
+    (`'auto'`/`'webcodecs'`) delegated to the browser's native WebCodecs `AudioDecoder`
+    (`AACWebCodecsAudioDecoder`, no vendored code); with `'wasm'`, to the vendored ffmpeg-derived
+    asm.js build (`AACAudioDecoder` + `vendor/ffmpegAAC.decoder.js`, which reserves a fixed
+    160MiB heap on load); or (if `AudioPlayerAAC` were ever wired up) delegated further out to the
+    browser's own MSE/`<audio>` decode pipeline.
   - Opus — delegated to the browser's native WebCodecs `AudioDecoder`, no vendored/JS decode code
     at all.

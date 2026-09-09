@@ -4,7 +4,7 @@
 — structure, method analysis, call stacks, RFC/standard references, and relations/data flow, one file per
 subsystem.*
 
-**Version:** 1.1.2 · **Author:** Youngho Kim
+**Version:** 1.1.3 · **Author:** Youngho Kim
 
 **History**
 
@@ -17,6 +17,7 @@ subsystem.*
 | 2026-09-04 | Add file 10 (ONVIF metadata overlay) to the index; correct the abstract's stale file count (8 -> 10) |
 | 2026-09-04 | Remove the W3C SVG standards-map row — `OnvifOverlay` was switched from SVG to plain `<div>`s, so it no longer uses a standards-defined graphics API |
 | 2026-09-08 | Split the former file 05 (`05-video-player-rendering.md`, `VideoPlayer`+`CanvasTagPlayer`+`VideoTagPlayer` combined) into `05-video-tag-player.md` (`VideoPlayer`/`VideoTagPlayer` only, now with five new MSE/`SourceBuffer`/audio-transcode/seeking/timestamp deep-dive sections) and new file 11, `11-canvas-tag-player.md` (`CanvasTagPlayer`/`CanvasRenderer`/`StepBufferList`/`webgl/`), requested directly by the user. File count 10 -> 11; file 05 keeps its number (still the primary `<video>`-tag/MSE reference) rather than a full renumber, to avoid churning every other file's existing "file 05"/"file 06" cross-references for files 06-10, which are otherwise unaffected. See both files' own History and this repo's root `MEMORY.md`. |
+| 2026-09-08 | Standards map: added an ISO/IEC 14496-3 row for the two AAC decode tiers and noted the ADTS-generation half of the RFC 3640 row (both for the new `AACWebCodecsAudioDecoder` — file 06 v1.2.0); updated the `AudioPlayerAAC` discrepancy note accordingly. |
 
 ---
 
@@ -116,7 +117,8 @@ sections; this is a quick index of which standard governs which part of the wire
 | AOM "RTP Payload Format For AV1" v1.0 + AV1 Bitstream Spec §5.3.1/§6.2.2 | `AV1Session` aggregation-header/OBU parsing | 03 |
 | RFC 2435 (JPEG RTP payload) | `MjpegSession`, worker-side `MjpegDepacketizer` | 03, 07 |
 | RFC 3551 (RTP A/V Profile) | Static payload types for G.711/G.726, RTP transport for those codecs | 03, 04, 06 |
-| RFC 3640 (MPEG-4 generic / AAC RTP payload) | `AACSession` AU-header parsing | 04, 06 |
+| RFC 3640 (MPEG-4 generic / AAC RTP payload) | `AACSession` AU-header parsing + ADTS header generation (the ADTS framing is what `AACWebCodecsAudioDecoder` relies on in place of an out-of-band `AudioSpecificConfig`) | 04, 06 |
+| ISO/IEC 14496-3 (MPEG-4 Audio, AAC-LC) | AAC decode, via either tier: `AACAudioDecoder` (vendored ffmpeg asm.js) or `AACWebCodecsAudioDecoder` (the browser's native WebCodecs `AudioDecoder`), selected by the `audioencodermode` attribute | 06 |
 | RFC 7587 (Opus RTP payload) / RFC 6716 (Opus codec) | `OPUSSession`, `OPUSAudioDecoder` (delegates to the browser's native WebCodecs `AudioDecoder`) | 04, 06 |
 | ITU-T G.711 / G.726 | Codec bitstream itself (not an RFC); `VideoTagPlayer`'s `audioEncoderMode='webcodecs'` tier decodes it via the same pure-JS `G711AudioDecoder`/`G726xAudioDecoder` file 06 uses, then re-encodes to AAC via the browser's native WebCodecs `AudioEncoder` (`WebCodecsAudioEncoder`) instead of the WASM `AssemblyTranscoder` | 04, 05, 06 |
 | W3C Media Source Extensions + ISO/IEC 14496-12 (ISOBMFF/fMP4) | `VideoTagPlayer`'s muxing into a `SourceBuffer`; box-level detail in `mp4Generator` | 05, 09 |
@@ -146,7 +148,8 @@ maintainer's attention:
   exported from `util/index.ts` but have no current call sites anywhere in `src/player` (see file
   08).
 - `AudioPlayerAAC` is a fully-implemented sibling of `AudioPlayerGxx` but is not currently wired
-  into the dispatch path — `AudioPlayerGxx` handles AAC itself via `AACAudioDecoder` (see file 06).
+  into the dispatch path — `AudioPlayerGxx` handles AAC itself, via either `AACWebCodecsAudioDecoder`
+  (the default) or `AACAudioDecoder` (see file 06).
 - A handful of preserved-intentionally legacy quirks/bugs are called out at their exact location
   in files 02/03/07 (e.g. a dead `VideoRtcpSession` microsecond-diff computation, an
   `AudioHeader.settingG726` field-assignment typo, `SunapiManager`/`SunapiRequestTask` paths that
