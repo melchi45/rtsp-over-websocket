@@ -3,7 +3,7 @@
 *Per-class reference for the public custom element (`elements/`), its per-channel orchestration layer
 (`interface/`), the React wrapper (`react/`), and the error hierarchy (`exceptions/`).*
 
-**Version:** 1.7.8 · **Author:** Youngho Kim
+**Version:** 1.7.10 · **Author:** Youngho Kim
 
 **History**
 
@@ -62,6 +62,8 @@
 | 2026-09-08 | Follow-up, same day, requested directly by the user: added one narrow, race-free exception to the entry above's `play()` fix — skip `loadFfmpegAACDecoder()` entirely when `this.info.media.mode === 'video'` (an explicit host-supplied `type="video"` attribute), since that's the one signal available this early that deterministically rules out ever needing `AACAudioDecoder`, with no dependency on frame arrival order. Two other gating ideas raised by the user were investigated and rejected for the same reason as the `tagMode`-gate rejected in the entry above: triggering from `MediaRouter.selectVideoPlayer()`'s canvas branch, or from `CanvasTagPlayer`'s own constructor, both still only run once a first *video* frame has been processed — but `MediaRouter.handleAudioData()`'s own routing (`if (self.player && self.player.onAudioData) {...} else if (!self.mute) {...AudioPlayerGxx.audioInit()...}`) falls through to constructing `AACAudioDecoder` whenever `self.player` is still `null`, which is exactly the state before *any* video frame has arrived — so if the first audio frame (AAC, arriving every 20-40ms) beats the first video frame (often slower, a full I-frame), either alternative would still lose the race and hit the crash the eager-load exists to prevent. Auto-detected mode (`type` unset/`"auto"`/`"canvas"`) still loads eagerly in `play()`, unconditionally, for exactly this reason. |
 | 2026-09-08 | **Reverted both entries above.** The user pointed out the distinction they'd been describing all along and this investigation had lost sight of: `ffmpegAAC.decoder.js`'s 160MB is a *held* allocation, not a *growing* one, and the reported symptom was always continuous growth *during playback* — a fixed footprint present since before the leak appeared cannot explain a linear-in-time curve, regardless of its size. `loadFfmpegAACDecoder()` is called from `connectedCallback()` again, unconditionally, exactly as it was before both entries above. Its own doc comment (above `play()`'s Method Analysis entry) now carries a note recording that this was investigated and ruled out on that basis, so it doesn't get re-suspected the same way again. The actual growth was traced to `VideoTagPlayer.ts`'s MSE trim/append path instead — see `05-video-tag-player.md`'s History and `MEMORY.md`'s "Course correction" entry. |
 | 2026-09-08 | **`audioencodermode` now selects the AAC *decode* tier too**, not just the transcode/encode one — requested directly by the user, whose stated motivation is that `vendor/ffmpegAAC.decoder.js` is an asm.js build reserving a fixed 160MiB `TOTAL_MEMORY` heap. No change was needed in this file's own code: `attributeChangedCallback`'s validation, `info.audioEncoderMode`, and `pushAudioEncoderModeToRunningPlayers()` all stayed exactly as the 2026-09-08 entry above describes them. What changed is downstream — `MediaRouter` now also forwards the value to its `AudioPlayerLike`, and `AudioPlayerGxx.audioInit()` reads it to pick between the new `AACWebCodecsAudioDecoder` (`'auto'`/`'webcodecs'`, the new default) and the existing asm.js `AACAudioDecoder` (`'wasm'`). Scope note for anyone reading the attribute's docs: the decode half applies **only in canvas-tag mode**, since `AudioPlayerGxx` is never constructed for a `VideoTagPlayer` session; the encode half described above is video-tag-only, so the one attribute governs a different subsystem in each of the two rendering modes. See `06-listen-audio.md` (v1.2.0) and `03-mediaSession-core-video.md` (v1.2.2). |
+| 2026-09-09 | Fixed a real layout bug, reported directly by a consumer (`wisenet-camera-discovery`): mouse-wheel digital zoom (`scrolled()`/`update()`) visually broke the surrounding host page — the video area appeared to grow past its column and the statistics overlay jumped to a page corner. Root cause: `rtspOverWebSocketWrapperElement` (holding `this.video` *and* every `position: absolute` overlay — statistics/channel/context-menu/video-container) gets a `transform: translate(...) scale(...)` from `update()`, and a CSS `transform` makes its element the containing block for those `position: absolute` descendants regardless of the element's own (static) `position` — but does not clip anything by itself. `connectedCallback()` now also sets `overflow: hidden` (alongside the existing `position: relative`/`display: block`, same only-if-unset guard) so panned/scaled content stays clipped to this element's own box instead of painting over the host page. See `:888-903`'s own comment and `MEMORY.md`. |
+| 2026-09-09 | Two more real mouse-wheel-zoom bugs, both reported directly by the same consumer after the `overflow: hidden` fix above: (a) the zoom anchor drifted with the element's size/placement instead of staying under the cursor — `scrolled()` computed `zoom_point` as `event.pageX - wrapper.offsetLeft`, but this element is the wrapper's `offsetParent` (it sets `position: relative`), so that term is ~0 and a document-space `pageX` was being used as an element-local coordinate; (b) zooming all the way back out never restored the full frame — the pan clamps compared against `this.size`, seeded once in `updateRendering()` from the `width`/`height` *attribute strings*, so `Number("640px")` → `NaN` made both lower clamps dead and only `pos > 0` ever fired, leaving whatever negative translate the last anchor produced. Both now derive from a live `this.getBoundingClientRect()` (an ancestor's box is unaffected by a descendant's transform, so it is a stable reference at any zoom level, and it also tracks CSS/aspect-ratio-driven resizes that a once-at-attach attribute snapshot cannot); `this.size` is kept in sync from it. At `scale === 1` the two clamps now pin `pos` to exactly `(0, 0)`. See the "Geometry / interaction helpers" paragraph above and `MEMORY.md`. |
 
 ---
 
@@ -191,8 +193,15 @@ their exact location rather than fixed silently (file header comment,
   no-op that didn't re-fire the callback. Fixed (2026-09-01) by aligning `'statistics'` with the
   sibling pattern; if this file's code is ever refactored, don't reintroduce `!== 'false'` here.
 - `connectedCallback()` (`:673-850`) — the one-time DOM-attach setup: sets `position: relative`/
-  `display: block` if unset (so absolutely-positioned overlay panels anchor to this element, not
-  the viewport), re-reads every attribute already present at attach time into the matching field/
+  `display: block`/**`overflow: hidden`** if unset (so absolutely-positioned overlay panels anchor
+  to this element, not the viewport, and — the `overflow: hidden` addition — so that
+  `rtspOverWebSocketWrapperElement`'s `transform: translate(...) scale(...)`, applied by
+  `scrolled()`/`update()`'s mouse-wheel digital zoom, can't paint past this element's own box into
+  the surrounding host page; a CSS `transform` makes its element a containing block for `position:
+  absolute` descendants regardless of that element's own `position`, but does **not** clip them by
+  itself — see the fix's own comment at `:888-903` for the full reasoning, and `MEMORY.md`'s
+  "Digital zoom overflowed past the player's own box" entry), re-reads every attribute already
+  present at attach time into the matching field/
   `info.*` slot (duplicating a subset of `attributeChangedCallback`'s own logic for attributes
   that were set before the element was upgraded), assigns the video element's DOM id, and — if
   `info.media.element` is set (an `id` attribute was given) — calls `updateSunapiManager()`
@@ -944,7 +953,17 @@ cursor at the new `scale`; `update()` (`:1108-1112`) applies `pos`/`scale` to
 element scales from its top-left corner, so `ensureRTSPOverWebSocketWrapper()` (`:2337-2345`) sets
 `transform-origin: 0 0` on that div explicitly — without it, CSS's default `50% 50%` origin makes
 `scale()` pivot around the element's center instead, and the zoom visibly anchors near the video
-center rather than the cursor regardless of what `scrolled()` computed for `pos`),
+center rather than the cursor regardless of what `scrolled()` computed for `pos`.
+**Both the anchor and the pan clamps are read live from `this.getBoundingClientRect()`** (fixed
+2026-09-09; see History): `zoom_point` is `clientX/clientY` minus that rect's origin, and the clamps
+(`pos > 0` / `pos + box*scale < box`) use that rect's width/height, with `this.size` kept in sync
+from it. Legacy used `event.pageX - wrapper.offsetLeft` (a document-space coordinate minus a ~0
+offset, since this element *is* the wrapper's `offsetParent`) and clamped against `this.size` as
+seeded once in `updateRendering()` from the `width`/`height` **attribute strings** — `Number("640px")`
+is `NaN`, so both lower clamps were dead comparisons and only `pos > 0` ever fired. A descendant's
+transform never changes this element's own box, so the rect stays a stable reference however far the
+wrapper is currently scaled/panned; at `scale === 1` the two clamps together pin `pos` to exactly
+`(0, 0)`, which is what restores the full-frame view on zoom-out),
 `toggleFullScreen(elem)`/`exitHandler()` (`:3175-3270`, cross-vendor fullscreen API shims).
 
 ### Call Stack

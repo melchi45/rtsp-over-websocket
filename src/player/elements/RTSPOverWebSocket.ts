@@ -885,6 +885,22 @@ export class RTSPOverWebSocket extends HTMLElement {
       if (this.style.display === '') {
         this.style.display = 'block';
       }
+      // rtspOverWebSocketWrapperElement (ensureRTSPOverWebSocketWrapper()) holds
+      // this.video *and* every one of the above overlays, and scrolled()/update()
+      // apply `transform: translate(...) scale(...)` to that same wrapper for the
+      // mouse-wheel digital zoom feature. A CSS transform on an element makes it
+      // the containing block for its own `position: absolute` descendants
+      // regardless of the transformed element's own `position` value (here,
+      // static) -- but it does NOT clip anything by itself. Without `overflow:
+      // hidden` here, zooming/panning scales the wrapper (video + overlays
+      // together) past this element's own box, painting over whatever sits
+      // outside it on the host page instead of staying contained -- reported
+      // directly by a consumer as the zoomed video visually growing past its
+      // column and the statistics panel jumping to a page corner. Only set when
+      // unset, same reasoning as position/display above.
+      if (this.style.overflow === '') {
+        this.style.overflow = 'hidden';
+      }
 
       if (this.getAttribute('autoplay') !== null) {
         this._autoplay = true;
@@ -1289,11 +1305,41 @@ export class RTSPOverWebSocket extends HTMLElement {
       const pos = this.pos as { x: number; y: number };
       const zoomPoint = this.zoom_point as { x: number; y: number };
       const zoomTarget = this.zoom_target as { x: number; y: number };
-      const size = this.size as { w: number; h: number };
-      const rtspOverWebSocketWrapperElement = this.rtspOverWebSocketWrapperElement as HTMLElement;
 
-      zoomPoint.x = event.pageX - rtspOverWebSocketWrapperElement.offsetLeft;
-      zoomPoint.y = event.pageY - rtspOverWebSocketWrapperElement.offsetTop;
+      // Anchor point and clamp bounds must both be expressed in this
+      // element's own untransformed coordinate space -- the space `pos`
+      // translates in, since the wrapper fills this element exactly
+      // (width/height: 100%, transform-origin: 0 0).
+      //
+      // Legacy computed `event.pageX - wrapper.offsetLeft`, which is wrong on
+      // both terms: `offsetLeft` is measured from `offsetParent`, and this
+      // element is that offsetParent (connectedCallback sets `position:
+      // relative`), so it is ~0 rather than the wrapper's page offset --
+      // leaving a document-space `pageX` as the "local" anchor. The zoom then
+      // pivots around a point off by this element's own page offset (and by
+      // the page's scroll position), which is why the anchor appeared to move
+      // with the element's size/ratio/placement rather than staying under the
+      // cursor. `getBoundingClientRect()` on *this* element is the right
+      // reference: a transform on a descendant never changes an ancestor's
+      // own box, so this stays stable no matter how far the wrapper is
+      // currently scaled/panned.
+      const box = this.getBoundingClientRect();
+      zoomPoint.x = event.clientX - box.left;
+      zoomPoint.y = event.clientY - box.top;
+
+      // Same box drives the pan clamps below. `this.size` was seeded once in
+      // updateRendering() from the `width`/`height` *attributes*, whose value
+      // is the raw attribute string -- so a consumer writing `width="640px"`
+      // (or sizing the element from CSS, as any responsive page does) left
+      // `Number(size.w)` as NaN, making both lower clamps dead comparisons.
+      // Only `pos > 0` survived, so zooming back out to scale 1 kept whatever
+      // negative translate the last anchor produced and the video never
+      // returned to filling its box. Re-read live here (it also tracks
+      // layout/aspect-ratio changes, which a once-at-attach snapshot cannot)
+      // and keep the field in sync for anything else reading it.
+      const boxWidth = box.width;
+      const boxHeight = box.height;
+      this.size = { w: boxWidth, h: boxHeight };
 
       event.preventDefault();
       let delta = event.delta ?? (event as unknown as { wheelDelta?: number }).wheelDelta;
@@ -1312,10 +1358,15 @@ export class RTSPOverWebSocket extends HTMLElement {
       pos.x = -zoomTarget.x * this.scale + zoomPoint.x;
       pos.y = -zoomTarget.y * this.scale + zoomPoint.y;
 
+      // Keep the scaled content covering the box: never let its top/left edge
+      // move inside the box (first/third), never let its bottom/right edge
+      // move inside it either (second/fourth). At scale 1 the two together
+      // pin pos to exactly (0, 0) -- which is what restores the full video
+      // once the user zooms all the way back out.
       if (pos.x > 0) pos.x = 0;
-      if (pos.x + Number(size.w) * this.scale < Number(size.w)) pos.x = -Number(size.w) * (this.scale - 1);
+      if (pos.x + boxWidth * this.scale < boxWidth) pos.x = -boxWidth * (this.scale - 1);
       if (pos.y > 0) pos.y = 0;
-      if (pos.y + Number(size.h) * this.scale < Number(size.h)) pos.y = -Number(size.h) * (this.scale - 1);
+      if (pos.y + boxHeight * this.scale < boxHeight) pos.y = -boxHeight * (this.scale - 1);
 
       this.update();
     }

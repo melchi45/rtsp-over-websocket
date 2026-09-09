@@ -6227,3 +6227,88 @@ that doesn't need it at all — and check whether the codebase already has a use
 that same class of choice before adding another. Also: before plumbing configuration down through
 four layers to satisfy an API, check what the data arriving at that API already looks like; the
 required framing may already be there for unrelated historical reasons.
+
+## Digital zoom overflowed past the player's own box — missing `overflow: hidden` (fixed)
+
+Reported symptom (by `wisenet-camera-discovery`, a consumer): using the mouse wheel to zoom in on
+the video visually broke the surrounding host page — the video area appeared to grow larger than
+its column, and the statistics overlay (`.statistics`) jumped to a page corner.
+
+Root cause: `ensureRTSPOverWebSocketWrapper()`'s wrapper `<div>` holds not just `this.video` but
+every `position: absolute` overlay this element owns — `.statistics`, `channel_div`, the context
+menu, `.video-container` (rewind/forward notify, ONVIF overlay) — see their shared call sites at
+`RTSPOverWebSocket.ts:2756,2893,3213,3629`. `scrolled()`/`update()`'s mouse-wheel zoom applies
+`transform: translate(...) scale(...)` to that same wrapper. Per the CSS Transforms spec, an
+element with a non-`none` `transform` becomes the containing block for its own `position: absolute`
+descendants regardless of its own `position` value (the wrapper is `position: static`) — but a
+`transform` does **not** clip anything by itself. With no `overflow: hidden` anywhere between the
+wrapper and the viewport, panning/scaling the wrapper let the video *and* every overlay riding
+along with it paint straight through this element's own box and over whatever sits next to it on
+the host page — exactly the two symptoms reported (video looking oversized, stats panel appearing
+to jump), with no change to the underlying flex/grid layout at all (`transform` never affects
+layout size — this was purely a paint-time overflow, not a real box-size change).
+
+Fixed by adding `overflow: hidden` to `connectedCallback()`'s existing position/display setup
+(only if unset, same guard), matching the containment pattern `VIDEO_CONTAINER_STYLE` already uses
+for the same reason (`position: absolute; overflow: hidden`). See
+`docs/player/01-elements-interface-exceptions.md`'s connectedCallback entry (v1.7.9) for the full
+derivation.
+
+Investigation note: reproducing this via Playwright's `page.mouse.wheel()` against the built demo
+page showed *zero* effect (`pos`/`scale`/wrapper `transform` all stayed at their identity values) —
+this does **not** mean the feature is dead code. `scrolled()`'s outer guard requires
+`event.type === 'mousewheel'`, the pre-standardization event name Chromium engines still fire
+*alongside* the standard `'wheel'` event for legacy-compat sites (Firefox never fired it — see the
+class's own "we are on firefox" fallback comment on the delta computation, which is consequently
+unreachable there today). Whether Chromium's CDP-driven synthetic wheel input (what Playwright's
+`mouse.wheel()` uses under the hood) triggers that legacy compat firing the same way genuine
+hardware input does is unconfirmed; a real, physically-scrolled Chromium/Edge session is what
+originally surfaced both this bug and the earlier "anchored on the wrong point" one above, so the
+feature is real and working in that environment regardless of what the synthetic test showed. Don't
+take a null result from `page.mouse.wheel()` here as proof the handler doesn't fire — verify against
+a real browser (or this repo's own demo server) instead.
+
+## Mouse-wheel zoom: anchor drifted with the element's placement, and zoom-out never restored the full frame (fixed)
+
+Two separate bugs in `scrolled()` (`src/player/elements/RTSPOverWebSocket.ts`), both reported
+directly by the `wisenet-camera-discovery` consumer, both from the same underlying mistake — the
+zoom math was reading coordinates and box dimensions from sources that don't describe the element's
+actual rendered box.
+
+**Bug 1 — the anchor was a document coordinate.** `zoom_point` was
+`event.pageX - wrapper.offsetLeft`. `offsetLeft` is measured from the element's `offsetParent`, and
+`<rtsp-over-websocket>` *is* that offsetParent (`connectedCallback()` sets `position: relative`), so
+the term is ~0. That left a document-space `pageX` standing in for an element-local coordinate, so
+the pivot was off by exactly the element's own page offset (plus page scroll) — which is why the
+anchor appeared to move as the element's size/ratio/placement changed rather than staying under the
+cursor. Now `event.clientX/clientY` minus `this.getBoundingClientRect()`'s origin.
+
+**Bug 2 — the pan clamps were comparing against `NaN`.** The clamps
+(`pos.x + Number(size.w) * scale < Number(size.w)`) used `this.size`, seeded once in
+`updateRendering()` as `{ w: this.width, h: this.height }` — and `width`/`height` are the **raw
+attribute strings**, so a consumer writing `width="640px"` (this one does) makes `Number(size.w)`
+`NaN` and the comparison permanently `false`. Only `if (pos.x > 0) pos.x = 0` survived, so zooming
+back out to `scale === 1` kept whatever negative translate the last anchor had produced: the video
+stayed shifted up/left with dead space beside it and never returned to filling its box. Even with a
+bare numeric attribute it would still have been the *declared* size, not the CSS-driven rendered one
+(this consumer sizes the element `width: 100%` + `aspect-ratio`). Now both clamps use the live
+`getBoundingClientRect()` width/height, and `this.size` is kept in sync from it. At `scale === 1`
+the two clamps together pin `pos` to exactly `(0, 0)` — that is what restores the full frame.
+
+Why `getBoundingClientRect()` on `this` is safe as the reference even mid-zoom: a `transform` on a
+descendant (the wrapper) never changes an ancestor's own box. Reading it per wheel event also picks
+up layout/aspect-ratio changes automatically, which a once-at-attach snapshot cannot.
+
+Known remaining nuance, not fixed: the anchor is expressed in the wrapper's box, not in the
+letterboxed picture inside it, so if the host box's aspect ratio differs from the stream's
+(`object-fit: contain` pillar/letterboxing) the pivot is a few pixels off within the bars. In
+practice `onRTSPOverWebSocketResize()` sets the host's `aspect-ratio` to the real stream ratio, so
+there are usually no bars at all. A stale zoom also survives a layout resize (pos/scale are only
+reset on stream (re)start, in `updateRendering()`).
+
+**How to apply**: when transform math "works but is anchored wrong", check what coordinate space
+each input is actually in before touching the algebra — `pageX`/`clientX`/`offsetLeft`/
+`getBoundingClientRect()` are four different spaces and mixing any two silently yields a constant
+offset that looks like a layout-dependent bug. And when a clamp "does nothing", check its operands
+for `NaN` before assuming the branch logic is wrong: `Number()` on an attribute string with a unit
+suffix is a silent `NaN` factory, and every comparison against it is `false`.
