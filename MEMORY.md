@@ -6378,3 +6378,63 @@ field) so the fix targets the right layer. And when copying an existing sizing c
 new control, check whether it was called out as a *deliberate external parity target* rather than
 a value picked to match its context — those two look identical in the CSS but should not both move
 just because the surrounding menu got denser.
+
+## Mute -> Unmute -> Mute triggered a full RTSP reconnect — `dummyAudio` conflated "no real audio available" with "user muted it", and its dummy sample is hardcoded to AAC regardless of the real codec
+
+Reported directly by the user (downstream, from the consuming `wisenet-camera-discovery` app) as a
+confusing full RTSP TEARDOWN+reconnect whenever clicking Mute/Unmute/Mute during Live playback, on
+an Opus-audio camera. Initial code reading (both here and in the consuming app) found nothing in
+`mute()`/`unmute()`'s own call chain (`RTSPOverWebSocket.ts` -> `StreamPlayer.ts`'s
+`controlAudioIn()` -> `MediaRouter.ts`'s `controlAudioPlayer()`) that touches `RtspClient`/network at
+all — correct, but incomplete: a real device RTSP log the user pasted showed the reconnect really
+happening, and it turned out to be one layer removed from that chain entirely.
+
+**Root-cause method**: rather than keep reading source back and forth, added temporary
+`console.log`/`console.trace()` diagnostics directly to `mute()`/`unmute()`/`talk()`
+(`RTSPOverWebSocket.ts`) and `StreamPlayer.ts`'s `open()`/`close()` (the actual TEARDOWN-sending
+function), rebuilt (`npm run build:player:dev` here, then a full `npm run build:no-shared-v2` +
+`npm run build:shared-v2` on the consuming app side — see that repo's own `MEMORY.md` for a real
+build-caching gotcha found along the way: `build:shared-v2` alone does NOT re-copy this package's
+vendored `dist/player/rtsp-over-websocket.esm.js` into the consuming app's `dist/`, so a
+library-only change needs the full assemble step re-run too, not just the shared-v2 overwrite), and
+had the user reproduce against the real device. The resulting console trace settled it in one shot:
+`mute()`/`unmute()` never appeared anywhere in an `open()`/`close()` call stack; every single
+`close()` (TEARDOWN) in the log originated from `RTSPOverWebSocket.ts`'s `onRTSPOverWebSocketError()`
+error-driven retry (`_retryFlag` -> `stop()` + `play()`), specifically error code `0x030A`.
+
+**Actual root cause, found by tracing `0x030A`'s own throw site**
+(`VideoTagPlayer.ts:appendSegmentToSourceBuffer()`, `sourceBuffer.appendBuffer()`): `ControlVolume()`
+(the method `MediaRouter.controlAudioPlayer()` calls for the `'video'`-tagMode/no-separate-
+`audioPlayer` case) set `this.dummyAudio = true` on mute, *in addition to* `videoElement.muted =
+true` — the latter already fully silences output on its own. `dummyAudio` means "no real audio *data*
+is currently available" (its other two writers: the field's own initial default before the very
+first real sample, and `onWaitingPackets()` on genuine RTP packet loss) — a materially different
+condition from "the user doesn't want to hear it," since the camera keeps sending real RTP audio
+regardless of local mute state (confirmed earlier, same investigation: `mute()`/`unmute()` never
+reach the network at all). `onAudioData()` resets `dummyAudio` back to `false` on the very next real
+audio sample, so the mute-forced `true` only ever won a brief race in practice — but `makeDummyAudio()`
+(the function that runs while `dummyAudio` is `true`) hardcodes its synthetic silent sample's codec as
+**`'AAC'`** unconditionally, with no check against whatever the *actual* negotiated audio codec is.
+This camera's real codec was **Opus** (confirmed from the real DESCRIBE/SDP response the user pasted:
+`a=rtpmap:110 opus/48000/2`) — muxing a fabricated AAC-coded sample into an audio `SourceBuffer` track
+already established (via prior real Opus samples during the Unmute in between) for Opus is a codec
+mismatch the browser's MSE parser rejects outright, throwing from `appendBuffer()`.
+
+**Fixed**: removed `this.dummyAudio = true` from `ControlVolume()`'s mute branch — `videoElement.muted`
+alone is sufficient and correct for the user-facing mute requirement, and doesn't touch the audio-
+availability flag at all. **Not fixed, same latent risk**: `makeDummyAudio()`'s hardcoded `'AAC'` is
+still reachable via its other two legitimate triggers (initial default, real packet loss) and would
+hit the identical crash on any non-AAC-audio camera if a segment happens to build during one of those
+windows too — a real follow-up: have `makeDummyAudio()` synthesize silence in whatever codec
+`setAudioInfo()` actually established for this session, not a fixed AAC frame. See
+`docs/player/05-video-tag-player.md`'s matching 2026-09-10 entry.
+
+**How to apply**: when two independent triggers write the same boolean flag for what look like
+related-but-distinct reasons ("no data available" vs. "user opted out"), that's a latent conflation
+bug waiting to surface as a race, even when each individual writer looks correct in isolation — check
+whether the flag's *other* readers assume only one of those meanings. And when a downstream consumer
+reports a symptom this package's own code review can't explain, a few lines of temporary
+`console.trace()` at the suspected boundary (here: `StreamPlayer.open()`/`close()`) plus one real
+reproduction is often faster and more conclusive than continuing to read source back and forth —
+remove the temporary logging once the real root cause (not just the symptom's own throw site) is
+confirmed.

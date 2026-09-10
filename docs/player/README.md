@@ -1,10 +1,10 @@
 # `src/player` — Per-Class Reference Documentation
 
-*Index and reading guide for the 11-file, per-class reference doc set covering every subsystem under `src/player`
+*Index and reading guide for the 12-file, per-class reference doc set covering every subsystem under `src/player`
 — structure, method analysis, call stacks, RFC/standard references, and relations/data flow, one file per
-subsystem.*
+subsystem (plus one cross-cutting flow file, 12).*
 
-**Version:** 1.1.3 · **Author:** Youngho Kim
+**Version:** 1.1.4 · **Author:** Youngho Kim
 
 **History**
 
@@ -18,6 +18,7 @@ subsystem.*
 | 2026-09-04 | Remove the W3C SVG standards-map row — `OnvifOverlay` was switched from SVG to plain `<div>`s, so it no longer uses a standards-defined graphics API |
 | 2026-09-08 | Split the former file 05 (`05-video-player-rendering.md`, `VideoPlayer`+`CanvasTagPlayer`+`VideoTagPlayer` combined) into `05-video-tag-player.md` (`VideoPlayer`/`VideoTagPlayer` only, now with five new MSE/`SourceBuffer`/audio-transcode/seeking/timestamp deep-dive sections) and new file 11, `11-canvas-tag-player.md` (`CanvasTagPlayer`/`CanvasRenderer`/`StepBufferList`/`webgl/`), requested directly by the user. File count 10 -> 11; file 05 keeps its number (still the primary `<video>`-tag/MSE reference) rather than a full renumber, to avoid churning every other file's existing "file 05"/"file 06" cross-references for files 06-10, which are otherwise unaffected. See both files' own History and this repo's root `MEMORY.md`. |
 | 2026-09-08 | Standards map: added an ISO/IEC 14496-3 row for the two AAC decode tiers and noted the ADTS-generation half of the RFC 3640 row (both for the new `AACWebCodecsAudioDecoder` — file 06 v1.2.0); updated the `AudioPlayerAAC` discrepancy note accordingly. |
+| 2026-09-10 | Added file 12, `12-audio-control-flows.md` — a cross-cutting flow file (not a per-class one, first of its kind in this set), requested directly by the user right after a real Mute/Unmute-vs-Talk reconnect bug was root-caused and fixed (see file 05's and this repo's `MEMORY.md`'s matching entries). Three sequence diagrams (Mute/Unmute, Talk, and the incident's own dummy-audio race) trace each flow end to end across files 01/03/05/06. File count 11 -> 12; the "Two flows run in parallel" section below now points to it for Talk's full detail instead of just a prose bullet. |
 
 ---
 
@@ -35,9 +36,10 @@ It complements two existing documents rather than replacing them:
 
 ## How the set is organized
 
-The library is documented in 11 files, split by subsystem so each stays a manageable read. Files
-cross-reference each other by class name only — a class documented in file *N* that collaborates
-with a class in file *M* is named, not re-explained.
+The library is documented in 12 files, split by subsystem so each stays a manageable read (files
+01-11; file 12 is the one exception, a cross-cutting flow file rather than a per-class one — see its
+own row below). Files cross-reference each other by class name only — a class documented in file *N*
+that collaborates with a class in file *M* is named, not re-explained.
 
 | File | Subsystem | Key classes |
 |---|---|---|
@@ -52,6 +54,7 @@ with a class in file *M* is named, not re-explained.
 | [09-mp4-container-generation.md](09-mp4-container-generation.md) | Box-level fMP4/ISOBMFF generation (vendored, not a class) | `vendor/mp4Generator.js` — `ftyp`/`moov`/`moof`/`mdat` box tree, per-codec `stsd` entries |
 | [10-onvif-metadata-overlay.md](10-onvif-metadata-overlay.md) | ONVIF `VideoAnalytics` bounding-box overlay + reusable toggle | `parseOnvifVideoAnalyticsFrame` (`util/onvifMetadata.ts`), `OnvifOverlay`, `onvifEventColors`, `createSwitch` (`components/ui/`) |
 | [11-canvas-tag-player.md](11-canvas-tag-player.md) | Canvas/WebGL rendering: decoder-worker pipeline, step-play buffering, no `SourceBuffer`/no audio | `CanvasTagPlayer`, `CanvasRenderer`, `StepBufferList`, `WebGLCanvas`, `YUVWebGLCanvas` |
+| [12-audio-control-flows.md](12-audio-control-flows.md) | *Cross-cutting, not per-class*: Mute/Unmute/Talk traced end to end, side by side, with sequence diagrams | Spans `RTSPOverWebSocket`/`StreamPlayer` (01), `MediaRouter` (03), `VideoTagPlayer` (05), `AudioPlayerGxx` (06) |
 
 ## End-to-end flow across the documents
 
@@ -94,7 +97,11 @@ Two flows run in parallel to the above and are documented across the same files:
 
 - **Two-way audio (talk-back):** microphone → `Talk` (07) → `G711AudioEncoder` (07, actually
   invoked via `AudioTalkSession`, see 04/07) → `RtpClient`/`RtspClient` (02/03) → outbound RTP to
-  the camera/bridge.
+  the camera/bridge. That outbound track doesn't just appear mid-session, though —
+  `RTSPOverWebSocket.talk()` first tears down and rebuilds the whole RTSP session
+  (`StreamPlayer.open(null, audioOutStatus)`) so the new `SETUP` can negotiate a send-capable audio
+  track; see [12-audio-control-flows.md](12-audio-control-flows.md) for that reconnect traced step
+  by step, contrasted against `mute()`/`unmute()` (which never reconnect at all).
 - **Local backup/export:** `BackupProvider` (07) → `worker/backup` (`BackupSession`,
   `AviFormatWriter`/`AviFileWriter`, `zipWorker`, all 07) → `FileMaker` (07) → browser download,
   driven by `MediaRouter` via the `BackupProviderLike` seam.

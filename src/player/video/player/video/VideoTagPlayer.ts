@@ -3780,8 +3780,26 @@ export class VideoTagPlayer extends VideoPlayer {
       videoElement.muted = false;
     } else if (vol === 'off' || vol === 'mute') {
       this.audio = false;
+      // `videoElement.muted = true` already fully silences output -- this
+      // used to also force `dummyAudio = true`, but that flag means "no
+      // real audio data is available" (its other writers: the initial
+      // default before the first real sample, and onWaitingPackets() on
+      // real packet loss), not "the user muted it." The camera keeps
+      // sending real RTP audio regardless of local mute state, and
+      // onAudioData() resets dummyAudio back to `false` on the very next
+      // real sample -- so this only ever won a brief race. If a video
+      // segment got built in that narrow window, makeDummyAudio()
+      // fabricates an AAC-coded sample (hardcoded, see its own comment)
+      // and mux it into the audio track regardless of the *actual*
+      // negotiated codec (e.g. Opus) -- a mismatch the browser's MSE
+      // parser rejects, throwing from appendSegmentToSourceBuffer()'s
+      // appendBuffer() call (0x030A) and triggering RTSPOverWebSocket.ts's
+      // error-driven stop()+play() retry. Real bug, found live: reported
+      // directly by the user as an unexplained full RTSP reconnect on
+      // Mute -> Unmute -> Mute, root-caused with them via console.trace
+      // diagnostics showing the retry always originated from this
+      // appendBuffer() throw, never from mute()/unmute() themselves.
       videoElement.muted = true;
-      this.dummyAudio = true;
     } else {
       videoElement.volume = (vol as number) * 0.2;
     }
